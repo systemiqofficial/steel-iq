@@ -27,12 +27,10 @@ Each run writes its plots, CSVs and logs to a fresh `sim_<timestamp>/` directory
 To experiment with bespoke datasets:
 
 1. Prepare files that conform to the schemas referenced in the configuration guide.
-2. Point the CLI at your resources, for example:
+2. Point the CLI at your customised master Excel, for example:
 
    ```bash
-   run_simulation \
-     --plants-json ./my_data/plants.json \
-     --demand-excel ./my_data/demand.xlsx
+   run_simulation --master-excel ./my_data/master_input.xlsx
    ```
 
 3. Inspect the generated outputs (plots, CSVs, logs) under the run's `sim_<timestamp>` directory.
@@ -144,7 +142,7 @@ config = SimulationConfig.from_data_directory(
 )
 ```
 
-Per-file path overrides (e.g. swapping in a single plants JSON or demand Excel) are exposed through the CLI's `--plants-json`, `--demand-excel`, `--location-csv` and `--cost-of-x-csv` flags rather than as `SimulationConfig` fields. For programmatic single-file overrides, point `data_dir` at a directory that contains the customised files using the standard layout.
+To swap in a single input file (e.g. a plants JSON or demand Excel), point `data_dir` at a directory that contains the customised files using the standard layout.
 
 ### Technology Constraints Example
 
@@ -381,10 +379,7 @@ Outputs go to a fresh `sim_<timestamp>/` directory under `--output-dir` (default
 - `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
 
 **Data Files (usually handled automatically via caching):**
-- `--plants-json`: Path to plants JSON file
-- `--demand-excel` / `--demand-sheet`: Path to, and sheet of, the demand Excel file
-- `--location-csv`: Path to location CSV file
-- `--cost-of-x-csv`: Path to cost of x JSON file
+- `--demand-sheet`: Sheet name in the demand Excel file
 - `--baseload-power-sim-dir`: BOA-generated baseload power simulation output directory
 
 **Caching Options:**

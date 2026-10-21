@@ -49,22 +49,10 @@ def run_full_simulation() -> None:
     parser.add_argument("--start-year", type=int, default=2025, help="The year to start the simulation (default: 2025)")
     parser.add_argument("--end-year", type=int, default=2060, help="The year to end the simulation (default: 2060)")
     parser.add_argument(
-        "--plants-json",
-        type=str,
-        default=None,
-        help="Path to the plants JSON file (default: ./data/fixtures/plants.json)",
-    )
-    parser.add_argument(
         "--output-dir",
         type=str,
         default=None,
         help="Base output directory for simulation results (default: $STEELO_HOME/output)",
-    )
-    parser.add_argument(
-        "--demand-excel",
-        type=str,
-        default=None,
-        help="Path to the demand excel file (default: ./data/fixtures/2025_05_27 Demand outputs for trade module.xlsx)",
     )
     parser.add_argument(
         "--demand-sheet",
@@ -114,18 +102,6 @@ def run_full_simulation() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Allow hydrogen imports between linked regions (default: the GeoConfig value, off)",
-    )
-    parser.add_argument(
-        "--location-csv",
-        type=str,
-        default=None,
-        help="Path to the location CSV file (default: ./data/fixtures/countries.csv)",
-    )
-    parser.add_argument(
-        "--cost-of-x-csv",
-        type=str,
-        default=None,
-        help="Path to the cost of x CSV file (default: ./data/fixtures/cost_of_x.json)",
     )
     parser.add_argument(
         "--log-level",

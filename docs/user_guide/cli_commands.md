@@ -7,8 +7,7 @@ The main command to run a steel model simulation with automatic data preparation
 ```shell
 ❯ run_simulation -h
 usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
-                      [--plants-json PLANTS_JSON] [--output-dir OUTPUT_DIR]
-                      [--demand-excel DEMAND_EXCEL]
+                      [--output-dir OUTPUT_DIR]
                       [--demand-sheet DEMAND_SHEET]
                       [--demand-scenario DEMAND_SCENARIO]
                       [--scrap-scenario SCRAP_SCENARIO]
@@ -16,8 +15,6 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--run-name RUN_NAME]
                       [--hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE]
                       [--intraregional-trade | --no-intraregional-trade]
-                      [--location-csv LOCATION_CSV]
-                      [--cost-of-x-csv COST_OF_X_CSV]
                       [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
                       [--resume-from-year RESUME_FROM_YEAR]
                       [--master-excel MASTER_EXCEL] [--no-cache]
@@ -40,16 +37,9 @@ options:
   --start-year START_YEAR
                         The year to start the simulation (default: 2025)
   --end-year END_YEAR   The year to end the simulation (default: 2060)
-  --plants-json PLANTS_JSON
-                        Path to the plants JSON file (default:
-                        ./data/fixtures/plants.json)
   --output-dir OUTPUT_DIR
                         Base output directory for simulation results (default:
                         $STEELO_HOME/output)
-  --demand-excel DEMAND_EXCEL
-                        Path to the demand excel file (default:
-                        ./data/fixtures/2025_05_27 Demand outputs for trade
-                        module.xlsx)
   --demand-sheet DEMAND_SHEET
                         Sheet name in the demand excel file (default:
                         'Steel_Demand_Chris Bataille')
@@ -73,12 +63,6 @@ options:
   --intraregional-trade, --no-intraregional-trade
                         Allow hydrogen imports between linked regions
                         (default: the GeoConfig value, off)
-  --location-csv LOCATION_CSV
-                        Path to the location CSV file (default:
-                        ./data/fixtures/countries.csv)
-  --cost-of-x-csv COST_OF_X_CSV
-                        Path to the cost of x CSV file (default:
-                        ./data/fixtures/cost_of_x.json)
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Set the logging level (default: WARNING)
   --resume-from-year RESUME_FROM_YEAR
