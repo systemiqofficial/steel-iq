@@ -17,6 +17,7 @@ Including another URLconf
 
 from django.urls import path
 from . import views
+from . import views_viewer
 from . import views_worker
 
 
@@ -94,6 +95,15 @@ urlpatterns = [
         views.upload_circularity_data,
         name="upload-circularity-for-modelrun",
     ),
+    # Scenario viewer: the page fetches everything relative to /viewer/
+    path("viewer/", views_viewer.viewer_index, name="viewer-index"),
+    path("viewer/manifest.json", views_viewer.viewer_manifest, name="viewer-manifest"),
+    path("viewer/inputs.json", views_viewer.viewer_inputs, name="viewer-inputs"),
+    path("viewer/geo.json", views_viewer.viewer_geo, name="viewer-geo"),
+    path("viewer/assets/vendor/plotly.min.js", views_viewer.viewer_plotly, name="viewer-plotly"),
+    path("viewer/assets/<path:path>", views_viewer.viewer_asset, name="viewer-asset"),
+    path("viewer/runs/<str:folder>/", views_viewer.viewer_run_file, name="viewer-run-folder"),
+    path("viewer/runs/<str:folder>/<path:path>", views_viewer.viewer_run_file, name="viewer-run-file"),
     # ======= PRODUCTION-GRADE WORKER MANAGEMENT ENDPOINTS =======
     # PRIMARY: Tick endpoint for all state transitions (POST only)
     path("workers/tick/", views_worker.workers_tick, name="workers-tick"),
