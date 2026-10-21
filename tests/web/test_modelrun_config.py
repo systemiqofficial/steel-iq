@@ -184,6 +184,30 @@ def test_run_passes_include_tariffs_to_the_simulation_config(mock_bootstrap_simu
 @pytest.mark.django_db
 @patch("steelo.validation.validate_technology_settings")
 @patch("steelo.bootstrap.bootstrap_simulation")
+def test_run_gives_a_setting_stored_as_none_its_class_default(mock_bootstrap_simulation, mock_validate, tmp_path):
+    """A setting an older form stored as None for a blank field takes the class default instead of failing the run."""
+    model_run = ready_model_run(
+        tmp_path,
+        "Older run",
+        {
+            "start_year": 2025,
+            "end_year": 2026,
+            "consideration_time": None,
+            "construction_time": None,
+            "technology_settings": {"BF": {"allowed": True, "from_year": 2025, "to_year": None}},
+        },
+    )
+
+    model_run.run()
+
+    config = mock_bootstrap_simulation.call_args[0][0]
+    assert config.consideration_time == simulation.config_default("consideration_time")
+    assert config.construction_time == simulation.config_default("construction_time")
+
+
+@pytest.mark.django_db
+@patch("steelo.validation.validate_technology_settings")
+@patch("steelo.bootstrap.bootstrap_simulation")
 def test_run_drops_a_stored_scrap_generation_scenario(mock_bootstrap_simulation, mock_validate, tmp_path):
     """An older run's stored ``scrap_generation_scenario``, no longer a config field, does not stop the run."""
     model_run = ready_model_run(

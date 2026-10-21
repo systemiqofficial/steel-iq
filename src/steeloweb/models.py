@@ -550,12 +550,13 @@ def _simulation_and_geo_settings(settings: dict[str, Any], geo_names: set[str]) 
         geo_names: The ``GeoConfig`` field names, less those ``SimulationConfig`` also has.
 
     Returns:
-        The settings that are no geo setting, and a ``GeoConfig`` holding every stored geo setting that is not
-        None; the others keep their class defaults.
+        The settings that are no geo setting, and a ``GeoConfig`` holding the geo ones; a setting stored as None is
+        left out of either, so it keeps its class default.
 
     Notes:
-        Numbers are cast so a Decimal or int stored by an older form reaches the config as float (int for
-        ``consideration_time``); a blank transport route is left out of the transport costs.
+        Forms before the class defaults applied stored None for a blank field. Numbers are cast so a Decimal or int
+        stored by an older form reaches the config as float (int for ``consideration_time``); a blank transport
+        route is left out of the transport costs.
     """
     from steelo.simulation import GeoConfig
 
@@ -577,7 +578,9 @@ def _simulation_and_geo_settings(settings: dict[str, Any], geo_names: set[str]) 
         elif name == "transportation_cost_per_km_per_ton":
             value = {route: float(cost) for route, cost in value.items() if cost not in (None, "")}
         geo_settings[name] = value
-    simulation_settings = {name: value for name, value in settings.items() if name not in geo_names}
+    simulation_settings = {
+        name: value for name, value in settings.items() if name not in geo_names and value is not None
+    }
     if "consideration_time" in simulation_settings:
         simulation_settings["consideration_time"] = int(simulation_settings["consideration_time"])
     return simulation_settings, GeoConfig(**geo_settings)
