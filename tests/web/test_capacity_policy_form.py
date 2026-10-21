@@ -82,3 +82,26 @@ def test_create_form_refuses_the_capacity_policy_on_a_preparation_without_its_fi
     assert response.status_code == 200
     assert response.context["form"].has_error("capacity_policy_enabled")
     assert not ModelRun.objects.exists()
+
+
+@pytest.mark.django_db
+def test_create_form_shown_again_with_the_policy_off_starts_the_levers_at_their_initials(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+):
+    """The levers, disabled and so not posted while the switch is off, come back at their initials after a refusal.
+
+    Otherwise the renovation box would come back unticked and be stored False once the switch is turned on.
+    """
+    response = client.post(
+        reverse("create-modelrun"),
+        data={**valid_modelrun_form_data, "start_year": 2030, "end_year": 2026},
+    )
+
+    form = response.context["form"]
+    assert response.status_code == 200
+    assert form["capacity_policy_renovation_counts_as_replace"].value() is True
+    assert form["capacity_policy_replacement_ratio"].value() == str(
+        form.fields["capacity_policy_replacement_ratio"].initial
+    )

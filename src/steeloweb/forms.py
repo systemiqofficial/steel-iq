@@ -824,6 +824,14 @@ class ModelRunCreateForm(forms.ModelForm):
         if boundaries and boundary_field.initial not in boundaries:
             boundary_field.initial = boundaries[0]
 
+        # Disabled while the switch is off, the levers post nothing; shown again, they start from their initials
+        if self.is_bound and "capacity_policy_enabled" not in self.data:
+            self.data = self.data.copy()
+            for name in self.capacity_policy_lever_names:
+                initial = self.fields[name].initial
+                if name not in self.data and initial not in (None, False):
+                    self.data[name] = "on" if initial is True else str(initial)
+
     class Meta:
         model = ModelRun
         fields = [
@@ -902,17 +910,24 @@ class ModelRunCreateForm(forms.ModelForm):
         }
 
     @property
+    def capacity_policy_lever_names(self) -> list[str]:
+        """The names of the capacity policy's lever fields, shown under its switch.
+
+        Returns:
+            The ``capacity_policy_*`` field names other than the switch, in declaration order.
+        """
+        return [
+            name for name in self.fields if name.startswith("capacity_policy_") and name != "capacity_policy_enabled"
+        ]
+
+    @property
     def capacity_policy_levers(self) -> list[forms.BoundField]:
         """The capacity policy's lever fields, shown under its switch.
 
         Returns:
             The bound ``capacity_policy_*`` fields other than the switch, in declaration order.
         """
-        return [
-            self[name]
-            for name in self.fields
-            if name.startswith("capacity_policy_") and name != "capacity_policy_enabled"
-        ]
+        return [self[name] for name in self.capacity_policy_lever_names]
 
     def clean(self):
         """Validate the years, settle the seed and the clustering scope, and gather the capacity policy.
