@@ -713,7 +713,6 @@ def create_modelrun(request):
         form = ModelRunCreateForm(request.POST)
         if form.is_valid():
             # Create config dictionary from form data
-            output_file = str(settings.BASE_DIR / "django_pam_simulation_run.json")
             config = {
                 "start_year": form.cleaned_data["start_year"],
                 "end_year": form.cleaned_data["end_year"],
@@ -825,7 +824,6 @@ def create_modelrun(request):
                 "include_tariffs": form.cleaned_data.get("include_tariffs", True),
                 "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", True),
                 "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope") or "plant",
-                "output_file": output_file,
                 # Add new demand and circularity fields
                 "total_steel_demand_scenario": form.cleaned_data.get(
                     "total_steel_demand_scenario", "business_as_usual"

@@ -121,3 +121,12 @@ def test_create_form_records_the_plant_scope_with_clustering_off(
     config = ModelRun.objects.get().config
     assert config["enable_furnace_group_clustering"] is False
     assert config["geographical_clustering_scope"] == "plant"
+
+
+@pytest.mark.django_db
+def test_create_form_stores_no_output_file_key(mock_technology_extraction, client, valid_modelrun_form_data):
+    """A run created through the form carries no ``output_file`` key, which nothing reads."""
+    response = client.post(reverse("create-modelrun"), data=valid_modelrun_form_data)
+
+    assert response.status_code == 302
+    assert "output_file" not in ModelRun.objects.get().config
