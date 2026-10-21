@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import patch
 from django.test.utils import override_settings
@@ -31,6 +33,23 @@ def steelo_home(monkeypatch, tmp_path):
     home = tmp_path / "home"
     monkeypatch.setenv("STEELO_HOME", str(home))
     return home
+
+
+@pytest.fixture
+def prepared_data_directory(tmp_path):
+    """A preparation folder holding the one fixture the run form reads from every ready preparation.
+
+    Args:
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        ``<tmp_path>/prepared``, whose ``data/fixtures/technology_emission_factors.json`` offers the class default
+        emissions boundary.
+    """
+    fixtures = tmp_path / "prepared" / "data" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "technology_emission_factors.json").write_text(json.dumps([{"boundary": "rs-inspired"}]))
+    return tmp_path / "prepared"
 
 
 def add_dynamic_technology_fields(form_data, technologies=None):

@@ -481,6 +481,26 @@ class DataPreparation(models.Model):
             scenarios.insert(0, "Business As Usual")
         return scenarios
 
+    def get_emission_boundaries(self) -> list[str]:
+        """The emissions boundaries the prepared data offers for pricing carbon.
+
+        Returns:
+            The sorted distinct ``boundary`` values of ``fixtures/technology_emission_factors.json``.
+
+        Raises:
+            FileNotFoundError: When the file is missing.
+            ValueError: When the file is not JSON.
+
+        Notes:
+            Unlike ``get_region_emissivity_scenarios`` this fails loudly: every preparation writes the file and the
+            run needs it, so a missing or malformed one is bad data. A record without ``boundary`` raises KeyError.
+        """
+        import json
+
+        path = Path(self.data_directory) / "data" / "fixtures" / "technology_emission_factors.json"
+        records = json.loads(path.read_text(encoding="utf-8"))
+        return sorted({record["boundary"] for record in records})
+
     def has_capacity_pool_fixtures(self) -> bool:
         """Whether the prepared data holds the three capacity pool fixtures an enabled capacity policy needs.
 

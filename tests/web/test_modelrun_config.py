@@ -42,6 +42,7 @@ OFF_DEFAULT_POST = {
     "include_tariffs": False,
     "geographical_clustering_scope": "iso3",
     "chosen_grid_emissions_scenario": "Net Zero",
+    "chosen_emissions_boundary_for_carbon_costs": "worldsteel_opt_credits",
     "hydrogen_ceiling_percentile": 90.0,
     "intraregional_trade_allowed": True,
     "long_dist_pipeline_transport_cost": 2.0,

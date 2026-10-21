@@ -56,7 +56,7 @@ def test_bf_allowed_field_controls_blast_furnace(mock_technology_extraction, cli
             "probability_of_construction": 0.9,
             "top_n_loctechs_as_business_op": 5,
             "chosen_grid_emissions_scenario": "Business As Usual",
-            "chosen_emissions_boundary_for_carbon_costs": "cbam",
+            "chosen_emissions_boundary_for_carbon_costs": "rs-inspired",
             "use_iron_ore_premiums": True,
             "include_tariffs": True,
         },
@@ -78,7 +78,7 @@ def test_bf_allowed_field_controls_blast_furnace(mock_technology_extraction, cli
 
 
 @pytest.mark.django_db
-def test_all_technology_allowed_fields_saved_correctly(mock_technology_extraction, client):
+def test_all_technology_allowed_fields_saved_correctly(mock_technology_extraction, client, prepared_data_directory):
     """Test that all technology allowed fields are saved correctly to config."""
     # Create DataPackages first
     core_package = DataPackage.objects.create(
@@ -100,6 +100,7 @@ def test_all_technology_allowed_fields_saved_correctly(mock_technology_extractio
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
+        data_directory=str(prepared_data_directory),
     )
 
     # Submit the form with specific technology settings using dynamic fields
@@ -166,7 +167,7 @@ def test_all_technology_allowed_fields_saved_correctly(mock_technology_extractio
 
 
 @pytest.mark.django_db
-def test_technology_allowed_defaults_when_not_specified(mock_technology_extraction, client):
+def test_technology_allowed_defaults_when_not_specified(mock_technology_extraction, client, prepared_data_directory):
     """Test that technology allowed fields have correct defaults when not specified."""
     # Create DataPackages first
     core_package = DataPackage.objects.create(
@@ -188,6 +189,7 @@ def test_technology_allowed_defaults_when_not_specified(mock_technology_extracti
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
+        data_directory=str(prepared_data_directory),
     )
 
     # Submit minimal form data without explicit allowed settings
@@ -228,7 +230,7 @@ def test_technology_allowed_defaults_when_not_specified(mock_technology_extracti
 
 
 @pytest.mark.django_db
-def test_disable_all_iron_technologies_scenario(mock_technology_extraction, client):
+def test_disable_all_iron_technologies_scenario(mock_technology_extraction, client, prepared_data_directory):
     """Test scenario where all iron-making technologies are disabled except DRI."""
     # Create DataPackages first
     core_package = DataPackage.objects.create(
@@ -250,6 +252,7 @@ def test_disable_all_iron_technologies_scenario(mock_technology_extraction, clie
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
+        data_directory=str(prepared_data_directory),
     )
 
     # Submit form with only DRI and EAF enabled (hydrogen-based steel scenario)
@@ -298,7 +301,7 @@ def test_disable_all_iron_technologies_scenario(mock_technology_extraction, clie
 
 
 @pytest.mark.django_db
-def test_technology_year_ranges_with_allowed_fields(mock_technology_extraction, client):
+def test_technology_year_ranges_with_allowed_fields(mock_technology_extraction, client, prepared_data_directory):
     """Test that from_year and to_year fields work together with allowed fields."""
     # Create DataPackages first
     core_package = DataPackage.objects.create(
@@ -320,6 +323,7 @@ def test_technology_year_ranges_with_allowed_fields(mock_technology_extraction, 
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
+        data_directory=str(prepared_data_directory),
     )
 
     # Submit form with specific year ranges

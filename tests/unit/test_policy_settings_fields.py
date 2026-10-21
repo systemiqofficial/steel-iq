@@ -1,5 +1,8 @@
 """Test that policy settings fields are properly configured and passed through."""
 
+import tempfile
+from pathlib import Path
+
 import pytest
 from django.test import TestCase
 from steeloweb.forms import ModelRunCreateForm
@@ -59,11 +62,17 @@ class TestPolicySettingsFields(TestCase):
             },
         )
 
+        data_directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (data_directory / "data" / "fixtures").mkdir(parents=True)
+        (data_directory / "data" / "fixtures" / "technology_emission_factors.json").write_text(
+            '[{"boundary": "rs-inspired"}]'
+        )
         data_prep = DataPreparation.objects.create(
             name="Test Data Preparation",
             status=DataPreparation.Status.READY,
             core_data_package=core_package,
             geo_data_package=geo_package,
+            data_directory=str(data_directory),
         )
 
         form_data = {

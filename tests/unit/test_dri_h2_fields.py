@@ -90,7 +90,7 @@ def test_dri_h2_fields_in_form(client, test_user, sample_master_excel, ready_dat
         "probability_of_construction": 0.9,
         "top_n_loctechs_as_business_op": 5,
         "chosen_grid_emissions_scenario": "Business As Usual",
-        "chosen_emissions_boundary_for_carbon_costs": "cbam",
+        "chosen_emissions_boundary_for_carbon_costs": "rs-inspired",
         "use_iron_ore_premiums": True,
         "include_tariffs": True,
         # Other technology settings (required for form)
@@ -195,7 +195,7 @@ def test_dri_h2_fields_disabled(client, test_user, sample_master_excel, ready_da
         "probability_of_construction": 0.9,
         "top_n_loctechs_as_business_op": 5,
         "chosen_grid_emissions_scenario": "Business As Usual",
-        "chosen_emissions_boundary_for_carbon_costs": "cbam",
+        "chosen_emissions_boundary_for_carbon_costs": "rs-inspired",
         "use_iron_ore_premiums": True,
         "include_tariffs": True,
         # Other technology settings (basic set enabled)
@@ -272,7 +272,7 @@ def test_dri_h2_partial_year_range(client, test_user, sample_master_excel, ready
         "probability_of_construction": 0.9,
         "top_n_loctechs_as_business_op": 5,
         "chosen_grid_emissions_scenario": "Business As Usual",
-        "chosen_emissions_boundary_for_carbon_costs": "cbam",
+        "chosen_emissions_boundary_for_carbon_costs": "rs-inspired",
         "use_iron_ore_premiums": True,
         "include_tariffs": True,
         # Other technology settings

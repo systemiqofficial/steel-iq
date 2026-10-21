@@ -532,6 +532,22 @@ def ready_data_preparation(db, tmp_path):
     }
     (fixtures_dir / "region_emissivity.json").write_text(json.dumps(region_emissivity))
 
+    # The run form offers the emissions boundaries of this file, one record per boundary is enough
+    emission_factor = {
+        "business_case": "iron_bf",
+        "technology": "BF",
+        "metallic_charge": "hot_metal",
+        "reductant": "coke",
+        "direct_ghg_factor": 1.0,
+        "direct_with_biomass_ghg_factor": 1.0,
+        "indirect_ghg_factor": 0.1,
+    }
+    technology_emission_factors = [
+        {**emission_factor, "boundary": boundary}
+        for boundary in ("rs-inspired", "worldsteel_no_opt_credits", "worldsteel_opt_credits")
+    ]
+    (fixtures_dir / "technology_emission_factors.json").write_text(json.dumps(technology_emission_factors))
+
     # Create required data packages
     core_package, _ = DataPackage.objects.get_or_create(
         name=DataPackage.PackageType.CORE_DATA,

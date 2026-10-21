@@ -8,7 +8,7 @@ from steeloweb.models import ModelRun, DataPreparation, DataPackage
 
 
 @pytest.mark.django_db
-def test_modelrun_name_field_saved(mock_technology_extraction, client):
+def test_modelrun_name_field_saved(mock_technology_extraction, client, prepared_data_directory):
     """Test that the name field is properly saved when creating a ModelRun."""
     # Create DataPackages first
     core_package = DataPackage.objects.create(
@@ -30,6 +30,7 @@ def test_modelrun_name_field_saved(mock_technology_extraction, client):
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
+        data_directory=str(prepared_data_directory),
     )
 
     # Submit the form with a name
@@ -78,7 +79,7 @@ def test_modelrun_name_field_saved(mock_technology_extraction, client):
 
 
 @pytest.mark.django_db
-def test_modelrun_without_name(mock_technology_extraction, client):
+def test_modelrun_without_name(mock_technology_extraction, client, prepared_data_directory):
     """Test that ModelRun works without a name (blank name)."""
     # Create DataPackages first
     core_package = DataPackage.objects.create(
@@ -100,6 +101,7 @@ def test_modelrun_without_name(mock_technology_extraction, client):
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
+        data_directory=str(prepared_data_directory),
     )
 
     # Submit the form without a name

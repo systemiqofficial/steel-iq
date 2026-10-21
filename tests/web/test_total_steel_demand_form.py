@@ -1,5 +1,8 @@
 """Integration tests for total steel demand scenario form field."""
 
+import tempfile
+from pathlib import Path
+
 from django.test import TestCase
 from django.urls import reverse
 from unittest.mock import patch
@@ -65,11 +68,17 @@ class TestTotalSteelDemandForm(TestCase):
             },
         )
 
+        data_directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (data_directory / "data" / "fixtures").mkdir(parents=True)
+        (data_directory / "data" / "fixtures" / "technology_emission_factors.json").write_text(
+            '[{"boundary": "rs-inspired"}]'
+        )
         data_preparation = DataPreparation.objects.create(
             name="Test Data Preparation",
             status=DataPreparation.Status.READY,
             core_data_package=core_package,
             geo_data_package=geo_package,
+            data_directory=str(data_directory),
         )
 
         form_data = {

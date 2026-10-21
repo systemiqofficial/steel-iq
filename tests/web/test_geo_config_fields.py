@@ -56,7 +56,7 @@ def data_packages(db):
 
 
 @pytest.fixture
-def data_preparation(db, data_packages):
+def data_preparation(db, data_packages, prepared_data_directory):
     """Create a ready data preparation for model runs."""
     core_package, geo_package = data_packages
     return DataPreparation.objects.create(
@@ -64,7 +64,7 @@ def data_preparation(db, data_packages):
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
-        data_directory="/fake/path",
+        data_directory=str(prepared_data_directory),
     )
 
 

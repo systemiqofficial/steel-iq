@@ -502,6 +502,15 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.Select(attrs={"class": "form-select field-connected"}),
     )
 
+    chosen_emissions_boundary_for_carbon_costs = forms.ChoiceField(
+        label="Carbon cost emissions boundary",
+        choices=[],
+        initial=config_default("chosen_emissions_boundary_for_carbon_costs"),
+        required=False,
+        help_text="Emissions boundary whose emissions carbon prices are charged on; the choices come from the data preparation",
+        widget=forms.Select(attrs={"class": "form-select field-connected"}),
+    )
+
     carbon_border_export_rebates = forms.BooleanField(
         label="Carbon border export rebates",
         initial=config_default("carbon_border_export_rebates"),
@@ -890,6 +899,12 @@ class ModelRunCreateForm(forms.ModelForm):
         if scenarios and self.fields["chosen_grid_emissions_scenario"].initial not in scenarios:
             self.fields["chosen_grid_emissions_scenario"].initial = scenarios[0]
 
+        boundaries = active_prep.get_emission_boundaries() if active_prep is not None else []
+        boundary_field = self.fields["chosen_emissions_boundary_for_carbon_costs"]
+        boundary_field.choices = [(boundary, boundary) for boundary in boundaries]
+        if boundaries and boundary_field.initial not in boundaries:
+            boundary_field.initial = boundaries[0]
+
     class Meta:
         model = ModelRun
         fields = [
@@ -933,6 +948,7 @@ class ModelRunCreateForm(forms.ModelForm):
             "enable_furnace_group_clustering",
             "geographical_clustering_scope",
             "chosen_grid_emissions_scenario",
+            "chosen_emissions_boundary_for_carbon_costs",
             "carbon_border_export_rebates",
             "capacity_policy_enabled",
             "capacity_policy_replacement_ratio",

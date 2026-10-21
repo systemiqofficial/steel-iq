@@ -86,6 +86,7 @@ function resetPolicySettings() {
     if (gridScenario && !gridScenario.disabled) {
         gridScenario.value = 'Business As Usual';
     }
+    document.getElementById('id_chosen_emissions_boundary_for_carbon_costs').value = '{{ form.fields.chosen_emissions_boundary_for_carbon_costs.initial }}';
     document.getElementById('id_carbon_border_export_rebates').checked = {{ form.fields.carbon_border_export_rebates.initial|yesno:"true,false" }};
     document.getElementById('id_capacity_policy_enabled').checked = {{ form.fields.capacity_policy_enabled.initial|yesno:"true,false" }};
     // Trigger change to update dependent field disabled state
@@ -1256,6 +1257,19 @@ document.head.appendChild(style);
                                                 <li>The new scenario will appear here as <strong>"Your Name"</strong> (e.g. <strong>"High Renewables"</strong>)</li>
                                             </ul>
                                         </small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.chosen_emissions_boundary_for_carbon_costs.id_for_label }}" class="col-sm-3 col-form-label">{{ form.chosen_emissions_boundary_for_carbon_costs.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.chosen_emissions_boundary_for_carbon_costs }}
+                                        <small class="form-text text-muted">{{ form.chosen_emissions_boundary_for_carbon_costs.help_text }}</small>
+                                        {% if form.chosen_emissions_boundary_for_carbon_costs.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.chosen_emissions_boundary_for_carbon_costs.errors }}
+                                        </div>
+                                        {% endif %}
                                     </div>
                                 </div>
 
