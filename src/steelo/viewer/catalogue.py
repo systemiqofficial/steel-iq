@@ -12,7 +12,7 @@ import logging
 import re
 from dataclasses import MISSING, asdict, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..capacity_policy.config import CapacityPolicyConfig
 from ..domain.constants import MT_TO_T
@@ -59,8 +59,341 @@ EXCLUDED_SETTINGS = frozenset(
         "geo_config.random_seed",
     }
 )
-TONNE_FIELDS = frozenset({"expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"})
 MADE_IN = {"cli": "CLI", "app": "App", None: "unknown"}
+
+
+class SettingFormat(NamedTuple):
+    """How one counted setting reads in the viewer."""
+
+    label: str  # In its group of the run details
+    full: str = ""  # Standing alone: the filters and the run details' lists; the label when empty
+    unit: str = ""  # After the number, muted in the run details
+    template: str = "{}"  # The number with its symbols: "{}%", "{}×", "÷ {}"
+    scale: float = 1  # Config value to the number shown
+    none: str = "none"
+    yes_no: bool = False  # True and False as yes and no, not on and off
+
+
+SHARE: dict[str, Any] = {"template": "{}%", "scale": 100}
+TECHNOLOGIES = "technology_settings."
+LAND_COVER = "geo_config.land_cover_factor."
+TRADE_MATRIX = "geo_config.intraregional_trade_matrix."
+SETTING_FORMATS = {
+    "start_year": SettingFormat("Start year"),
+    "end_year": SettingFormat("End year"),
+    "seed": SettingFormat("Seed"),
+    "chosen_demand_scenario": SettingFormat("Steel demand"),
+    "chosen_scrap_scenario": SettingFormat("Scrap availability"),
+    "chosen_grid_emissions_scenario": SettingFormat("Grid emissions"),
+    "chosen_emissions_boundary_for_carbon_costs": SettingFormat(
+        "Emissions boundary", full="Carbon cost emissions boundary"
+    ),
+    "carbon_border_export_rebates": SettingFormat("Border export rebates", full="Carbon border export rebates"),
+    "include_tariffs": SettingFormat("Tariffs"),
+    "capacity_policy.enabled": SettingFormat("Capacity policy"),
+    "capacity_policy.replacement_ratio": SettingFormat(
+        "Replacement ratio, old to new", full="Capacity policy replacement ratio", template="{} : 1"
+    ),
+    "capacity_policy.emission_intense_penalty_divisor": SettingFormat(
+        "Emission-intense build divisor", full="Capacity policy emission-intense build divisor", template="÷ {}"
+    ),
+    "capacity_policy.min_utilization_for_renovation": SettingFormat(
+        "Minimum utilisation for renovation", full="Capacity policy minimum utilisation for renovation", **SHARE
+    ),
+    "capacity_policy.utilization_window_years": SettingFormat(
+        "Utilisation window", full="Capacity policy utilisation window", unit="years"
+    ),
+    "capacity_policy.inter_company_swap_cutoff_year": SettingFormat(
+        "Inter-company swap cut-off", full="Capacity policy inter-company swap cut-off"
+    ),
+    "capacity_policy.banked_credit_rule": SettingFormat("Banked credits", full="Capacity policy banked credits"),
+    "capacity_policy.credit_validity_years": SettingFormat(
+        "Credit validity", full="Capacity policy credit validity", unit="years", none="never expires"
+    ),
+    "capacity_policy.capacity_pool_max_retry_years": SettingFormat(
+        "Greenfield retry limit", full="Capacity policy greenfield retry limit", unit="years"
+    ),
+    "capacity_policy.renovation_counts_as_replace": SettingFormat(
+        "Renovation counts as replacement", full="Capacity policy renovation counts as replacement", yes_no=True
+    ),
+    "plant_lifetime": SettingFormat("Plant lifetime", unit="years"),
+    "equity_share": SettingFormat("Equity share", **SHARE),
+    "global_risk_free_rate": SettingFormat("Risk-free rate", full="Global risk-free rate", **SHARE),
+    "opening_balance_multiplier": SettingFormat("Opening balance multiplier", template="{}×"),
+    "active_statuses": SettingFormat("Active", full="Active statuses"),
+    "announced_statuses": SettingFormat("Announced", full="Announced statuses"),
+    "expanded_capacity": SettingFormat("Expansion or new plant size", unit="Mt", scale=1 / MT_TO_T),
+    "capacity_limit_iron": SettingFormat(
+        "Yearly limit, iron", full="Yearly new capacity limit, iron", unit="Mt", scale=1 / MT_TO_T
+    ),
+    "capacity_limit_steel": SettingFormat(
+        "Yearly limit, steel", full="Yearly new capacity limit, steel", unit="Mt", scale=1 / MT_TO_T
+    ),
+    "new_capacity_share_from_new_plants": SettingFormat(
+        "Share from new plants", full="Share of new capacity from new plants", **SHARE
+    ),
+    "consideration_time": SettingFormat("Consideration", full="Consideration time", unit="years"),
+    "construction_time": SettingFormat("Construction", full="Construction time", unit="years"),
+    "probabilistic_agents": SettingFormat("Probabilistic agents"),
+    "probability_of_announcement": SettingFormat("Announcement probability", **SHARE),
+    "probability_of_construction": SettingFormat("Construction probability", **SHARE),
+    "geo_config.pick_priority_sites_share": SettingFormat(
+        "Priority sites", full="Priority sites share", unit="of grid points", **SHARE
+    ),
+    "calculate_npv_sites_share": SettingFormat(
+        "NPV sample", full="NPV sample share", unit="of priority sites", **SHARE
+    ),
+    "top_n_loctechs_as_business_op": SettingFormat("Top opportunities per product and year"),
+    "opportunity_pool_depth": SettingFormat("Pool depth", full="Opportunity pool depth"),
+    "co2_storage_reserved_discount_factor": SettingFormat("CCS storage reservation", unit="of CO₂ need", **SHARE),
+    "geo_config.max_altitude": SettingFormat("Maximum altitude", unit="m"),
+    "geo_config.max_slope": SettingFormat("Maximum slope", template="{}°"),
+    "geo_config.max_latitude": SettingFormat("Maximum latitude", template="{}°"),
+    "geo_config.include_transport_cost": SettingFormat("Transport cost"),
+    "geo_config.transportation_cost_per_km_per_ton.iron_mine_to_plant": SettingFormat(
+        "Mine → iron plant", full="Transport cost, mine → iron plant", unit="USD/t/km"
+    ),
+    "geo_config.transportation_cost_per_km_per_ton.iron_to_steel_plant": SettingFormat(
+        "Iron plant → steel plant", full="Transport cost, iron plant → steel plant", unit="USD/t/km"
+    ),
+    "geo_config.transportation_cost_per_km_per_ton.steel_to_demand": SettingFormat(
+        "Steel plant → demand", full="Transport cost, steel plant → demand", unit="USD/t/km"
+    ),
+    "geo_config.include_infrastructure_cost": SettingFormat("Rail infrastructure cost"),
+    "geo_config.iron_ore_steel_ratio": SettingFormat("Iron ore per tonne of steel", unit="t"),
+    "geo_config.share_iron_vs_steel.iron.capex_share": SettingFormat("Ironmaking share of CAPEX", **SHARE),
+    "geo_config.share_iron_vs_steel.steel.capex_share": SettingFormat("Steelmaking share of CAPEX", **SHARE),
+    "geo_config.share_iron_vs_steel.iron.energy_consumption_per_t": SettingFormat(
+        "Ironmaking energy use", unit="MWh/t"
+    ),
+    "geo_config.share_iron_vs_steel.steel.energy_consumption_per_t": SettingFormat(
+        "Steelmaking energy use", unit="MWh/t"
+    ),
+    "geo_config.include_lulc_cost": SettingFormat("Land cover cost"),
+    "geo_config.excluded_greenfield_technologies": SettingFormat("Excluded from greenfield"),
+    "geo_config.included_power_mix": SettingFormat("Power mix"),
+    "geo_config.hydrogen_ceiling_percentile": SettingFormat("Hydrogen price ceiling"),
+    "geo_config.long_dist_pipeline_transport_cost": SettingFormat(
+        "Long-distance pipeline", full="Long-distance hydrogen pipeline cost", unit="USD/kg H₂"
+    ),
+    "geo_config.intraregional_trade_allowed": SettingFormat("Intraregional hydrogen trade"),
+    "optimization_solver": SettingFormat("Solver", full="LP solver"),
+    "lp_epsilon": SettingFormat("Epsilon", full="LP epsilon"),
+    "capacity_limit": SettingFormat("Capacity availability", **SHARE),
+    "soft_minimum_capacity_share": SettingFormat("Soft minimum utilisation", **SHARE),
+    "enable_furnace_group_clustering": SettingFormat("Furnace group clustering"),
+    "geographical_clustering_scope": SettingFormat("Scope", full="Clustering scope"),
+    "hot_metal_radius": SettingFormat("Hot metal radius", unit="km"),
+    "primary_products": SettingFormat("Primary", full="Primary products"),
+    "closely_allocated_products": SettingFormat("Closely allocated", full="Closely allocated products"),
+    "distantly_allocated_products": SettingFormat("Distantly allocated", full="Distantly allocated products"),
+    "steel_price_buffer": SettingFormat("Steel", full="Steel shortage premium", unit="USD/t"),
+    "iron_price_buffer": SettingFormat("Iron", full="Iron shortage premium", unit="USD/t"),
+    "steel_market_clearing_share": SettingFormat("Steel", full="Steel market clearing share", **SHARE),
+    "iron_market_clearing_share": SettingFormat("Iron", full="Iron market clearing share", **SHARE),
+    "peg_iron_to_steel_price": SettingFormat("Iron price peg"),
+    "iron_to_steel_price_ratio": SettingFormat("Iron price floor", unit="of steel price", **SHARE),
+    "initial_scrap_production_cost": SettingFormat(
+        "Initial scrap cost", full="Initial scrap production cost", unit="USD/t"
+    ),
+    "use_iron_ore_premiums": SettingFormat("Iron ore premiums"),
+    "disposal_cost_outputs": SettingFormat("Priced as disposal", full="Outputs priced as disposal costs"),
+}
+# The run details in reading order: the run, its levers, then the model from plants to prices. A group lists its
+# settings in rows or takes every key under its prefix; its switch, when off, greys it out.
+SETTINGS_LAYOUT: list[dict[str, Any]] = [
+    {
+        "title": "Overview",
+        "tiles": [
+            ["Period", ["start_year", "end_year"]],
+            ["Seed", ["seed"]],
+            ["Steel demand", ["chosen_demand_scenario"]],
+            ["Scrap availability", ["chosen_scrap_scenario"]],
+            ["Grid emissions", ["chosen_grid_emissions_scenario"]],
+        ],
+        "groups": [],
+    },
+    {
+        "title": "Policy",
+        "groups": [
+            {
+                "title": "Carbon cost",
+                "rows": ["chosen_emissions_boundary_for_carbon_costs", "carbon_border_export_rebates"],
+            },
+            {"title": "Trade policy", "rows": ["include_tariffs"]},
+            {
+                "title": "Capacity policy",
+                "switch": "capacity_policy.enabled",
+                "off": "Not used while the policy is off",
+                "wide": True,
+                "columns": True,
+                "rows": [
+                    "capacity_policy.replacement_ratio",
+                    "capacity_policy.emission_intense_penalty_divisor",
+                    "capacity_policy.min_utilization_for_renovation",
+                    "capacity_policy.utilization_window_years",
+                    "capacity_policy.inter_company_swap_cutoff_year",
+                    "capacity_policy.banked_credit_rule",
+                    "capacity_policy.credit_validity_years",
+                    "capacity_policy.capacity_pool_max_retry_years",
+                    "capacity_policy.renovation_counts_as_replace",
+                ],
+            },
+        ],
+    },
+    {
+        "title": "Technologies",
+        "groups": [
+            {
+                "kind": "technologies",
+                "prefix": TECHNOLOGIES,
+                "greenfield": "geo_config.excluded_greenfield_technologies",
+                "wide": True,
+                "rows": [],
+            },
+        ],
+    },
+    {
+        "title": "Plants",
+        "groups": [
+            {
+                "title": "Lifetime and finance",
+                "rows": ["plant_lifetime", "equity_share", "global_risk_free_rate", "opening_balance_multiplier"],
+            },
+            {"title": "Statuses", "lines": True, "wide": True, "rows": ["active_statuses", "announced_statuses"]},
+        ],
+    },
+    {
+        "title": "New capacity",
+        "groups": [
+            {
+                "title": "Additions",
+                "rows": [
+                    "expanded_capacity",
+                    "capacity_limit_iron",
+                    "capacity_limit_steel",
+                    "new_capacity_share_from_new_plants",
+                ],
+            },
+            {"title": "Timing", "rows": ["consideration_time", "construction_time"]},
+            {
+                "title": "Probabilistic agents",
+                "switch": "probabilistic_agents",
+                "off": "Forced to deterministic values while off",
+                "rows": [
+                    "probability_of_announcement",
+                    "probability_of_construction",
+                    "geo_config.pick_priority_sites_share",
+                    "calculate_npv_sites_share",
+                ],
+            },
+            {
+                "title": "Opportunity selection",
+                "rows": [
+                    "top_n_loctechs_as_business_op",
+                    "opportunity_pool_depth",
+                    "co2_storage_reserved_discount_factor",
+                ],
+            },
+        ],
+    },
+    {
+        "title": "Site selection",
+        "groups": [
+            {
+                "title": "Feasibility",
+                "rows": ["geo_config.max_altitude", "geo_config.max_slope", "geo_config.max_latitude"],
+            },
+            {
+                "title": "Transport cost",
+                "switch": "geo_config.include_transport_cost",
+                "off": "Not used while off",
+                "rows": [
+                    "geo_config.transportation_cost_per_km_per_ton.iron_mine_to_plant",
+                    "geo_config.transportation_cost_per_km_per_ton.iron_to_steel_plant",
+                    "geo_config.transportation_cost_per_km_per_ton.steel_to_demand",
+                ],
+            },
+            {
+                "title": "Site cost estimate",
+                "rows": [
+                    "geo_config.include_infrastructure_cost",
+                    "geo_config.iron_ore_steel_ratio",
+                    "geo_config.share_iron_vs_steel.iron.capex_share",
+                    "geo_config.share_iron_vs_steel.steel.capex_share",
+                    "geo_config.share_iron_vs_steel.iron.energy_consumption_per_t",
+                    "geo_config.share_iron_vs_steel.steel.energy_consumption_per_t",
+                ],
+            },
+            {
+                "title": "Land cover",
+                "switch": "geo_config.include_lulc_cost",
+                "off": "Not used while off",
+                "note": "Multiplies a new plant's CAPEX; 1× adds nothing",
+                "kind": "bars",
+                "prefix": LAND_COVER,
+                "wide": True,
+                "rows": [],
+            },
+        ],
+    },
+    {
+        "title": "Power and hydrogen",
+        "groups": [
+            {"title": "Power", "rows": ["geo_config.included_power_mix"]},
+            {
+                "title": "Hydrogen",
+                "rows": ["geo_config.hydrogen_ceiling_percentile", "geo_config.long_dist_pipeline_transport_cost"],
+            },
+            {
+                "title": "Intraregional hydrogen trade",
+                "switch": "geo_config.intraregional_trade_allowed",
+                "off": "Not used while off",
+                "note": "Each region imports hydrogen from the regions listed against it",
+                "kind": "regions",
+                "prefix": TRADE_MATRIX,
+                "wide": True,
+                "rows": [],
+            },
+        ],
+    },
+    {
+        "title": "Trade",
+        "groups": [
+            {"title": "Solver", "rows": ["optimization_solver", "lp_epsilon"]},
+            {"title": "Capacity use", "rows": ["capacity_limit", "soft_minimum_capacity_share"]},
+            {"title": "Clustering", "rows": ["enable_furnace_group_clustering", "geographical_clustering_scope"]},
+            {
+                "title": "Products",
+                "lines": True,
+                "wide": True,
+                "rows": [
+                    "hot_metal_radius",
+                    "primary_products",
+                    "closely_allocated_products",
+                    "distantly_allocated_products",
+                ],
+            },
+        ],
+    },
+    {
+        "title": "Prices and costs",
+        "groups": [
+            {"title": "Shortage premium", "rows": ["steel_price_buffer", "iron_price_buffer"]},
+            {"title": "Market clearing share", "rows": ["steel_market_clearing_share", "iron_market_clearing_share"]},
+            {
+                "title": "Iron price peg",
+                "switch": "peg_iron_to_steel_price",
+                "off": "Not used while off",
+                "rows": ["iron_to_steel_price_ratio"],
+            },
+            {
+                "title": "Costs",
+                "rows": ["initial_scrap_production_cost", "use_iron_ore_premiums", "disposal_cost_outputs"],
+            },
+        ],
+    },
+]
 # Folders named in a "skipped" warning since they were last listed, so a run in progress is named once, not with
 # every page load, and a listed run that loses run.json is named again
 WARNED_SKIPPED: set[Path] = set()
@@ -147,56 +480,125 @@ def flatten_settings(config: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in flat.items() if key not in EXCLUDED_SETTINGS}
 
 
+def setting_format(key: str) -> SettingFormat:
+    """How one counted setting reads in the viewer.
+
+    Args:
+        key: The setting's dotted key.
+
+    Returns:
+        Its ``SETTING_FORMATS`` entry; for a technology, land cover class or region, whose keys come from the data,
+        one built from the entry's name; for a setting not listed, its last field name with underscores as spaces
+        ("Capacity policy: <field>" under ``capacity_policy``, "<field>: <entry>" for an entry of a dict setting).
+    """
+    if key in SETTING_FORMATS:
+        return SETTING_FORMATS[key]
+    parts = key.split(".")
+    if key.startswith(TECHNOLOGIES):
+        code, name = parts[1], parts[2]
+        if name == "allowed":
+            return SettingFormat(f"{code} allowed", yes_no=True)
+        if name == "from_year":
+            return SettingFormat(f"{code} available from")
+        if name == "to_year":
+            return SettingFormat(f"{code} available until", none="open")
+        return SettingFormat(f"{code} {name.replace('_', ' ')}")
+    if key.startswith(LAND_COVER):
+        name = key.removeprefix(LAND_COVER)
+        return SettingFormat(name, full=f"Land cover factor, {name}", template="{}×")
+    if key.startswith(TRADE_MATRIX):
+        region = key.removeprefix(TRADE_MATRIX)
+        return SettingFormat(region, full=f"{region} imports hydrogen from")
+    if parts[0] == "capacity_policy":
+        return SettingFormat(f"Capacity policy: {parts[1].replace('_', ' ')}")
+    if parts[0] == "geo_config":
+        parts = parts[1:]
+    label = parts[0].replace("_", " ")
+    label = label[:1].upper() + label[1:]
+    return SettingFormat(f"{label}: {' '.join(parts[1:]).replace('_', ' ')}" if len(parts) > 1 else label)
+
+
+def ordinal(number: float) -> str:
+    """A number as an ordinal.
+
+    Args:
+        number: A whole or decimal number.
+
+    Returns:
+        "1st", "2nd", "3rd", "11th", "20th"; "th" after a decimal ("37.5th").
+    """
+    text = format(number, ".15g")
+    if not text.isdigit():
+        return f"{text}th"
+    whole = int(text)
+    return text + ("th" if whole % 100 in (11, 12, 13) else {1: "st", 2: "nd", 3: "rd"}.get(whole % 10, "th"))
+
+
 def format_value(key: str, value: Any) -> str:
-    """One setting's value as the viewer shows it, in filters and in the run detail.
+    """One setting's value as the viewer shows it, in filters and in the run details.
 
     Args:
         key: The setting's dotted key.
         value: Its value from the config file.
 
     Returns:
-        "none" for None and for an empty list, "on" or "off" for booleans, a list joined with ", ", a float through
-        ``format(value, ".15g")``, the fields in ``TONNE_FIELDS`` in Mt with the unit ("2.5 Mt"), anything else as
-        ``str``.
+        For None the format's ``none`` text ("none", "open", "never expires"); "none" for an empty list; "on" or
+        "off" for booleans, "yes" or "no" where the format says so; a list joined with ", "; a number scaled, put in
+        its template and followed by its unit ("20%", "2.5 Mt", "200 USD/t"); the hydrogen ceiling as "no cap" at
+        100 and as a percentile below ("20th percentile"); anything else as ``str``.
 
     Notes:
         Fifteen significant digits keep every digit a setting is given with, so two runs differing in a late digit
         still differ here, while 100.0 still reads "100".
     """
+    spec = setting_format(key)
     if value is None:
-        return "none"
+        return spec.none
     if isinstance(value, bool):
+        if spec.yes_no:
+            return "yes" if value else "no"
         return "on" if value else "off"
     if isinstance(value, list):
         return ", ".join(str(item) for item in value) if value else "none"
-    if key in TONNE_FIELDS:
-        return f"{value / MT_TO_T:.15g} Mt"
-    if isinstance(value, float):
-        return format(value, ".15g")
-    return str(value)
+    if not isinstance(value, (int, float)):
+        return str(value)
+    # GeoConfig: a ceiling at the 100th percentile caps nothing
+    if key == "geo_config.hydrogen_ceiling_percentile":
+        return "no cap" if value >= 100 else f"{ordinal(value)} percentile"
+    number = str(value) if isinstance(value, int) and spec.scale == 1 else format(value * spec.scale, ".15g")
+    text = spec.template.format(number)
+    return f"{text} {spec.unit}" if spec.unit else text
 
 
 def label_for(key: str) -> str:
-    """A setting's display label.
+    """A setting's label standing alone: in the filters and the run details' lists.
 
     Args:
         key: The setting's dotted key.
 
     Returns:
-        The last field name with underscores as spaces and its first letter capitalised ("Hydrogen ceiling
-        percentile"); "Capacity policy: <field>" for ``capacity_policy.*``; "<code> <field>" for
-        ``technology_settings.*``; "<field>: <entry>" for an entry of a dict setting.
+        The full label of its :func:`setting_format`, or its label when it has no full one.
     """
-    parts = key.split(".")
-    if parts[0] == "technology_settings":
-        return f"{parts[1]} {parts[2].replace('_', ' ')}"
-    if parts[0] == "capacity_policy":
-        return f"Capacity policy: {parts[1].replace('_', ' ')}"
-    if parts[0] == "geo_config":
-        parts = parts[1:]
-    label = parts[0].replace("_", " ")
-    label = label[:1].upper() + label[1:]
-    return f"{label}: {' '.join(parts[1:]).replace('_', ' ')}" if len(parts) > 1 else label
+    spec = setting_format(key)
+    return spec.full or spec.label
+
+
+def settings_layout() -> list[dict[str, Any]]:
+    """The run details' sections as the manifest carries them.
+
+    Returns:
+        ``SETTINGS_LAYOUT`` with each group's ``rows`` as ``[key, label, unit]``, the label as the group shows it.
+    """
+    return [
+        {
+            **section,
+            "groups": [
+                {**group, "rows": [[key, setting_format(key).label, setting_format(key).unit] for key in group["rows"]]}
+                for group in section["groups"]
+            ],
+        }
+        for section in SETTINGS_LAYOUT
+    ]
 
 
 def default_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -283,12 +685,45 @@ def ordered_values(values: set[str]) -> list[str]:
         values: The formatted values the runs hold.
 
     Returns:
-        The values in numeric order when every one is a number, else in natural order.
+        The values in numeric order when every one starts with a number ("2.25 Mt" before "10 Mt"), else in natural
+        order.
     """
-    try:
-        return sorted(values, key=float)
-    except ValueError:
-        return sorted(values, key=natural_key)
+    matches = [match for value in values if (match := re.match(r"-?\d+(?:\.\d+)?(?:e[-+]?\d+)?", value))]
+    if len(matches) == len(values):
+        return [match.string for match in sorted(matches, key=lambda match: (float(match.group()), match.string))]
+    return sorted(values, key=natural_key)
+
+
+def setting_entry(key: str, value: Any, defaults: dict[str, Any], varies: bool) -> dict[str, Any]:
+    """One counted setting of a run as the run details show it.
+
+    Args:
+        key: The setting's dotted key.
+        value: Its value from the run's config file.
+        defaults: The run's :func:`default_settings`.
+        varies: Whether the setting differs between the listed runs.
+
+    Returns:
+        ``key``, ``label`` (:func:`label_for`), ``value`` (:func:`format_value`), ``changed`` (null when the default
+        is unknown) and ``varies``; plus the formatted ``default`` when changed, the ``items`` of a list and the
+        ``bool`` of a switch.
+    """
+    text = format_value(key, value)
+    default = format_value(key, defaults[key]) if key in defaults else None
+    entry: dict[str, Any] = {
+        "key": key,
+        "label": label_for(key),
+        "value": text,
+        "changed": None if default is None else text != default,
+        "varies": varies,
+    }
+    if entry["changed"]:
+        entry["default"] = default
+    if isinstance(value, list):
+        entry["items"] = [str(item) for item in value]
+    if isinstance(value, bool):
+        entry["bool"] = value
+    return entry
 
 
 def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
@@ -300,10 +735,10 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
 
     Returns:
         ``{"title", "sets": [set]}``, the set holding ``dimensions`` (made in when asked, input data and the
-        counted settings when they differ between runs, seed always, run on a collision), ``plots`` and ``runs``
-        oldest first. Each run carries ``dir``, ``name``, ``made_in``, ``started``, ``input_data``, ``link``,
-        ``dims``, ``plots`` and ``settings``: every counted setting with its label, formatted value, ``changed``
-        (null when the default is unknown) and ``varies``.
+        counted settings when they differ between runs, seed always, run on a collision), ``plots``, ``runs``
+        oldest first and the run details' ``settings_layout``. Each run carries ``dir``, ``name``, ``made_in``,
+        ``started``, ``input_data``, ``link``, ``dims``, ``plots`` and ``settings``: every counted setting as
+        :func:`setting_entry` gives it.
 
     Raises:
         json.JSONDecodeError: If a run's ``run.json`` or ``simulation_config.json`` does not parse.
@@ -316,14 +751,15 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
     loaded = []
     for run_dir in run_dirs:
         config = json.loads((run_dir / CONFIG_NAME).read_text())
-        settings = {key: format_value(key, value) for key, value in flatten_settings(config).items()}
-        defaults = {key: format_value(key, value) for key, value in default_settings(config).items()}
-        loaded.append((run_dir, read_run(run_dir), settings, defaults))
+        loaded.append((run_dir, read_run(run_dir), flatten_settings(config), default_settings(config)))
     loaded.sort(key=lambda item: item[1]["started"])
 
     setting_keys = list(dict.fromkeys(key for _, _, settings, _ in loaded for key in settings))
     # A setting one run's config lacks (another master's technologies, an older run) reads "none" for it
-    values = [{key: settings.get(key, "none") for key in setting_keys} for _, _, settings, _ in loaded]
+    values = [
+        {key: format_value(key, settings[key]) if key in settings else "none" for key in setting_keys}
+        for _, _, settings, _ in loaded
+    ]
     input_data = [input_data_label(run) for _, run, _, _ in loaded]
     columns: list[tuple[str, list[str]]] = []
     if with_made_in:
@@ -354,16 +790,7 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
             "link": f"runs/{run_dir.name}/",
             "dims": {key: column[i] for key, column in columns},
             "plots": run["pages"],
-            "settings": [
-                {
-                    "key": key,
-                    "label": label_for(key),
-                    "value": value,
-                    "changed": value != defaults[key] if key in defaults else None,
-                    "varies": key in varying,
-                }
-                for key, value in settings.items()
-            ],
+            "settings": [setting_entry(key, value, defaults, key in varying) for key, value in settings.items()],
         }
         for i, (run_dir, run, settings, defaults) in enumerate(loaded)
     ]
@@ -381,6 +808,7 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
                 "dimensions": dimensions,
                 "plots": [{"file": page, "label": plot_label(page)} for page in plots],
                 "runs": runs,
+                "settings_layout": settings_layout(),
             }
         ],
     }

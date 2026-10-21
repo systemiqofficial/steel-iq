@@ -50,10 +50,19 @@ const TOUR_STEPS = [
     body: "<p>With nothing picked, every run sits in one table, one row per run: its scenario's <b>#n</b>, "
       + "its name, when it started and the input data it used. A faded row is left out by the filters.</p>"
       + "<p>Click a row to explore that run, or switch the toggle to pick two for the split view. "
-      + "<i>details</i> lists every setting of the run, marked <i>changed</i> where it differs from the "
-      + "default and <i>varies</i> where it differs between the runs, with a link to the run's folder.</p>"
+      + "<i>details</i> opens the run's settings, shown next.</p>"
       + "<p>The same table picks in Compare, Annual costs, View data and Download results, and "
       + "<i>all runs</i> beside the scenario list brings it back.</p>",
+  },
+  {
+    title: "Run details",
+    target: "#explore-pane .rd-sec", at: "bottom",
+    before: (h, app) => { app.setMode("explore"); h.sidebar(); h.overview(); h.details(); },
+    body: "<p>The top answers what sets the run apart: its period, seed and scenarios, then every setting "
+      + "<b>changed from the default</b> and every one that <b>varies across the listed runs</b>. Click one to "
+      + "jump to it.</p>"
+      + "<p>The contents beside it jump to each group of settings. A blue dot marks a change, a purple dot a "
+      + "difference between the runs, and a greyed group is switched off.</p>",
   },
   {
     title: "Scenarios",
@@ -191,6 +200,14 @@ function createTour(app) {
       if (!app.viewer().getScenario()) return;
       app.sidebar().setScenario(null);
       app.viewer().show(null);
+    },
+    // The first run's details in the run table; closed again at the end.
+    details: () => {
+      if (q("#explore-pane .rt-details")) return;
+      const more = q("#explore-pane .rt-more");
+      if (!more) return;
+      more.click();
+      undo.push(() => { if (more.isConnected && more.textContent === "hide") more.click(); });
     },
     // Multi mode: tick listed scenarios until two are picked.
     pickTwo: () => {
