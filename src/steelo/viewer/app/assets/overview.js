@@ -13,44 +13,325 @@ const rtCount = (n, noun) => n + " " + noun + (n === 1 ? "" : "s");
 // "2026-10-20T21:11:34" to the minute.
 const runTableDate = run => run.started.slice(0, 16).replace("T", " ");
 
-// A null flag: no technologies.json for a technology setting, or a field without a default.
-function runTableChanged(s) {
-  if (s.changed === null) return s.key.startsWith("technology_settings.") ? "defaults unknown" : "no default";
-  return s.changed ? "changed" : null;
-}
-
-// One run's details, as a row under its own spanning the table.
-function runTableDetails(run, span) {
+// One run's details, as a row under its own spanning the table: an overview of what sets the run apart, then the
+// sections of set.settings_layout with a contents list beside them.
+function runTableDetails(run, span, set) {
   const tr = rtEl("tr", "rt-details");
   const td = tr.insertCell();
   td.colSpan = span;
-  const facts = rtEl("dl", "rt-facts");
-  for (const [label, value] of [["Name", run.name], ["Folder", run.dir], ["Made in", run.made_in],
-                                ["Started", runTableDate(run)], ["Input data", run.input_data]])
-    facts.append(rtEl("dt", null, label), rtEl("dd", null, value));
-  const link = rtEl("a", null, run.link);
+  const ctx = { settings: new Map(run.settings.map(s => [s.key, s])), placed: new Map(), sections: [], pinned: 0 };
+  const sheet = rtEl("div", "rd-sheet");
+  for (const section of set.settings_layout) {
+    const before = ctx.placed.size;
+    const node = rtEl("section", "rd-sec");
+    if (section.tiles) node.appendChild(rdOverview(ctx, section, run));
+    else {
+      const groups = rtEl("div", "rd-groups");
+      for (const g of section.groups) groups.appendChild(rdGroup(ctx, g));
+      node.append(rtEl("h3", null, section.title), groups);
+    }
+    sheet.appendChild(node);
+    ctx.sections.push({ title: section.title, node, states: [...ctx.placed.values()].slice(before).map(p => p.s) });
+  }
+  // A setting the layout does not name yet still shows.
+  const other = run.settings.filter(s => !ctx.placed.has(s.key));
+  if (other.length) {
+    const node = rtEl("section", "rd-sec");
+    const body = rtEl("div", "rd-body rd-cols");
+    for (const s of other) body.appendChild(rdRow(ctx, [s.key, s.label, ""]));
+    node.append(rtEl("h3", null, "Other"), body);
+    sheet.appendChild(node);
+    ctx.sections.push({ title: "Other", node, states: other });
+  }
+  rdDiff(ctx, set.runs.length > 1);
+  const toc = rtEl("div", "rd-toc");
+  for (const section of ctx.sections) {
+    const b = rtEl("button");
+    b.type = "button";
+    const dots = rtEl("span", "rd-tdots");
+    if (section.states.some(s => s.changed)) dots.appendChild(rtEl("i", "rd-c"));
+    if (section.states.some(s => s.varies)) dots.appendChild(rtEl("i", "rd-v"));
+    b.append(rtEl("span", null, section.title), dots);
+    b.onclick = () => { rdPin(ctx, section); section.node.scrollIntoView({ behavior: "smooth", block: "start" }); };
+    section.button = b;
+    toc.appendChild(b);
+  }
+  const layout = rtEl("div", "rd-layout");
+  layout.append(toc, sheet);
+  const box = rtEl("div", "rd");
+  box.appendChild(layout);
+  td.appendChild(box);
+  // The caller places the row; the contents follow the pane it lands in.
+  requestAnimationFrame(() => rdFollow(ctx, tr));
+  return tr;
+}
+
+function rdPlace(ctx, s, node) {
+  if (!ctx.placed.has(s.key)) ctx.placed.set(s.key, { s, node });
+}
+
+// Blue for a change from the default, purple for a difference between the listed runs.
+function rdDots(target, states) {
+  const changed = states.some(s => s.changed), varies = states.some(s => s.varies);
+  if (!changed && !varies) return;
+  const dots = rtEl("span", "rd-dots");
+  if (changed) dots.appendChild(rtEl("i", "rd-c"));
+  if (varies) dots.appendChild(rtEl("i", "rd-v"));
+  target.appendChild(dots);
+}
+
+// A value with its unit muted, a switch as a dot, a list as chips, and the default under a changed one.
+function rdValue(s, unit) {
+  const box = rtEl("span", "rd-val");
+  const mark = s.changed ? " rd-hl" : "";
+  if (s.items && s.items.length) {
+    const chips = rtEl("span", "rd-chips" + mark);
+    for (const item of s.items) chips.appendChild(rtEl("span", "rd-chip", item));
+    box.appendChild(chips);
+  } else if (s.bool !== undefined) {
+    box.appendChild(rtEl("span", "rd-sw" + (s.bool ? "" : " rd-sw-off") + mark,
+                         s.value.charAt(0).toUpperCase() + s.value.slice(1)));
+  } else {
+    const number = unit && s.value.endsWith(" " + unit) ? s.value.slice(0, -unit.length - 1) : s.value;
+    box.appendChild(rtEl("span", (s.value === "none" ? "rd-none" : "") + mark, number));
+    if (number !== s.value) box.appendChild(rtEl("small", null, unit));
+  }
+  if (s.changed) box.appendChild(rtEl("span", "rd-def", "default " + s.default));
+  return box;
+}
+
+// One layout row, [key, label, unit]; null for a setting this run's config lacks (an older run).
+function rdRow(ctx, [key, label, unit], lines) {
+  const s = ctx.settings.get(key);
+  if (!s) return null;
+  const row = rtEl("div", lines ? "rd-line" : "rd-row" + (s.items && s.items.length ? " rd-stack" : ""));
+  row.append(rtEl("span", "rd-key", label), rdValue(s, unit));
+  rdDots(row, [s]);
+  rdPlace(ctx, s, row);
+  return row;
+}
+
+// A group of rows or of one drawn kind, greyed out while its switch is off.
+function rdGroup(ctx, g) {
+  const box = rtEl("div", "rd-group" + (g.wide ? " rd-wide" : ""));
+  const sw = g.switch ? ctx.settings.get(g.switch) : null;
+  if (g.title) {
+    const head = rtEl("div", "rd-gh", g.title);
+    if (sw) {
+      head.appendChild(rdValue(sw));
+      rdDots(head, [sw]);
+      rdPlace(ctx, sw, head);
+    }
+    box.appendChild(head);
+  }
+  const off = sw && !sw.bool;
+  if (off) box.classList.add("rd-off");
+  const note = [off ? g.off : null, g.note].filter(Boolean).join(". ");
+  if (note) box.appendChild(rtEl("div", "rd-note", note));
+  const body = rtEl("div", "rd-body" + (g.columns ? " rd-cols" : ""));
+  for (const row of g.rows) {
+    const node = rdRow(ctx, row, g.lines);
+    if (node) body.appendChild(node);
+  }
+  if (g.kind) body.appendChild(RD_KINDS[g.kind](ctx, g));
+  box.appendChild(body);
+  return box;
+}
+
+// When each technology is available, drawn against the run's years, and which never build greenfield.
+function rdTechnologies(ctx, g) {
+  const frag = document.createDocumentFragment();
+  const start = +ctx.settings.get("start_year").value, end = +ctx.settings.get("end_year").value;
+  const pos = y => (Math.min(Math.max(y, start), end + 1) - start) / (end + 1 - start) * 100;
+  const decades = [];
+  for (let y = Math.ceil((start + 3) / 10) * 10; y <= end - 3; y += 10) decades.push(y);
+  const greenfield = ctx.settings.get(g.greenfield);
+  const grid = rtEl("div", "rd-tech");
+  const axis = rtEl("div", "rd-axis");
+  for (const [y, cls] of [[start, "rd-first"], ...decades.map(y => [y, null]), [end, "rd-last"]]) {
+    const tick = rtEl("span", cls, String(y));
+    tick.style.left = (cls === "rd-last" ? 100 : pos(y)) + "%";
+    axis.appendChild(tick);
+  }
+  grid.append(rtEl("div", "rd-th", "Technology"), rtEl("div", "rd-th", "Available"), axis,
+              rtEl("div", "rd-th", "Greenfield"));
+  const keys = [...ctx.settings.keys()].filter(k => k.startsWith(g.prefix));
+  let family = null, unknown = false;
+  for (const code of new Set(keys.map(k => k.slice(g.prefix.length).split(".")[0]))) {
+    // CCS and CCU variants follow their base route.
+    const base = code.replace(/CC[SU]$/, "");
+    if (family !== null && base !== family) grid.appendChild(rtEl("div", "rd-gap"));
+    family = base;
+    const states = ["allowed", "from_year", "to_year"].map(f => ctx.settings.get(g.prefix + code + "." + f));
+    const allowed = states[0].bool, from = +states[1].value;
+    const to = /^\d+$/.test(states[2].value) ? +states[2].value : null;
+    unknown = unknown || states.some(s => s.changed === null);
+    const lo = Math.max(from, start), hi = to === null ? end : Math.min(to, end);
+    const text = !allowed ? "Not allowed"
+      : lo > hi ? (from > end ? "From " + from + ", after the run" : "Until " + to + ", before the run")
+      : from <= start && to === null ? "Whole run"
+      : to === null ? "From " + from
+      : from <= start ? "Until " + to
+      : from + " to " + to;
+    const name = rtEl("div", "rd-code" + (allowed ? "" : " rd-no"), code);
+    rdDots(name, states);
+    const changed = states.filter(s => s.changed);
+    const when = rtEl("div", "rd-win" + (allowed ? "" : " rd-no"));
+    when.appendChild(rtEl("span", changed.length ? "rd-hl" : null, text));
+    if (changed.length) when.title = changed.map(s => s.label + ": default " + s.default).join("\n");
+    const track = rtEl("div", "rd-track");
+    for (const y of decades) {
+      const line = rtEl("s");
+      line.style.left = pos(y) + "%";
+      track.appendChild(line);
+    }
+    if (allowed && lo <= hi) {
+      const fill = rtEl("b");
+      fill.style.left = pos(lo) + "%";
+      fill.style.width = pos(hi + 1) - pos(lo) + "%";
+      track.appendChild(fill);
+    } else if (allowed) track.classList.add("rd-out");
+    const gf = rtEl("div");
+    if (greenfield && greenfield.items.includes(code))
+      gf.appendChild(rtEl("span", "rd-gf" + (greenfield.changed ? " rd-hl" : ""), "Excluded"));
+    grid.append(name, when, track, gf);
+    for (const s of states) rdPlace(ctx, s, name);
+  }
+  if (greenfield) rdPlace(ctx, greenfield, grid);
+  if (unknown) frag.appendChild(rtEl("div", "rd-note", "Defaults unknown without the run's technologies.json"));
+  frag.appendChild(grid);
+  return frag;
+}
+
+// Land cover factors as bars from 1× to the largest.
+function rdBars(ctx, g) {
+  const states = [...ctx.settings.values()].filter(s => s.key.startsWith(g.prefix));
+  const top = Math.max(2, ...states.map(s => parseFloat(s.value)));
+  const list = rtEl("div", "rd-cols2");
+  for (const s of states) {
+    const row = rtEl("div", "rd-bar");
+    const track = rtEl("div", "rd-track");
+    const fill = rtEl("b");
+    fill.style.left = "0";
+    fill.style.width = Math.max(2, (parseFloat(s.value) - 1) / (top - 1) * 100) + "%";
+    track.appendChild(fill);
+    row.append(rtEl("span", "rd-key", s.key.slice(g.prefix.length)), track,
+               rtEl("span", "rd-num" + (s.changed ? " rd-hl" : ""), s.value));
+    if (s.changed) row.title = "default " + s.default;
+    rdDots(row, [s]);
+    rdPlace(ctx, s, row);
+    list.appendChild(row);
+  }
+  return list;
+}
+
+// Each region with the regions it imports hydrogen from.
+function rdRegions(ctx, g) {
+  const list = rtEl("div", "rd-cols2");
+  for (const s of ctx.settings.values()) {
+    if (!s.key.startsWith(g.prefix)) continue;
+    const row = rtEl("div", "rd-region");
+    row.append(rtEl("span", "rd-key", s.key.slice(g.prefix.length)), rdValue(s));
+    rdDots(row, [s]);
+    rdPlace(ctx, s, row);
+    list.appendChild(row);
+  }
+  return list;
+}
+
+const RD_KINDS = { technologies: rdTechnologies, bars: rdBars, regions: rdRegions };
+
+// The run's facts and scenario tiles; rdDiff fills the lists below them once every setting is placed.
+function rdOverview(ctx, section, run) {
+  const box = rtEl("div");
+  const link = rtEl("a", null, run.dir + " ↗");
   link.href = run.link;
   link.target = "_blank";
   link.rel = "noopener";
-  const linkCell = rtEl("dd");
-  linkCell.appendChild(link);
-  facts.append(rtEl("dt", null, "Run folder"), linkCell);
-  const legend = rtEl("div", "rt-legend");
-  legend.append(rtEl("span", "rt-mark rt-changed", "changed"), " from the default · ",
-                rtEl("span", "rt-mark rt-varies", "varies"), " across the listed runs · ",
-                rtEl("span", "rt-mark rt-unknown", "defaults unknown"), " without the run's technologies.json · ",
-                rtEl("span", "rt-mark rt-unknown", "no default"), " for a setting without one");
-  const list = rtEl("ul", "rt-settings");
-  for (const s of run.settings) {
-    const li = rtEl("li");
-    li.append(rtEl("span", "rt-set-label", s.label + ": "), rtEl("span", null, s.value));
-    const changed = runTableChanged(s);
-    if (changed) li.appendChild(rtEl("span", "rt-mark " + (s.changed ? "rt-changed" : "rt-unknown"), changed));
-    if (s.varies) li.appendChild(rtEl("span", "rt-mark rt-varies", "varies"));
-    list.appendChild(li);
+  const meta = rtEl("div", "rd-meta");
+  meta.append("Input data ", rtEl("b", null, run.input_data), " · Made in ", rtEl("b", null, run.made_in),
+              " · Started ", rtEl("b", null, runTableDate(run)), " · Folder ", link);
+  const tiles = rtEl("div", "rd-tiles");
+  for (const [label, keys] of section.tiles) {
+    const states = keys.map(k => ctx.settings.get(k)).filter(Boolean);
+    if (!states.length) continue;
+    const tile = rtEl("div", "rd-tile");
+    const name = rtEl("div", "rd-tile-k", label);
+    rdDots(name, states);
+    tile.append(name, rtEl("div", "rd-tile-v" + (states.some(s => s.changed) ? " rd-hl" : ""),
+                           states.map(s => s.value).join(" → ")));
+    for (const s of states) rdPlace(ctx, s, tile);
+    tiles.appendChild(tile);
   }
-  td.append(facts, legend, list);
-  return tr;
+  ctx.diff = rtEl("div", "rd-diff");
+  box.append(meta, tiles, ctx.diff);
+  return box;
+}
+
+// What differs from the defaults and, with more than one run listed, between the runs; each item jumps to its row.
+function rdDiff(ctx, several) {
+  const placed = [...ctx.placed.values()];
+  const line = (title, mark, entries, describe) => {
+    const head = rtEl("div", "rd-dl");
+    head.append(rtEl("i", mark), title + " (" + entries.length + ")");
+    const list = rtEl("div", "rd-jumps");
+    for (const e of entries) {
+      const b = rtEl("button", "rd-jump");
+      b.type = "button";
+      b.append(rtEl("i", mark), ...describe(e.s));
+      b.onclick = () => rdJump(ctx, e);
+      list.appendChild(b);
+    }
+    if (!entries.length) list.appendChild(rtEl("span", "rd-none", "None"));
+    ctx.diff.append(head, list);
+  };
+  line("Changed from the default", "rd-c", placed.filter(e => e.s.changed),
+       s => [s.label, rtEl("b", null, s.value), rtEl("span", null, "default " + s.default)]);
+  if (several)
+    line("Varies across the listed runs", "rd-v", placed.filter(e => e.s.varies),
+         s => [s.label, rtEl("b", null, s.value)]);
+}
+
+function rdJump(ctx, entry) {
+  rdPin(ctx, ctx.sections.find(s => s.node.contains(entry.node)));
+  entry.node.scrollIntoView({ behavior: "smooth", block: "center" });
+  entry.node.classList.remove("rd-flash");
+  void entry.node.offsetWidth;   // restarts the flash
+  entry.node.classList.add("rd-flash");
+}
+
+// The contents mark the section under the table header; a clicked section holds while the smooth scroll passes the
+// ones before it, until the reader scrolls by hand.
+function rdFollow(ctx, tr) {
+  const pane = tr.closest(".scenario-overview");
+  if (!pane) return;
+  ctx.pane = pane;
+  const release = () => { ctx.pinned = 0; };
+  const hand = ["wheel", "touchstart", "keydown", "mousedown"];
+  const onScroll = () => {
+    if (tr.isConnected) { rdMark(ctx); return; }
+    pane.removeEventListener("scroll", onScroll);
+    for (const type of hand) pane.removeEventListener(type, release);
+  };
+  pane.addEventListener("scroll", onScroll, { passive: true });
+  for (const type of hand) pane.addEventListener(type, release, { passive: true });
+  rdMark(ctx);
+}
+
+function rdMark(ctx) {
+  let current = ctx.sections[0];
+  if (Date.now() < ctx.pinned) current = ctx.pinnedSection;
+  else {
+    const line = ctx.pane.getBoundingClientRect().top + 60;
+    for (const s of ctx.sections) if (s.node.getBoundingClientRect().top <= line) current = s;
+  }
+  for (const s of ctx.sections) s.button.classList.toggle("rd-on", s === current);
+}
+
+function rdPin(ctx, section) {
+  ctx.pinnedSection = section;
+  ctx.pinned = Date.now() + 1200;
+  if (ctx.pane) rdMark(ctx);
 }
 
 // The scenario behind each row, for applyRunTableFilters.
@@ -142,7 +423,7 @@ function renderRunTable(box, set, scenarios, opts) {
     more.onclick = e => {
       e.stopPropagation();
       if (details) details.remove();
-      details = details ? null : runTableDetails(run, tr.cells.length);
+      details = details ? null : runTableDetails(run, tr.cells.length, set);
       if (details) tr.after(details);
       more.textContent = details ? "hide" : "details";
     };
