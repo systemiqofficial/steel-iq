@@ -64,3 +64,25 @@ def test_create_form_keeps_an_entered_zero(mock_technology_extraction, client, v
     config = ModelRun.objects.get().config
     assert config["hydrogen_ceiling_percentile"] == 0
     assert config["probability_of_announcement"] == 0
+
+
+@pytest.mark.django_db
+def test_create_form_records_the_plant_scope_with_clustering_off(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+):
+    """With clustering off, the stored clustering scope is "plant", the value the model then uses."""
+    # An unticked box and the select it disables send no field
+    form_data = {
+        key: value
+        for key, value in valid_modelrun_form_data.items()
+        if key not in ("enable_furnace_group_clustering", "geographical_clustering_scope")
+    }
+
+    response = client.post(reverse("create-modelrun"), data=form_data)
+
+    assert response.status_code == 302
+    config = ModelRun.objects.get().config
+    assert config["enable_furnace_group_clustering"] is False
+    assert config["geographical_clustering_scope"] == "plant"

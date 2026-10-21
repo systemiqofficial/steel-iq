@@ -883,11 +883,9 @@ class ModelRunCreateForm(forms.ModelForm):
         if cleaned_data.get("random_seed") is None:
             cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else 42
 
-        # geographical_clustering_scope is a no-op unless
-        # enable_furnace_group_clustering is also on; coerce to iso3 (no-op) so the
-        # stored config reflects actual runtime behaviour.
+        # With clustering off the model uses "plant" for hot metal access, so the stored config records that
         if not cleaned_data.get("enable_furnace_group_clustering"):
-            cleaned_data["geographical_clustering_scope"] = "iso3"
+            cleaned_data["geographical_clustering_scope"] = "plant"
 
         # Set default values for fields that are not required but need values
         if not cleaned_data.get("scrap_generation_scenario"):
