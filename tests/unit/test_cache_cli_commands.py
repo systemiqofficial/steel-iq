@@ -134,27 +134,32 @@ class TestCacheCLICommands:
 
     @patch("sys.argv", ["steelo-cache", "clear", "--keep-recent", "0", "--cache-dir", "/tmp/cache"])
     @patch("steelo.entrypoints.cache_cli.Console")
-    def test_cache_cli_clear_command(self, mock_console, mock_cache_dir):
-        """Test the CLI clear command directly."""
+    def test_cache_cli_clear_command(self, mock_console, mock_cache_dir, monkeypatch, tmp_path):
+        """Test the CLI clear command directly, leaving the real download cache and the working directory alone."""
         mock_console_instance = MagicMock()
         mock_console.return_value = mock_console_instance
 
         # Mock user confirmation
         mock_console_instance.input.return_value = "y"
+        # The command also removes a data/ folder in the working directory
+        monkeypatch.chdir(tmp_path)
 
         with patch("steelo.entrypoints.cache_cli.DataPreparationCache") as mock_cache_class:
-            mock_cache = MagicMock()
-            mock_cache.clear_cache.return_value = 3
-            mock_cache_class.return_value = mock_cache
+            # Patch DataManager at the module level where it's imported inside the function
+            with patch("steelo.data.DataManager") as mock_data_manager_class:
+                mock_cache = MagicMock()
+                mock_cache.clear_cache.return_value = 3
+                mock_cache_class.return_value = mock_cache
 
-            # Run the command
-            result = steelo_cache()
+                # Run the command
+                result = steelo_cache()
 
-            # Verify clear was called
-            mock_cache.clear_cache.assert_called_once_with(keep_recent=0)
+                # Verify clear was called
+                mock_cache.clear_cache.assert_called_once_with(keep_recent=0)
+                mock_data_manager_class.return_value.clear_cache.assert_called_once()
 
-            # Verify output was printed
-            assert "Cache clear completed" in result
+                # Verify output was printed
+                assert "Cache clear completed" in result
 
     # Removed test_cache_cli_clear_preparation_only and test_cache_cli_clear_data_only
     # as we no longer support clearing individual cache types
