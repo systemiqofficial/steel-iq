@@ -200,3 +200,41 @@ def test_config_as_json_dict_survives_a_json_round_trip_with_nested_settings_as_
     assert loaded["disposal_cost_outputs"] == ["steelmaking_slag"]
     assert loaded["output_dir"] == str(tmp_path)
     assert not [key for key in loaded if key.startswith("_")]
+
+
+def test_config_default_returns_a_plain_field_default():
+    """A field with a plain default comes back as that default."""
+    assert simulation.config_default("chosen_demand_scenario") == "BAU"
+    assert simulation.config_default("lp_epsilon") == 1e-3
+
+
+def test_config_default_calls_the_default_factory_for_a_fresh_copy(tmp_path):
+    """A field with a ``default_factory`` comes back as a new object on every call, so callers cannot share it."""
+    first = simulation.config_default("primary_products")
+    second = simulation.config_default("primary_products")
+
+    assert first == SimulationConfig.for_testing(repository=InMemoryRepository(), output_dir=tmp_path).primary_products
+    assert first is not second
+
+
+def test_config_default_reads_nested_geo_and_capacity_policy_fields():
+    """``geo_config.<field>`` and ``capacity_policy.<field>`` name the defaults of the two nested configs."""
+    assert simulation.config_default("geo_config.max_latitude") == 70.0
+    assert simulation.config_default("geo_config.excluded_greenfield_technologies") == ["BOF"]
+    assert simulation.config_default("capacity_policy.replacement_ratio") == 1.5
+    assert simulation.config_default("capacity_policy.inter_company_swap_cutoff_year") == 2028
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "start_year",
+        "no_such_field",
+        "geo_config.no_such_field",
+        "no_such_config.enabled",
+    ],
+)
+def test_config_default_raises_key_error_for_a_name_without_a_default(name):
+    """A required field, an unknown field and an unknown nested config all raise ``KeyError``."""
+    with pytest.raises(KeyError):
+        simulation.config_default(name)

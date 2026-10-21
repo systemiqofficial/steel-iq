@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, InitVar, fields, asdict
+from dataclasses import MISSING, dataclass, field, InitVar, fields, asdict
 from pathlib import Path
 from typing import Optional, Callable, Any, TYPE_CHECKING
 import logging
@@ -967,6 +967,30 @@ class SimulationConfig:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to create config from master Excel: {e}") from e
+
+
+def config_default(name: str) -> Any:
+    """The class default of one run setting, the one source the CLI and the app take their defaults from.
+
+    Args:
+        name: A ``SimulationConfig`` field name, or ``geo_config.<field>`` or ``capacity_policy.<field>`` for a
+            field of the nested ``GeoConfig`` or ``CapacityPolicyConfig``.
+
+    Returns:
+        The field's default; a ``default_factory`` is called, so a mutable default comes back as a fresh copy.
+
+    Raises:
+        KeyError: When the name is no such field, or the field has no default (``start_year``, for one).
+    """
+    nested_classes: dict[str, type] = {"geo_config": GeoConfig, "capacity_policy": CapacityPolicyConfig}
+    prefix, _, field_name = name.rpartition(".")
+    config_class = nested_classes[prefix] if prefix else SimulationConfig
+    config_field = {f.name: f for f in fields(config_class)}[field_name]
+    if config_field.default is not MISSING:
+        return config_field.default
+    if config_field.default_factory is not MISSING:
+        return config_field.default_factory()
+    raise KeyError(f"{name} has no class default")
 
 
 def config_as_json_dict(config: SimulationConfig) -> dict[str, Any]:
