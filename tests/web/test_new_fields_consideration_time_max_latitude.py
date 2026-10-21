@@ -46,7 +46,6 @@ def base_form_data(data_preparation):
         "end_year": 2030,
         "data_preparation": data_preparation.pk,
         # Required technology fields
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,

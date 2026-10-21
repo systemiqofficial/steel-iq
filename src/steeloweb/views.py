@@ -820,7 +820,6 @@ def create_modelrun(request):
                 "green_steel_demand_scenario": form.cleaned_data.get(
                     "green_steel_demand_scenario", "business_as_usual"
                 ),
-                "scrap_generation_scenario": form.cleaned_data.get("scrap_generation_scenario", "business_as_usual"),
                 "chosen_grid_emissions_scenario": form.cleaned_data.get(
                     "chosen_grid_emissions_scenario", "Business As Usual"
                 ),

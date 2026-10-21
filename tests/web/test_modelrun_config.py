@@ -9,11 +9,17 @@ from django.urls import reverse
 from steeloweb.models import DataPackage, DataPreparation, ModelRun
 
 
-@pytest.mark.django_db
-@patch("steelo.validation.validate_technology_settings")
-@patch("steelo.bootstrap.bootstrap_simulation")
-def test_run_passes_include_tariffs_to_the_simulation_config(mock_bootstrap_simulation, mock_validate, tmp_path):
-    """An unticked "Include tariffs" box, stored as ``False``, reaches the ``SimulationConfig`` instead of its default."""
+def ready_model_run(tmp_path, name, config):
+    """A ``ModelRun`` with ``config`` on a ready data preparation, so ``run()`` gets as far as the simulation.
+
+    Args:
+        tmp_path: Folder for the preparation's data directory.
+        name: The run's name.
+        config: The run's stored config.
+
+    Returns:
+        The saved ``ModelRun``.
+    """
     core_package = DataPackage.objects.create(
         name=DataPackage.PackageType.CORE_DATA,
         version="test",
@@ -32,21 +38,50 @@ def test_run_passes_include_tariffs_to_the_simulation_config(mock_bootstrap_simu
         data_directory=str(tmp_path / "prep"),
     )
     data_prep.master_excel_file.save("master.xlsx", ContentFile(b"fake excel content"), save=True)
-    model_run = ModelRun.objects.create(
-        name="Tariffs off",
-        config={
+    return ModelRun.objects.create(name=name, config=config, data_preparation=data_prep)
+
+
+@pytest.mark.django_db
+@patch("steelo.validation.validate_technology_settings")
+@patch("steelo.bootstrap.bootstrap_simulation")
+def test_run_passes_include_tariffs_to_the_simulation_config(mock_bootstrap_simulation, mock_validate, tmp_path):
+    """An unticked "Include tariffs" box, stored as ``False``, reaches the ``SimulationConfig`` instead of its default."""
+    model_run = ready_model_run(
+        tmp_path,
+        "Tariffs off",
+        {
             "start_year": 2025,
             "end_year": 2026,
             "include_tariffs": False,
             "technology_settings": {"BF": {"allowed": True, "from_year": 2025, "to_year": None}},
         },
-        data_preparation=data_prep,
     )
 
     model_run.run()
 
     config = mock_bootstrap_simulation.call_args[0][0]
     assert config.include_tariffs is False
+
+
+@pytest.mark.django_db
+@patch("steelo.validation.validate_technology_settings")
+@patch("steelo.bootstrap.bootstrap_simulation")
+def test_run_drops_a_stored_scrap_generation_scenario(mock_bootstrap_simulation, mock_validate, tmp_path):
+    """An older run's stored ``scrap_generation_scenario``, no longer a config field, does not stop the run."""
+    model_run = ready_model_run(
+        tmp_path,
+        "Older run",
+        {
+            "start_year": 2025,
+            "end_year": 2026,
+            "scrap_generation_scenario": "circular_economy",
+            "technology_settings": {"BF": {"allowed": True, "from_year": 2025, "to_year": None}},
+        },
+    )
+
+    model_run.run()
+
+    mock_bootstrap_simulation.assert_called_once()
 
 
 @pytest.mark.django_db

@@ -168,7 +168,8 @@ def test_ordered_values_puts_numbers_with_units_in_numeric_order():
 def test_excluded_settings_name_only_real_config_fields():
     """
     Tests that every entry of the exclude list is a SimulationConfig, GeoConfig or CapacityPolicyConfig field,
-    so a renamed or removed field cannot leave a stale entry behind.
+    so a renamed or removed field cannot leave a stale entry behind. The one exception is the removed
+    scrap_generation_scenario, which older runs' configs still carry.
     """
     real = (
         {f.name for f in dataclasses.fields(SimulationConfig)}
@@ -176,7 +177,7 @@ def test_excluded_settings_name_only_real_config_fields():
         | {f"capacity_policy.{f.name}" for f in dataclasses.fields(CapacityPolicyConfig)}
     )
 
-    assert catalogue.EXCLUDED_SETTINGS <= real
+    assert catalogue.EXCLUDED_SETTINGS - {"scrap_generation_scenario"} <= real
 
 
 def test_discover_runs_names_each_skipped_folder_in_one_warning_only(tmp_path, caplog):

@@ -92,8 +92,6 @@ function resetPolicySettings() {
 
 function resetDemandSettings() {
     // Note: total_steel_demand_scenario and green_steel_demand_scenario are disabled
-    // Only scrap_generation_scenario is currently functional
-    document.getElementById('id_scrap_generation_scenario').value = 'business_as_usual';
     // Circularity file is disabled
     // document.getElementById('id_circularity_file').value = '';
 }
@@ -1270,18 +1268,6 @@ document.head.appendChild(style);
                                         {% if form.green_steel_demand_scenario.errors %}
                                         <div class="invalid-feedback d-block">
                                             {{ form.green_steel_demand_scenario.errors }}
-                                        </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                
-                                <div class="mb-3 row">
-                                    <label for="{{ form.scrap_generation_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select scrap generation and circularity scenario:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.scrap_generation_scenario }}
-                                        {% if form.scrap_generation_scenario.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.scrap_generation_scenario.errors }}
                                         </div>
                                         {% endif %}
                                     </div>

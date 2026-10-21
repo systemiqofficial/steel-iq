@@ -759,7 +759,6 @@ class ModelRun(models.Model):
             "landtype_percentage_nc_path",
             # Other optional parameters
             "log_level",
-            "scrap_generation_scenario",
             "demand_sheet_name",
             "technology_lifetimes",
             # Baseload power simulation parameters

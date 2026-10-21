@@ -43,7 +43,6 @@ def valid_modelrun_form_data(ready_data_preparation):
         "start_year": 2025,
         "end_year": 2026,
         "plant_lifetime": 20,  # Added required field
-        "scrap_generation_scenario": "circular_economy",
         # Demand and circularity
         "total_steel_demand_scenario": "business_as_usual",
         "green_steel_demand_scenario": "business_as_usual",

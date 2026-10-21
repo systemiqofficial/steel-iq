@@ -79,7 +79,6 @@ class TestTotalSteelDemandForm(TestCase):
             "end_year": 2030,
             "total_steel_demand_scenario": "climate_neutrality",
             "green_steel_demand_scenario": "business_as_usual",
-            "scrap_generation_scenario": "business_as_usual",
         }
         # Add dynamic technology fields inline
         for tech in ["BF", "BOF", "EAF", "DRING", "DRIH2EAF", "ESF", "MOE"]:

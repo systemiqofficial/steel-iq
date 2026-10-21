@@ -132,7 +132,7 @@ print(f"2030 production: {results['production'][2030]}")
 
 ### Custom Paths Example
 
-`SimulationConfig.from_data_directory()` accepts override kwargs that are forwarded to `SimulationConfig.__init__`. Use it to point at a non-default data directory and tweak any config field — including `plots_dir`, `start_year`/`end_year`, `scrap_generation_scenario`, and so on:
+`SimulationConfig.from_data_directory()` accepts override kwargs that are forwarded to `SimulationConfig.__init__`. Use it to point at a non-default data directory and tweak any config field — including `plots_dir`, `start_year`/`end_year`, and so on:
 
 ```python
 config = SimulationConfig.from_data_directory(
@@ -141,7 +141,6 @@ config = SimulationConfig.from_data_directory(
     data_dir=Path("./my_data"),                      # contains master_input.xlsx + fixtures/
     output_dir=Path("./custom_outputs"),
     plots_dir=Path("./custom_outputs/plots"),        # defaults to output_dir/plots
-    scrap_generation_scenario="high_recycling",
 )
 ```
 
