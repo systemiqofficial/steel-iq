@@ -17,6 +17,22 @@ def temp_media_root(tmp_path_factory):
     # Pytest will automatically clean up the tmp_path_factory directories
 
 
+@pytest.fixture(autouse=True)
+def steelo_home(monkeypatch, tmp_path):
+    """Point ``STEELO_HOME`` at a folder of the test's own, so no test reads the developer's ``~/.steelo``.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        The test home, ``<tmp_path>/home``, not yet created.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("STEELO_HOME", str(home))
+    return home
+
+
 def add_dynamic_technology_fields(form_data, technologies=None):
     """Add dynamic technology fields to form data for testing.
 
@@ -43,7 +59,6 @@ def valid_modelrun_form_data(ready_data_preparation):
         "start_year": 2025,
         "end_year": 2026,
         "plant_lifetime": 20,  # Added required field
-        "scrap_generation_scenario": "circular_economy",
         # Demand and circularity
         "total_steel_demand_scenario": "business_as_usual",
         "green_steel_demand_scenario": "business_as_usual",

@@ -259,8 +259,8 @@ steelo-data-download
 # 2. Recreate JSON repositories
 steelo-data-recreate
 
-# 3. Run simulation using the data
-run_simulation --plants-json ./data/repositories/core-data/plants.json
+# 3. Run a simulation; it prepares its own data from the master Excel
+run_simulation
 ```
 
 ### Update Data
@@ -282,9 +282,6 @@ steelo-data-validate ./user_data
 
 # 2. If valid, convert to JSON
 steelo-data-convert ./user_data ./output
-
-# 3. Use in simulation
-run_simulation --plants-json ./output/plants.json
 ```
 
 ## Environment Variables

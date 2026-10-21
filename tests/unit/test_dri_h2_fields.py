@@ -8,6 +8,22 @@ from steeloweb.models import ModelRun, DataPackage, MasterExcelFile
 User = get_user_model()
 
 
+@pytest.fixture(autouse=True)
+def steelo_home(monkeypatch, tmp_path):
+    """Point ``STEELO_HOME`` at a folder of the test's own, so the create form never reads the developer's CLI runs.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        The test home, ``<tmp_path>/home``, not yet created.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("STEELO_HOME", str(home))
+    return home
+
+
 @pytest.fixture
 def test_user(db):
     """Create a test user."""
@@ -74,7 +90,6 @@ def test_dri_h2_fields_in_form(client, test_user, sample_master_excel, ready_dat
         "probability_of_construction": 0.9,
         "top_n_loctechs_as_business_op": 5,
         "chosen_grid_emissions_scenario": "Business As Usual",
-        "scrap_generation_scenario": "business_as_usual",
         "chosen_emissions_boundary_for_carbon_costs": "cbam",
         "use_iron_ore_premiums": True,
         "include_tariffs": True,
@@ -180,7 +195,6 @@ def test_dri_h2_fields_disabled(client, test_user, sample_master_excel, ready_da
         "probability_of_construction": 0.9,
         "top_n_loctechs_as_business_op": 5,
         "chosen_grid_emissions_scenario": "Business As Usual",
-        "scrap_generation_scenario": "business_as_usual",
         "chosen_emissions_boundary_for_carbon_costs": "cbam",
         "use_iron_ore_premiums": True,
         "include_tariffs": True,
@@ -258,7 +272,6 @@ def test_dri_h2_partial_year_range(client, test_user, sample_master_excel, ready
         "probability_of_construction": 0.9,
         "top_n_loctechs_as_business_op": 5,
         "chosen_grid_emissions_scenario": "Business As Usual",
-        "scrap_generation_scenario": "business_as_usual",
         "chosen_emissions_boundary_for_carbon_costs": "cbam",
         "use_iron_ore_premiums": True,
         "include_tariffs": True,

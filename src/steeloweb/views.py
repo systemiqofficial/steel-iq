@@ -18,10 +18,12 @@ from django_htmx.http import HttpResponseClientRefresh
 from .tasks import run_simulation_task
 from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
+from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
 from steelo.validation import SimulationConfigError, validate_technology_settings
 from steelo.simulation_types import TechnologySettings
 from steelo.data.manager import DataManager
+from steelo.viewer.extract import RUN_NAME, VIEWER_DIR
 
 
 class ModelRunListView(ListView):
@@ -103,6 +105,16 @@ class ModelRunDetailView(DetailView):
 
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
+
+        # The viewer lists a finished run once the run's end has written its viewer files
+        output_dir = Path(self.object.output_directory)
+        context["viewer_run"] = (
+            output_dir.name
+            if self.object.state == ModelRun.RunState.FINISHED
+            and self.object.output_directory
+            and (output_dir / VIEWER_DIR / RUN_NAME).is_file()
+            else None
+        )
 
         # Split simulation plots: cost curves, emissions, and the production/capacity
         # group each go into their own collapsible accordions; anything else falls
@@ -212,11 +224,24 @@ def run_simulation(request, pk):
 
 @require_POST
 def rerun_modelrun(request, pk):
-    """Reset a failed run that crashed and enqueue it again."""
+    """Reset a failed run that crashed and enqueue it again.
+
+    Notes:
+        Worker availability is checked before the reset, so a rerun refused for want of workers or capacity keeps the
+        previous attempt's state and outputs.
+    """
     modelrun = get_object_or_404(ModelRun, pk=pk)
 
     if not modelrun.can_rerun:
         messages.error(request, "Only cancelled runs or runs that failed due to an exception can be rerun.")
+        return redirect("modelrun-detail", pk=pk)
+
+    from steeloweb.views_worker import check_worker_availability_for_simulation
+
+    availability = check_worker_availability_for_simulation()
+    if availability["status"] in ("no_capacity", "no_workers"):
+        request.session.pop("simulation_warning", None)
+        messages.error(request, availability["message"])
         return redirect("modelrun-detail", pk=pk)
 
     modelrun.reset_for_rerun()
@@ -695,18 +720,25 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
 def create_modelrun(request):
     """
     Create a new model run with custom configuration
+
+    Notes:
+        A name already held by another run, or by a CLI run under ``$STEELO_HOME/output``, gets the first free ``_2``,
+        ``_3`` suffix; a blank name stays blank.
     """
     if request.method == "POST":
         form = ModelRunCreateForm(request.POST)
         if form.is_valid():
             # Create config dictionary from form data
-            output_file = str(settings.BASE_DIR / "django_pam_simulation_run.json")
             config = {
                 "start_year": form.cleaned_data["start_year"],
                 "end_year": form.cleaned_data["end_year"],
                 "random_seed": form.cleaned_data.get("random_seed", 42),
                 "plant_lifetime": form.cleaned_data.get("plant_lifetime", 20),
-                "global_risk_free_rate": float(form.cleaned_data.get("global_risk_free_rate") or 0.0209),
+                "global_risk_free_rate": float(
+                    form.cleaned_data.get("global_risk_free_rate")
+                    if form.cleaned_data.get("global_risk_free_rate") is not None
+                    else 0.0209
+                ),
                 "steel_price_buffer": float(
                     form.cleaned_data.get("steel_price_buffer")
                     if form.cleaned_data.get("steel_price_buffer") is not None
@@ -741,25 +773,66 @@ def create_modelrun(request):
                 "consideration_time": form.cleaned_data.get("consideration_time", 3),
                 "construction_time": form.cleaned_data.get("construction_time", 4),
                 "probabilistic_agents": form.cleaned_data.get("probabilistic_agents", True),
-                "probability_of_announcement": float(form.cleaned_data.get("probability_of_announcement") or 0.7),
-                "probability_of_construction": float(form.cleaned_data.get("probability_of_construction") or 0.9),
+                "probability_of_announcement": float(
+                    form.cleaned_data.get("probability_of_announcement")
+                    if form.cleaned_data.get("probability_of_announcement") is not None
+                    else 0.7
+                ),
+                "probability_of_construction": float(
+                    form.cleaned_data.get("probability_of_construction")
+                    if form.cleaned_data.get("probability_of_construction") is not None
+                    else 0.9
+                ),
                 "top_n_loctechs_as_business_op": form.cleaned_data.get("top_n_loctechs_as_business_op", 15),
-                "opportunity_pool_depth": int(form.cleaned_data.get("opportunity_pool_depth") or 3),
-                "pick_priority_sites_share": float(form.cleaned_data.get("pick_priority_sites_share") or 0.05),
-                "calculate_npv_sites_share": float(form.cleaned_data.get("calculate_npv_sites_share") or 0.1),
+                "opportunity_pool_depth": int(
+                    form.cleaned_data.get("opportunity_pool_depth")
+                    if form.cleaned_data.get("opportunity_pool_depth") is not None
+                    else 3
+                ),
+                "pick_priority_sites_share": float(
+                    form.cleaned_data.get("pick_priority_sites_share")
+                    if form.cleaned_data.get("pick_priority_sites_share") is not None
+                    else 0.05
+                ),
+                "calculate_npv_sites_share": float(
+                    form.cleaned_data.get("calculate_npv_sites_share")
+                    if form.cleaned_data.get("calculate_npv_sites_share") is not None
+                    else 0.1
+                ),
                 # Plant capacity parameters (convert Mt to t)
-                "expanded_capacity": float(form.cleaned_data.get("expanded_capacity") or 2.5) * 1000000,
-                "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 100) * 1000000,
-                "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel") or 100) * 1000000,
+                "expanded_capacity": float(
+                    form.cleaned_data.get("expanded_capacity")
+                    if form.cleaned_data.get("expanded_capacity") is not None
+                    else 2.5
+                )
+                * 1000000,
+                "capacity_limit_iron": float(
+                    form.cleaned_data.get("capacity_limit_iron")
+                    if form.cleaned_data.get("capacity_limit_iron") is not None
+                    else 100
+                )
+                * 1000000,
+                "capacity_limit_steel": float(
+                    form.cleaned_data.get("capacity_limit_steel")
+                    if form.cleaned_data.get("capacity_limit_steel") is not None
+                    else 100
+                )
+                * 1000000,
                 "new_capacity_share_from_new_plants": float(
                     form.cleaned_data.get("new_capacity_share_from_new_plants")
                     if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
                     else 0.4
                 ),
-                "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 100.0),
+                "hydrogen_ceiling_percentile": float(
+                    form.cleaned_data.get("hydrogen_ceiling_percentile")
+                    if form.cleaned_data.get("hydrogen_ceiling_percentile") is not None
+                    else 100.0
+                ),
                 "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", False),
                 "long_dist_pipeline_transport_cost": float(
-                    form.cleaned_data.get("long_dist_pipeline_transport_cost") or 1.0
+                    form.cleaned_data.get("long_dist_pipeline_transport_cost")
+                    if form.cleaned_data.get("long_dist_pipeline_transport_cost") is not None
+                    else 1.0
                 ),
                 # Policy settings
                 "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
@@ -767,7 +840,6 @@ def create_modelrun(request):
                 "include_tariffs": form.cleaned_data.get("include_tariffs", True),
                 "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", True),
                 "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope") or "plant",
-                "output_file": output_file,
                 # Add new demand and circularity fields
                 "total_steel_demand_scenario": form.cleaned_data.get(
                     "total_steel_demand_scenario", "business_as_usual"
@@ -775,7 +847,6 @@ def create_modelrun(request):
                 "green_steel_demand_scenario": form.cleaned_data.get(
                     "green_steel_demand_scenario", "business_as_usual"
                 ),
-                "scrap_generation_scenario": form.cleaned_data.get("scrap_generation_scenario", "business_as_usual"),
                 "chosen_grid_emissions_scenario": form.cleaned_data.get(
                     "chosen_grid_emissions_scenario", "Business As Usual"
                 ),
@@ -788,7 +859,9 @@ def create_modelrun(request):
                 "ccs_cost_scenario": form.cleaned_data.get("ccs_cost_scenario", ""),
                 # Geospatial fields
                 "included_power_mix": form.cleaned_data.get("included_power_mix", "85% baseload + 15% grid"),
-                "max_slope": float(form.cleaned_data.get("max_slope") or 2.0),
+                "max_slope": float(
+                    form.cleaned_data.get("max_slope") if form.cleaned_data.get("max_slope") is not None else 2.0
+                ),
                 "max_altitude": form.cleaned_data.get("max_altitude", 1500),
                 "max_latitude": float(
                     form.cleaned_data.get("max_latitude") if form.cleaned_data.get("max_latitude") is not None else 70.0
@@ -838,9 +911,19 @@ def create_modelrun(request):
                 if any(key.startswith(p) for p in LEGACY_PREFIXES):
                     del config[key]
 
+            name = form.cleaned_data["name"]
+            if name:
+                from steelo import simulation
+
+                taken = {other.strip() for other in ModelRun.objects.values_list("name", flat=True) if other.strip()}
+                output_base = cli_base()
+                if output_base is not None:
+                    taken |= simulation.run_names_in_use(output_base)
+                name = simulation.unique_run_name(name, taken)
+
             # Create the model run
             modelrun = ModelRun.objects.create(
-                name=form.cleaned_data.get("name", ""),
+                name=name,
                 config=config,
                 data_preparation=data_preparation,
             )

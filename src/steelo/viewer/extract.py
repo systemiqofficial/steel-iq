@@ -84,7 +84,7 @@ import math
 import re
 import shutil
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -1186,6 +1186,22 @@ def extract_results(run_dir: Path, results_dir: Path) -> None:
     logger.info(f"{sum(len(d['files']) for d in folders)} result tables, {total / 1e6:.1f} MB gz")
 
 
+def utc_time(seconds: float) -> str:
+    """A POSIX time in ISO 8601 form, in UTC with its offset, to the second.
+
+    Args:
+        seconds: Seconds since the epoch, such as a file's ``st_mtime``.
+
+    Returns:
+        ``YYYY-MM-DDTHH:MM:SS+00:00``.
+
+    Notes:
+        Not the process's local time: the app's worker runs in Django's ``TIME_ZONE`` (UTC), the CLI in the machine's.
+        One offset and a fixed width also keep text order in time order, which the catalogue sorts runs by.
+    """
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat(timespec="seconds")
+
+
 def write_csv(frame: pd.DataFrame | None, viewer_dir: Path, name: str) -> None:
     """Write one viewer CSV, or warn that its source page is missing.
 
@@ -1267,8 +1283,8 @@ def write_viewer_files(run_dir: Path, master_excel: Path | None = None) -> None:
         "name": config["run_name"] or run_dir.name,
         "folder": run_dir.name,
         "made_in": metadata.get("made_in"),
-        "started": datetime.fromtimestamp(config_path.stat().st_mtime).isoformat(timespec="seconds"),
-        "ended": datetime.now().isoformat(timespec="seconds"),
+        "started": utc_time(config_path.stat().st_mtime),
+        "ended": utc_time(datetime.now().timestamp()),
         "steelo_version": importlib.metadata.version("steel-model"),
         "input_data": {
             "master": Path(recorded or master).name,

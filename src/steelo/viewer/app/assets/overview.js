@@ -10,8 +10,12 @@ function rtEl(tag, cls, text) {
 
 const rtCount = (n, noun) => n + " " + noun + (n === 1 ? "" : "s");
 
-// "2026-10-20T21:11:34" to the minute.
-const runTableDate = run => run.started.slice(0, 16).replace("T", " ");
+// The start to the minute in the viewer's local time; one without an offset (older runs) reads as local time.
+const runTableDate = run => {
+  const d = new Date(run.started), two = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate())
+    + " " + two(d.getHours()) + ":" + two(d.getMinutes());
+};
 
 // One run's details, as a row under its own spanning the table: an overview of what sets the run apart, then the
 // sections of set.settings_layout with a contents list beside them.
@@ -246,7 +250,8 @@ function rdOverview(ctx, section, run) {
   const box = rtEl("div");
   const link = rtEl("a", null, run.dir + " ↗");
   link.href = run.link;
-  link.target = "_blank";
+  // A run page (an app run, in the app) replaces the app's window; a run folder opens beside the viewer
+  link.target = run.link.startsWith("runs/") ? "_blank" : "_top";
   link.rel = "noopener";
   const meta = rtEl("div", "rd-meta");
   meta.append("Input data ", rtEl("b", null, run.input_data), " · Made in ", rtEl("b", null, run.made_in),

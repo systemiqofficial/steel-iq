@@ -19,7 +19,6 @@ def minimal_form_data(ready_data_preparation):
         "end_year": 2060,
         "total_steel_demand_scenario": "business_as_usual",
         "green_steel_demand_scenario": "business_as_usual",
-        "scrap_generation_scenario": "business_as_usual",
         "circularity_file": "",
     }
 
@@ -34,7 +33,6 @@ def extended_form_data(ready_data_preparation):
         "end_year": 2060,
         "total_steel_demand_scenario": "high_efficiency",
         "green_steel_demand_scenario": "technology_breakthrough",
-        "scrap_generation_scenario": "circular_economy",
         "circularity_file": "global_best_practice",
     }
 
@@ -61,7 +59,6 @@ def test_form_invalid_with_end_year_before_start_year():
         "end_year": 2025,
         "total_steel_demand_scenario": "accelerated_transition",
         "green_steel_demand_scenario": "high_efficiency",
-        "scrap_generation_scenario": "circular_economy",
         "circularity_file": "high_scrap_availability",
     }
     form = ModelRunCreateForm(data=form_data)
@@ -79,7 +76,6 @@ def test_form_valid_with_same_start_and_end_year(ready_data_preparation):
         "end_year": 2025,
         "total_steel_demand_scenario": "business_as_usual",
         "green_steel_demand_scenario": "business_as_usual",
-        "scrap_generation_scenario": "business_as_usual",
         "circularity_file": "",
     }
     form = ModelRunCreateForm(data=form_data)
@@ -95,7 +91,6 @@ def test_post_modelrun_with_scenario_options(mock_technology_extraction, client,
         {
             "total_steel_demand_scenario": "accelerated_transition",
             "green_steel_demand_scenario": "climate_neutrality",
-            "scrap_generation_scenario": "circular_economy",
             "circularity_file": "eu_circular_economy",
             # Technology fields
             "bf_allowed": True,
@@ -121,7 +116,6 @@ def test_post_modelrun_with_scenario_options(mock_technology_extraction, client,
     # Check that the scenario options were saved in the config
     assert modelrun.config["total_steel_demand_scenario"] == "accelerated_transition"
     assert modelrun.config["green_steel_demand_scenario"] == "climate_neutrality"
-    assert modelrun.config["scrap_generation_scenario"] == "circular_economy"
     assert modelrun.config["circularity_file"] == "eu_circular_economy"
 
     # Check technology fields in the new technology_settings structure
@@ -139,7 +133,6 @@ def test_form_render_includes_demand_fields(mock_technology_extraction, client):
     # Check that the new fields are in the response
     assert b'name="total_steel_demand_scenario"' in response.content
     assert b'name="green_steel_demand_scenario"' in response.content
-    assert b'name="scrap_generation_scenario"' in response.content
     assert b'name="circularity_file"' in response.content
 
     # Check that the section headers are included
@@ -223,21 +216,7 @@ def test_demand_scenario_choices_exist(scenario):
     """Test that expected scenario choices are available in demand fields."""
     form = ModelRunCreateForm()
 
-    # Check only the total and green steel demand fields (not scrap_generation)
+    # Check the total and green steel demand fields
     for field_name in ["total_steel_demand_scenario", "green_steel_demand_scenario"]:
         choices = dict(form.fields[field_name].choices)
         assert scenario in choices, f"{scenario} not found in {field_name} choices"
-
-
-@pytest.mark.django_db
-def test_scrap_generation_has_limited_choices():
-    """Test that scrap_generation_scenario only has BAU and High circularity options."""
-    form = ModelRunCreateForm()
-    choices = dict(form.fields["scrap_generation_scenario"].choices)
-
-    # Should only have 2 choices
-    assert len(choices) == 2
-    assert "business_as_usual" in choices
-    assert choices["business_as_usual"] == "BAU"
-    assert "circular_economy" in choices
-    assert choices["circular_economy"] == "High circularity"

@@ -510,20 +510,6 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.Select(attrs={"class": "form-select field-not-connected", "disabled": True}),
     )
 
-    # Specific choices for scrap generation scenario
-    SCRAP_GENERATION_CHOICES = [
-        ("business_as_usual", "BAU"),
-        ("circular_economy", "High circularity"),
-    ]
-
-    scrap_generation_scenario = forms.ChoiceField(
-        choices=SCRAP_GENERATION_CHOICES,
-        initial="business_as_usual",
-        required=False,
-        help_text="Select scenario for scrap generation and circularity",
-        widget=forms.Select(attrs={"class": "form-select field-connected"}),
-    )
-
     chosen_grid_emissions_scenario = forms.ChoiceField(
         choices=[],
         initial="Business As Usual",
@@ -833,7 +819,6 @@ class ModelRunCreateForm(forms.ModelForm):
             # Demand and Circularity
             "total_steel_demand_scenario",
             "green_steel_demand_scenario",
-            "scrap_generation_scenario",
             "circularity_file",
             # Technology fields are now dynamically generated from POST data
             # Technology options
@@ -883,15 +868,11 @@ class ModelRunCreateForm(forms.ModelForm):
         if cleaned_data.get("random_seed") is None:
             cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else 42
 
-        # geographical_clustering_scope is a no-op unless
-        # enable_furnace_group_clustering is also on; coerce to iso3 (no-op) so the
-        # stored config reflects actual runtime behaviour.
+        # With clustering off the model uses "plant" for hot metal access, so the stored config records that
         if not cleaned_data.get("enable_furnace_group_clustering"):
-            cleaned_data["geographical_clustering_scope"] = "iso3"
+            cleaned_data["geographical_clustering_scope"] = "plant"
 
         # Set default values for fields that are not required but need values
-        if not cleaned_data.get("scrap_generation_scenario"):
-            cleaned_data["scrap_generation_scenario"] = "business_as_usual"
         if not cleaned_data.get("total_steel_demand_scenario"):
             cleaned_data["total_steel_demand_scenario"] = "business_as_usual"
         if not cleaned_data.get("green_steel_demand_scenario"):

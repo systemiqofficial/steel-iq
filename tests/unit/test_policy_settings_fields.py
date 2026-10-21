@@ -76,7 +76,6 @@ class TestPolicySettingsFields(TestCase):
             # Add other required fields
             "total_steel_demand_scenario": "business_as_usual",
             "green_steel_demand_scenario": "business_as_usual",
-            "scrap_generation_scenario": "business_as_usual",
         }
 
         form = ModelRunCreateForm(data=form_data)

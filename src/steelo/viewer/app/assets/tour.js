@@ -165,7 +165,10 @@ const TOUR_STEPS = [
     target: () => { const l = document.querySelector("#tour-link");
                     return l.getClientRects().length ? l : document.querySelector("#menu-toggle"); },
     at: "bottom",
-    body: "<p>Restart it any time from <b>Tour</b> in the top bar (under the ☰ on a narrow screen). "
+    // Framed by the app, the banner and both targets are hidden: the card sits mid-frame and names the app's Tour
+    body: () => "<p>Restart it any time from <b>Tour</b> "
+      + (document.documentElement.classList.contains("framed") ? "above the viewer. "
+        : "in the top bar (under the ☰ on a narrow screen). ")
       + "The sidebar width, the folded bars and "
       + "the filters card's height are remembered in this browser.</p>",
   },

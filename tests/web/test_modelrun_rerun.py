@@ -146,3 +146,29 @@ def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
     assert not output_dir.exists()
     assert not modelrun.simulation_plots.exists()
     assert not modelrun.result_images.exists()
+
+
+@pytest.mark.django_db
+def test_rerun_refused_for_lack_of_workers_keeps_the_previous_outputs(client, monkeypatch, temp_media_root):
+    """With no worker to take it, a rerun leaves the run's state and output folder as they were."""
+    monkeypatch.setattr(
+        "steeloweb.views_worker.check_worker_availability_for_simulation",
+        lambda: {"status": "no_workers", "message": "No workers are running.", "data": {}},
+    )
+    output_dir = Path(temp_media_root) / "model_outputs" / "run_old"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.csv").write_text("partial")
+    modelrun = ModelRun.objects.create(
+        state=ModelRun.RunState.FAILED,
+        error_message="RuntimeError\n\nTraceback:\nValueError: boom",
+        output_directory=str(output_dir),
+    )
+
+    response = client.post(reverse("rerun-modelrun", args=[modelrun.pk]))
+
+    assert response.status_code == 302
+    assert response.url == reverse("modelrun-detail", args=[modelrun.pk])
+    modelrun.refresh_from_db()
+    assert modelrun.state == ModelRun.RunState.FAILED
+    assert modelrun.output_directory == str(output_dir)
+    assert (output_dir / "old.csv").exists()

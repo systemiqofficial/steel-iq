@@ -2,6 +2,7 @@
 .banner { flex: none; height: 64px; background: #001868; color: #fff;
           display: flex; align-items: center; gap: 16px; padding: 0 16px;
           box-shadow: 0 4px 10px rgba(0, 0, 0, .15); position: relative; z-index: 10; }
+.framed .banner { display: none; }
 .banner .logo { flex: 1; display: flex; justify-content: flex-start; min-width: 0; }
 .banner .logo img { height: 40px; width: auto; display: block; }
 .banner .brand { display: flex; flex-direction: column; align-items: center; line-height: 1;
