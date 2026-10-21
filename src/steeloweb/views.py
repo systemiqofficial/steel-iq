@@ -212,11 +212,24 @@ def run_simulation(request, pk):
 
 @require_POST
 def rerun_modelrun(request, pk):
-    """Reset a failed run that crashed and enqueue it again."""
+    """Reset a failed run that crashed and enqueue it again.
+
+    Notes:
+        Worker availability is checked before the reset, so a rerun refused for want of workers or capacity keeps the
+        previous attempt's state and outputs.
+    """
     modelrun = get_object_or_404(ModelRun, pk=pk)
 
     if not modelrun.can_rerun:
         messages.error(request, "Only cancelled runs or runs that failed due to an exception can be rerun.")
+        return redirect("modelrun-detail", pk=pk)
+
+    from steeloweb.views_worker import check_worker_availability_for_simulation
+
+    availability = check_worker_availability_for_simulation()
+    if availability["status"] in ("no_capacity", "no_workers"):
+        request.session.pop("simulation_warning", None)
+        messages.error(request, availability["message"])
         return redirect("modelrun-detail", pk=pk)
 
     modelrun.reset_for_rerun()
