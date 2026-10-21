@@ -416,7 +416,7 @@ def run_full_simulation() -> None:
                 config.carbon_border_export_rebates = True
                 console.print("[green]Carbon border export rebates enabled[/green]")
             # Override trade LP solver backend from command line
-            if args.optimization_solver != "highs":
+            if args.optimization_solver != config_default("optimization_solver"):
                 config.optimization_solver = args.optimization_solver
                 console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
                 if args.optimization_solver == "gurobi":
@@ -532,7 +532,7 @@ def run_full_simulation() -> None:
                     config.carbon_border_export_rebates = True
                     console.print("[green]Carbon border export rebates enabled[/green]")
                 # Override trade LP solver backend from command line
-                if args.optimization_solver != "highs":
+                if args.optimization_solver != config_default("optimization_solver"):
                     config.optimization_solver = args.optimization_solver
                     console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
                     if args.optimization_solver == "gurobi":
