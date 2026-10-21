@@ -758,25 +758,13 @@ def create_modelrun(request):
             # A blank field takes the class default; an entered value is kept, so 0 stays 0
             simulation_fields = {config_field.name for config_field in fields(SimulationConfig)}
             transport_costs = config_default("geo_config.transportation_cost_per_km_per_ton")
-            unread_fields = {
-                "total_steel_demand_scenario",
-                "green_steel_demand_scenario",
-                "circularity_file",
-                "hydrogen_subsidies",
-                "esf_cost_scenario",
-                "moe_cost_scenario",
-                "electrowinning_cost_scenario",
-                "ccs_cost_scenario",
-            }
             config = {}
             for field_name, value in form.cleaned_data.items():
                 if field_name in ("name", "data_preparation") or field_name in transport_costs:
                     continue
                 if isinstance(value, Decimal):
                     value = float(value)
-                if field_name in unread_fields:
-                    config[field_name] = value
-                elif value is None or value == "":
+                if value is None or value == "":
                     config_name = field_name if field_name in simulation_fields else f"geo_config.{field_name}"
                     config[field_name] = config_default(config_name)
                 elif field_name in ("expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"):

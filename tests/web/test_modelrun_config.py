@@ -68,6 +68,17 @@ OFF_DEFAULT_POST = {
     "capacity_policy_capacity_pool_max_retry_years": 4,
     "capacity_policy_renovation_counts_as_replace": False,
 }
+# Inputs that set no run setting and left the form
+REMOVED_INPUTS = (
+    "total_steel_demand_scenario",
+    "green_steel_demand_scenario",
+    "circularity_file",
+    "hydrogen_subsidies",
+    "esf_cost_scenario",
+    "moe_cost_scenario",
+    "electrowinning_cost_scenario",
+    "ccs_cost_scenario",
+)
 # Switched off, these overwrite or reset other posted values, so they stay at their default (on)
 KEPT_ON = ("probabilistic_agents", "enable_furnace_group_clustering")
 MT_FIELDS = ("expanded_capacity", "capacity_limit_iron", "capacity_limit_steel")
@@ -328,3 +339,20 @@ def test_create_form_stores_the_technologies_left_unticked_for_greenfield(
 
     assert response.status_code == 302
     assert ModelRun.objects.get().config["excluded_greenfield_technologies"] == ["EAF"]
+
+
+@pytest.mark.django_db
+def test_create_page_shows_none_of_the_removed_inputs_and_a_post_without_them_creates_a_run(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+):
+    """The create page renders none of the removed inputs, and a post without them creates a run storing none."""
+    page = client.get(reverse("create-modelrun")).content.decode()
+
+    response = client.post(reverse("create-modelrun"), data=valid_modelrun_form_data)
+
+    assert [name for name in REMOVED_INPUTS if name in page] == []
+    assert "Demand and circularity" not in page
+    assert response.status_code == 302
+    assert [name for name in REMOVED_INPUTS if name in ModelRun.objects.get().config] == []

@@ -82,9 +82,6 @@ class TestPolicySettingsFields(TestCase):
             "data_preparation": data_prep.id,  # Required field
             "use_iron_ore_premiums": False,
             "include_tariffs": False,
-            # Add other required fields
-            "total_steel_demand_scenario": "business_as_usual",
-            "green_steel_demand_scenario": "business_as_usual",
         }
 
         form = ModelRunCreateForm(data=form_data)

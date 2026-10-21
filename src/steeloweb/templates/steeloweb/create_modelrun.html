@@ -94,12 +94,6 @@ function resetPolicySettings() {
     document.getElementById('id_capacity_policy_enabled').dispatchEvent(new Event('change'));
 }
 
-function resetDemandSettings() {
-    // Note: total_steel_demand_scenario and green_steel_demand_scenario are disabled
-    // Circularity file is disabled
-    // document.getElementById('id_circularity_file').value = '';
-}
-
 function resetTechnologySettings() {
     // Dynamic reset based on HTMX-loaded content
     // Reset all technology fields that start with 'tech_'
@@ -1336,59 +1330,6 @@ document.head.appendChild(style);
                                 </div>
                             </div>
                         </div>
-
-                        <!-- Demand and Circularity section - commented out as requested -->
-                        <!--
-                        <div class="card mb-4">
-                            <div class="card-header bg-light">
-                                <h5 class="mb-0">Demand and circularity</h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="mb-3 row">
-                                    <label for="{{ form.total_steel_demand_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select total steel demand scenario:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.total_steel_demand_scenario }}
-                                        {% if form.total_steel_demand_scenario.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.total_steel_demand_scenario.errors }}
-                                        </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                
-                                <div class="mb-3 row">
-                                    <label for="{{ form.green_steel_demand_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select green steel demand scenario:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.green_steel_demand_scenario }}
-                                        {% if form.green_steel_demand_scenario.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.green_steel_demand_scenario.errors }}
-                                        </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                
-                                <div class="mb-3 row">
-                                    <label for="{{ form.circularity_file.id_for_label }}" class="col-sm-4 col-form-label">Circularity Data File:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.circularity_file }}
-                                        {% if form.circularity_file.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.circularity_file.errors }}
-                                        </div>
-                                        {% endif %}
-                                        <small class="form-text text-muted">
-                                            {{ form.circularity_file.help_text }}
-                                        </small>
-                                    </div>
-                                </div>
-                                
-                                <div class="text-end">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetDemandSettings()">Return to default settings</button>
-                                </div>
-                            </div>
-                        </div>
-                        -->
 
                         <!-- Technologies Section - Loads dynamically via HTMX or rendered with preserved values -->
                         {% if technologies %}

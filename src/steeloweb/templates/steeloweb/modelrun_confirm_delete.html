@@ -80,10 +80,10 @@
                                     <td>Years:</td>
                                     <td>{{ object.config.start_year }} - {{ object.config.end_year }}</td>
                                 </tr>
-                                {% if object.config.total_steel_demand_scenario %}
+                                {% if object.config.chosen_demand_scenario %}
                                 <tr>
                                     <td>Demand Scenario:</td>
-                                    <td>{{ object.config.total_steel_demand_scenario }}</td>
+                                    <td>{{ object.config.chosen_demand_scenario }}</td>
                                 </tr>
                                 {% endif %}
                             </tbody>

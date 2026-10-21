@@ -127,16 +127,6 @@ class ModelRunCreateForm(forms.ModelForm):
             attrs["disabled"] = True
         return attrs
 
-    SCENARIO_CHOICES = [
-        ("business_as_usual", "Business As Usual"),
-        ("system_change", "System Change"),
-        ("accelerated_transition", "Accelerated Transition"),
-        ("climate_neutrality", "Climate Neutrality 2050"),
-        ("high_efficiency", "High Efficiency"),
-        ("circular_economy", "Circular Economy Focus"),
-        ("technology_breakthrough", "Technology Breakthrough"),
-    ]
-
     # Geospatial section choices
     INCLUDED_POWER_MIX_CHOICES = [
         ("85% baseload + 15% grid", "85% baseload + 15% grid"),
@@ -615,47 +605,12 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
-    # Demand and Circularity fields
-    total_steel_demand_scenario = forms.ChoiceField(
-        choices=SCENARIO_CHOICES,
-        initial="business_as_usual",
-        required=False,
-        help_text="[Not yet implemented] Select scenario for total steel demand",
-        widget=forms.Select(attrs={"class": "form-select field-not-connected", "disabled": True}),
-    )
-
-    green_steel_demand_scenario = forms.ChoiceField(
-        choices=SCENARIO_CHOICES,
-        initial="business_as_usual",
-        required=False,
-        help_text="[Not yet implemented] Select scenario for green steel demand",
-        widget=forms.Select(attrs={"class": "form-select field-not-connected", "disabled": True}),
-    )
-
     chosen_grid_emissions_scenario = forms.ChoiceField(
         choices=[],
         initial=config_default("chosen_grid_emissions_scenario"),
         required=False,
         help_text="Trajectory of grid electricity emissivity used to compute indirect emissions for each furnace group.",
         widget=forms.Select(attrs={"class": "form-select"}),
-    )
-
-    # Placeholder for circularity file selection
-    CIRCULARITY_CHOICES = [
-        ("", "Default circularity data"),
-        ("standard_recycling", "Standard Recycling Rates (2023)"),
-        ("enhanced_recycling", "Enhanced Recycling Program"),
-        ("eu_circular_economy", "EU Circular Economy Package"),
-        ("global_best_practice", "Global Best Practice Standards"),
-        ("high_scrap_availability", "High Scrap Availability Scenario"),
-        ("custom", "Custom Circularity Data"),
-    ]
-
-    circularity_file = forms.ChoiceField(
-        choices=CIRCULARITY_CHOICES,
-        required=False,
-        widget=forms.Select(attrs={"class": "form-select field-not-connected", "disabled": True}),
-        help_text="[Not yet implemented] Choose a custom circularity data file or upload a new one",
     )
 
     # Technology fields
@@ -676,24 +631,8 @@ class ModelRunCreateForm(forms.ModelForm):
         ("custom", "Custom Resource Values"),
     ]
 
-    COST_SCENARIO_CHOICES = [
-        ("", "Select cost scenario"),
-        ("low_cost", "Low Cost"),
-        ("medium_cost", "Medium Cost"),
-        ("high_cost", "High Cost"),
-        ("optimistic", "Optimistic"),
-        ("pessimistic", "Pessimistic"),
-    ]
-
     # Technology fields will be dynamically generated based on available technologies
     # from the data preparation instead of being hardcoded here
-
-    hydrogen_subsidies = forms.BooleanField(
-        initial=False,
-        required=False,
-        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-not-connected", "disabled": True}),
-        help_text="[Not yet implemented] Introduce regional OPEX subsidies for hydrogen use by country/region",
-    )
 
     hydrogen_ceiling_percentile = forms.DecimalField(
         label="Hydrogen ceiling percentile",
@@ -786,35 +725,6 @@ class ModelRunCreateForm(forms.ModelForm):
         required=False,
         help_text="Cost for long-distance hydrogen pipeline transport",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
-    )
-
-    # Cost scenario fields
-    esf_cost_scenario = forms.ChoiceField(
-        choices=COST_SCENARIO_CHOICES,
-        initial="",
-        widget=forms.Select(attrs={"class": "form-select"}),
-        required=False,
-    )
-
-    moe_cost_scenario = forms.ChoiceField(
-        choices=COST_SCENARIO_CHOICES,
-        initial="",
-        widget=forms.Select(attrs={"class": "form-select"}),
-        required=False,
-    )
-
-    electrowinning_cost_scenario = forms.ChoiceField(
-        choices=COST_SCENARIO_CHOICES,
-        initial="",
-        widget=forms.Select(attrs={"class": "form-select"}),
-        required=False,
-    )
-
-    ccs_cost_scenario = forms.ChoiceField(
-        choices=COST_SCENARIO_CHOICES,
-        initial="",
-        widget=forms.Select(attrs={"class": "form-select"}),
-        required=False,
     )
 
     # Geospatial section fields - Not yet implemented
@@ -961,21 +871,11 @@ class ModelRunCreateForm(forms.ModelForm):
             "capacity_policy_credit_validity_years",
             "capacity_policy_capacity_pool_max_retry_years",
             "capacity_policy_renovation_counts_as_replace",
-            # Demand and Circularity
-            "total_steel_demand_scenario",
-            "green_steel_demand_scenario",
-            "circularity_file",
             # Technology fields are now dynamically generated from POST data
             # Technology options
-            "hydrogen_subsidies",
             "hydrogen_ceiling_percentile",
             "intraregional_trade_allowed",
             "long_dist_pipeline_transport_cost",
-            # Cost scenarios
-            "esf_cost_scenario",
-            "moe_cost_scenario",
-            "electrowinning_cost_scenario",
-            "ccs_cost_scenario",
             # Geospatial fields
             "included_power_mix",
             "max_slope",
@@ -1071,12 +971,6 @@ class ModelRunCreateForm(forms.ModelForm):
                     "capacity_policy_credit_validity_years",
                     "Credit validity requires the capacity-replacement policy to be enabled.",
                 )
-
-        # Set default values for fields that are not required but need values
-        if not cleaned_data.get("total_steel_demand_scenario"):
-            cleaned_data["total_steel_demand_scenario"] = "business_as_usual"
-        if not cleaned_data.get("green_steel_demand_scenario"):
-            cleaned_data["green_steel_demand_scenario"] = "business_as_usual"
 
         return cleaned_data
 

@@ -11,14 +11,6 @@ NO_COUNTERPART = {
     "name",
     "randomise_seed",
     "data_preparation",
-    "total_steel_demand_scenario",
-    "green_steel_demand_scenario",
-    "circularity_file",
-    "hydrogen_subsidies",
-    "esf_cost_scenario",
-    "moe_cost_scenario",
-    "electrowinning_cost_scenario",
-    "ccs_cost_scenario",
     "capacity_policy_no_swap_cutoff",
 }
 # Entered in Mt, stored in tonnes
