@@ -18,6 +18,7 @@ from django.http import (
     Http404,
     HttpRequest,
     HttpResponse,
+    HttpResponseNotFound,
     HttpResponsePermanentRedirect,
     HttpResponseServerError,
     JsonResponse,
@@ -170,11 +171,14 @@ def viewer_inputs(request: HttpRequest) -> HttpResponse:
         request: The GET request.
 
     Returns:
-        The catalogue's inputs; a 500 with the error as plain text when the runs' inputs do not line up.
+        The catalogue's inputs; a plain-text 404 when no run is listed yet, as for ``geo.json``; a 500 with the error
+        as plain text when the runs' inputs do not line up.
     """
     from steelo.viewer import catalogue
 
     runs, _ = viewer_runs()
+    if not runs:
+        return HttpResponseNotFound("no finished run yet", content_type="text/plain; charset=utf-8")
     manifest = catalogue.build_manifest(runs, with_made_in=True)
     try:
         inputs = catalogue.build_inputs(runs, manifest)

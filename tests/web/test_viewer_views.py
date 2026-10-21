@@ -28,3 +28,13 @@ def test_run_file_view_serves_only_files_inside_a_listed_run_folder(client, tmp_
     assert client.get("/viewer/runs/run_1/%2e%2e/%2e%2e/secret.txt").status_code == 404
     assert client.get("/viewer/runs/run_1/outside").status_code == 404
     assert client.get("/viewer/runs/run_2/viewer/run.json").status_code == 404
+
+
+@pytest.mark.django_db
+def test_inputs_view_answers_no_listed_run_with_a_plain_404(client):
+    """With no finished run listed yet, inputs.json is a plain-text 404 saying so, which View data shows, not a 500."""
+    response = client.get("/viewer/inputs.json")
+
+    assert response.status_code == 404
+    assert response["Content-Type"] == "text/plain; charset=utf-8"
+    assert response.content == b"no finished run yet"
