@@ -94,3 +94,34 @@ def test_excluded_settings_name_only_real_config_fields():
     )
 
     assert catalogue.EXCLUDED_SETTINGS <= real
+
+
+def test_discover_runs_names_each_skipped_folder_in_one_warning_only(tmp_path, caplog):
+    """
+    Tests that a run in progress (simulation_config.json, no viewer/run.json) is named in a warning the first time
+    the runs are found and not again, that a run started later is named once in its own warning, and that a
+    run is named again once it has been listed and has lost its run.json.
+    """
+    write_run(tmp_path / "sim_1", "base", "2026-10-20T10:00:00")
+    for folder in ("sim_2", "sim_3"):
+        (tmp_path / folder).mkdir()
+    (tmp_path / "sim_2" / "simulation_config.json").write_text("{}")
+
+    with caplog.at_level("WARNING", logger=catalogue.__name__):
+        catalogue.discover_runs(tmp_path, [])
+        catalogue.discover_runs(tmp_path, [])
+        (tmp_path / "sim_3" / "simulation_config.json").write_text("{}")
+        catalogue.discover_runs(tmp_path, [])
+        write_run(tmp_path / "sim_2", "later", "2026-10-20T10:01:00")
+        listed = catalogue.discover_runs(tmp_path, [])
+        (tmp_path / "sim_2" / "viewer" / "run.json").unlink()
+        catalogue.discover_runs(tmp_path, [])
+        found = catalogue.discover_runs(tmp_path, [])
+
+    assert listed == [tmp_path / "sim_1", tmp_path / "sim_2"]
+    assert found == [tmp_path / "sim_1"]
+    assert [record.getMessage() for record in caplog.records] == [
+        f"skipped, no viewer/run.json: {tmp_path / 'sim_2'}",
+        f"skipped, no viewer/run.json: {tmp_path / 'sim_3'}",
+        f"skipped, no viewer/run.json: {tmp_path / 'sim_2'}",
+    ]

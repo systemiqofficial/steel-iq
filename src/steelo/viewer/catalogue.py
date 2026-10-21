@@ -61,6 +61,9 @@ EXCLUDED_SETTINGS = frozenset(
 )
 TONNE_FIELDS = frozenset({"expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"})
 MADE_IN = {"cli": "CLI", "app": "App", None: "unknown"}
+# Folders named in a "skipped" warning since they were last listed, so a run in progress is named once, not with
+# every page load, and a listed run that loses run.json is named again
+WARNED_SKIPPED: set[Path] = set()
 
 
 def read_run(run_dir: Path) -> dict[str, Any]:
@@ -89,20 +92,24 @@ def discover_runs(output_base: Path | None, run_dirs: list[Path]) -> list[Path]:
     Notes:
         Symlinked folders under ``output_base`` (``latest``) are skipped, so a run is listed once. A folder under
         ``output_base`` with ``simulation_config.json`` but no ``run.json`` (a run in progress, or one whose viewer
-        step failed) and a named folder without ``run.json`` are named in one warning.
+        step failed) and a named folder without ``run.json`` are named in one warning, once until the folder is
+        listed again, since the server calls this with every set file.
     """
     folders = (
         [] if output_base is None else sorted(p for p in output_base.iterdir() if p.is_dir() and not p.is_symlink())
     )
     candidates = folders + run_dirs
     runs = [folder for folder in candidates if (folder / VIEWER_DIR / RUN_NAME).is_file()]
+    WARNED_SKIPPED.difference_update(runs)
     skipped = [
         folder
         for folder in candidates
         if folder not in runs and (folder in run_dirs or (folder / CONFIG_NAME).is_file())
     ]
-    if skipped:
-        logger.warning(f"skipped, no viewer/run.json: {', '.join(str(folder) for folder in skipped)}")
+    unwarned = [folder for folder in skipped if folder not in WARNED_SKIPPED]
+    if unwarned:
+        logger.warning(f"skipped, no viewer/run.json: {', '.join(str(folder) for folder in unwarned)}")
+        WARNED_SKIPPED.update(unwarned)
     return sorted(runs, key=lambda run_dir: read_run(run_dir)["started"])
 
 
