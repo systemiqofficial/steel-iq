@@ -10,6 +10,7 @@ from django.urls import reverse
 
 from steelo import simulation
 from steelo.domain.constants import MT_TO_T
+from steeloweb import models
 from steeloweb.models import DataPackage, DataPreparation, ModelRun
 
 # One value per connected form field, each off its class default
@@ -400,15 +401,32 @@ def test_create_form_stores_the_technologies_left_unticked_for_greenfield(
     valid_modelrun_form_data,
     ready_data_preparation,
 ):
-    """Unticking EAF's "Greenfield" box and ticking BOF's stores ``["EAF"]``, lifting BOF's class-default exclusion."""
+    """Unticking EAF's and BF+CCS's "Greenfield" boxes and ticking BOF's stores the two raw codes.
+
+    BOF's class-default exclusion is lifted, and BF+CCS is stored as the master names it, not as its normalised
+    ``BFCCS``, because the plant agent compares the raw name.
+    """
+    technologies_path = ready_data_preparation.get_data_path() / "data" / "fixtures" / "technologies.json"
+    technologies = json.loads(technologies_path.read_text())
+    technologies["technologies"]["bfccs"] = {
+        **technologies["technologies"]["BF"],
+        "code": "BF+CCS",
+        "slug": "bfccs",
+        "normalized_code": "BFCCS",
+        "display_name": "BF+CCS",
+    }
+    technologies_path.write_text(json.dumps(technologies))
+    models._TECH_CACHE.clear()
     greenfield = {
-        f"tech_{slug}_greenfield": "on" for slug in ready_data_preparation.get_technologies() if slug != "EAF"
+        f"tech_{slug}_greenfield": "on"
+        for slug in ready_data_preparation.get_technologies()
+        if slug not in ("EAF", "bfccs")
     }
 
     response = client.post(reverse("create-modelrun"), data={**valid_modelrun_form_data, **greenfield})
 
     assert response.status_code == 302
-    assert ModelRun.objects.get().config["excluded_greenfield_technologies"] == ["EAF"]
+    assert ModelRun.objects.get().config["excluded_greenfield_technologies"] == ["EAF", "BF+CCS"]
 
 
 @pytest.mark.django_db
