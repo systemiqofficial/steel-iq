@@ -363,6 +363,10 @@ class SimulationConfig:
     )
     iron_to_steel_price_ratio: float = 0.8  # Ratio of steel price for iron floor (80% default)
 
+    # Tonnes of virgin iron (hot metal, pig iron, DRI, HBI) required per tonne of steel made from iron;
+    # scales the virgin iron demand that drives the future iron market price
+    iron_required_per_tonne_steel: float = 1.2
+
     # Capacity
     ## Furnace group capacity expansion size and initial capacity of new plants (in tonnes)
     expanded_capacity: float = 2.5 * MT_TO_T
@@ -563,6 +567,9 @@ class SimulationConfig:
 
         if self.opening_balance_multiplier < 0:
             raise ValueError("opening_balance_multiplier must be >= 0.0")
+
+        if self.iron_required_per_tonne_steel <= 0:
+            raise ValueError("iron_required_per_tonne_steel must be > 0.0")
 
         # Convert strings to Path objects if needed
         self.output_dir = Path(self.output_dir)
