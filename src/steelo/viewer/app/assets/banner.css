@@ -1,0 +1,40 @@
+/* Top banner: logo, title and the Tour link. */
+.banner { flex: none; height: 64px; background: #001868; color: #fff;
+          display: flex; align-items: center; gap: 16px; padding: 0 16px;
+          box-shadow: 0 4px 10px rgba(0, 0, 0, .15); position: relative; z-index: 10; }
+.banner .logo { flex: 1; display: flex; justify-content: flex-start; min-width: 0; }
+.banner .logo img { height: 40px; width: auto; display: block; }
+.banner .brand { display: flex; flex-direction: column; align-items: center; line-height: 1;
+                 color: #fff; text-decoration: none; min-width: 0; }
+.banner .brand:hover { opacity: .8; }
+/* Negative right margins cancel the trailing letter-spacing so the text centres truly. */
+.banner .brand .name { font-size: 28px; font-weight: 900; text-transform: uppercase;
+                       letter-spacing: .35em; margin-right: -.35em; white-space: nowrap; }
+.banner .brand .sub { font-size: 10px; font-weight: 600; text-transform: uppercase;
+                      letter-spacing: .18em; margin-right: -.18em; color: rgba(255, 255, 255, .7);
+                      margin-top: 5px; white-space: nowrap; }
+.banner .menu { flex: 1; display: flex; justify-content: flex-end; align-items: center; }
+.banner .menu-links { display: flex; align-items: center; gap: 24px; }
+.banner .menu a { font-size: 12px; font-weight: 600; text-transform: uppercase;
+                  letter-spacing: .18em; color: rgba(255, 255, 255, .7); text-decoration: none; }
+.banner .menu a:hover { color: #fff; }
+.banner .menu a.active { color: #fff; border-bottom: 2px solid #fff; padding-bottom: 4px; }
+.banner .menu-toggle { display: none; align-items: center; justify-content: center; width: 36px; height: 36px;
+                       padding: 0; border: 0; border-radius: 6px; background: none; color: #fff; cursor: pointer; }
+.banner .menu-toggle:hover { background: rgba(255, 255, 255, .12); }
+/* Folded, once index.html finds the links no longer fit: a burger opening them as a panel. */
+.banner.compact .menu-toggle { display: flex; }
+.banner.compact .menu-links { display: none; position: absolute; top: 100%; right: 8px; min-width: 170px;
+                              flex-direction: column; align-items: stretch; gap: 0; padding: 6px 0;
+                              background: #001868; border-radius: 0 0 8px 8px;
+                              box-shadow: 0 8px 18px rgba(0, 0, 0, .25); }
+.banner.compact.menu-open .menu-links { display: flex; }
+.banner.compact .menu-links a { padding: 11px 20px; text-align: right; }
+.banner.compact .menu-links a.active { border-bottom: 0; padding-bottom: 11px; }
+/* Phone widths: a smaller logo and title, the title centred between logo and burger. */
+.banner.narrow { gap: 10px; padding: 0 12px; }
+.banner.narrow .logo, .banner.narrow .menu { flex: none; }
+.banner.narrow .brand { flex: 1; }
+.banner.narrow .logo img { height: 24px; }
+.banner.narrow .brand .name { font-size: 20px; }
+.banner.narrow .brand .sub { font-size: 8px; margin-top: 4px; }

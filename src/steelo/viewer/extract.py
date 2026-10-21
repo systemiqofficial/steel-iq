@@ -83,7 +83,6 @@ import logging
 import math
 import re
 import shutil
-import sys
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -1337,7 +1336,6 @@ def regenerate(argv: list[str]) -> int:
         "--master-excel", type=Path, help="master workbook to read instead of the one each run recorded"
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     missing = [path for run_dir in args.run_dirs for path in missing_inputs(run_dir, args.master_excel)]
     for path in missing:
@@ -1347,7 +1345,3 @@ def regenerate(argv: list[str]) -> int:
     for run_dir in args.run_dirs:
         write_viewer_files(run_dir, args.master_excel)
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(regenerate(sys.argv[1:]))
