@@ -3,7 +3,7 @@
 The capacity-policy motion call sites dual-write into this always-bound
 :class:`~steelo.capacity_policy.recorder.CapacityPolicyRecorder`, bound fresh
 at every bootstrap. Columns and conventions:
-docs/domain_simulation_logic/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts.
+docs/domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts.
 """
 
 import csv

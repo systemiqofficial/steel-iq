@@ -202,7 +202,7 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 **Notes:**
 - If NPV calculation fails (returns NaN due to missing data or invalid inputs), it is set to negative infinity to exclude that location-technology pair from selection.
 - For more information on the NPV calculation, see related documentation in [Calculate Cost](../plant_agent_model/calculate_costs.md).
-- With China's capacity-replacement policy enabled, a Chinese candidate's NPV is taken at the capacity the policy would permit the route to build (the planned capacity, or ÷ 1.5 for an emission-intense route), so a penalised route is valued as it would actually be built. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
+- With China's capacity-replacement policy enabled, a Chinese candidate's NPV is taken at the capacity the policy would permit the route to build (the planned capacity, or ÷ 1.5 for an emission-intense route), so a penalised route is valued as it would actually be built. See [China Capacity-Replacement Policy](../plant_agent_model/capacity_replacement_policy.md).
 
 ### Step 5: Top Opportunity Selection
 

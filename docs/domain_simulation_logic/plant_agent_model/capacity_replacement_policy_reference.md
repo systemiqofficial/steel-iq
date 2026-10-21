@@ -1,6 +1,6 @@
 # Capacity-Replacement Policy: Technical Reference
 
-Companion to the [China Capacity-Replacement Policy](capacity_replacement_policy.md) page, which explains what the policy does and why. This page is the reference for authoring the input sheets, running the policy and working on the code: the module layout and binding lifecycle, the three master-Excel sheets column by column with their validation rules, how routes are classified and ratios resolved at run time, the pool's arithmetic and units, the sequence of events within a year, and the run artefacts with their reconciliation contract. The artefact file formats themselves are listed in [Outputs and Post-Processing](outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts).
+Companion to the [China Capacity-Replacement Policy](capacity_replacement_policy.md) page, which explains what the policy does and why. This page is the reference for authoring the input sheets, running the policy and working on the code: the module layout and binding lifecycle, the three master-Excel sheets column by column with their validation rules, how routes are classified and ratios resolved at run time, the pool's arithmetic and units, the sequence of events within a year, and the run artefacts with their reconciliation contract. The artefact file formats themselves are listed in [Outputs and Post-Processing](../overarching_elements/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts).
 
 ## Module layout
 
@@ -64,7 +64,7 @@ Consequences: a credit deposited at a year boundary is spendable from the next y
 
 ## The input sheets
 
-Three optional sheets in the master Excel, prefixed `Capacity pool - `. Column by column — the allowed values, what the model does with each, the rules enforced on them and the parameters that interact — they are documented in the [Master Input Reference](../user_guide/master_input_reference.md#china-capacity-replacement-policy-sheets). This section covers the pipeline behind them.
+Three optional sheets in the master Excel, prefixed `Capacity pool - `. Column by column — the allowed values, what the model does with each, the rules enforced on them and the parameters that interact — they are documented in the [Master Input Reference](../../user_guide/master_input_reference.md#china-capacity-replacement-policy-sheets). This section covers the pipeline behind them.
 
 **Fixtures.** Absence means no fixture is written (a *missing* fixture stays distinguishable from an *empty* one, and only the opening credits may be empty on an enabled run). Data preparation writes `fixtures/capacity_pool_provinces.json`, `fixtures/capacity_pool_technologies.json` and `fixtures/capacity_pool_opening_credits.json`, plus the generated diagnostic `fixtures/capacity_pool_ratio_grid.csv`. The fixtures are recreated on every preparation whether or not a run will enable the policy, so authoring errors fail every preparation; unauthored flags only matter to an enabled run.
 
@@ -123,7 +123,7 @@ A `Credit` carries `amount_mt`, `vintage_year`, `region_tag` (cluster name or `N
 
 ## Artefacts and the reconciliation contract
 
-The recorder appends a row beside every `[CAPACITY POOL]` log line that states the same fact, so files and log can be cross-checked line for line. The four CSVs and the global motions file are described in [Outputs and Post-Processing](outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts); what follows is the contract behind them.
+The recorder appends a row beside every `[CAPACITY POOL]` log line that states the same fact, so files and log can be cross-checked line for line. The four CSVs and the global motions file are described in [Outputs and Post-Processing](../overarching_elements/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts); what follows is the contract behind them.
 
 **Ledger operations**
 

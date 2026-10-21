@@ -16,9 +16,9 @@ Common options:
 - `--master-excel`: the master input workbook to prepare and run against (default: the packaged one, downloaded if needed).
 - `--log-level`: control verbosity (`INFO`, `DEBUG`, etc.).
 - `--demand-scenario` / `--scrap-scenario`: pick the `Scenario` rows of the master Excel "Demand and scrap availability" sheet used for steel demand and for scrap availability (both default to `BAU`; `--scrap-scenario` falls back to the demand scenario). Applied when the data is prepared, so each scenario pair gets its own preparation cache entry.
-- `--run-name`: human-readable run name shown in the interactive viewer titles (default: the `sim_<timestamp>` output directory name). The viewers themselves are described in [Outputs and postprocessing](../domain_simulation_logic/outputs_and_postprocessing.md).
-- `--enable-capacity-policy`: switch on China's capacity-replacement policy, which gates Chinese replacements and new builds on a national pool of retirement credits (off by default; needs the three `Capacity pool - …` sheets in the master Excel). `--credit-validity-years N` caps how long a banked credit stays spendable (default: no expiry). Policy runs additionally write `data/policy/` CSVs and `plots/capacity_pool/` charts, described in [Outputs and postprocessing](../domain_simulation_logic/outputs_and_postprocessing.md).
-- `--cbam-rebate`: rebate the carbon already paid on exports leaving a carbon border region, mirroring the import charge (off by default; see [Carbon border adjustments](../domain_simulation_logic/trade_model/overview_trade_model.md#carbon-border-adjustments)).
+- `--run-name`: human-readable run name shown in the interactive viewer titles (default: the `sim_<timestamp>` output directory name). The viewers themselves are described in [Outputs and postprocessing](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md).
+- `--enable-capacity-policy`: switch on China's capacity-replacement policy, which gates Chinese replacements and new builds on a national pool of retirement credits (off by default; needs the three `Capacity pool - …` sheets in the master Excel). `--credit-validity-years N` caps how long a banked credit stays spendable (default: no expiry). Policy runs additionally write `data/policy/` CSVs and `plots/capacity_pool/` charts, described in [Outputs and postprocessing](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md).
+- `--cbam-rebate`: rebate the carbon already paid on exports leaving a carbon border region, mirroring the import charge (off by default; see [Export rebates](../domain_simulation_logic/trade_model/trade_policy.md#export-rebates)).
 
 Each run writes its plots, CSVs and logs to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`; `--output-dir` is accepted but currently not used. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
 
@@ -36,8 +36,6 @@ To experiment with bespoke datasets:
    ```
 
 3. Inspect the generated outputs (plots, CSVs, logs) under the run's `sim_<timestamp>` directory.
-
-For notebook or service integrations, see the [Command-Line Entrypoints](commandline_entrypoints.md) reference.
 :::
 
 :::{only} not public

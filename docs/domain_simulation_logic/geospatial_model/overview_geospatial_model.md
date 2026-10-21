@@ -1,4 +1,4 @@
-# Geospatial Model Overview
+# Geospatial Model (GEO)
 
 The Geospatial Model determines where new iron and steel plants should be built globally by combining renewable energy optimization, location-based cost analysis, and multi-year business opportunity tracking.
 
@@ -62,3 +62,12 @@ The geospatial model integrates with the broader simulation:
 - **Input from Trade Model:** Market prices inform NPV calculations
 - **Input from Plant Agent Model:** Existing plant locations affect transportation cost calculations
 - **Output to Plant Agent Model:** New plants are added to the global plant repository
+
+
+```{toctree}
+:hidden:
+
+baseload_optimization_atlas
+priority_location_selection
+new_plant_opening
+```

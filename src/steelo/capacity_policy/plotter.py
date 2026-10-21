@@ -5,7 +5,7 @@ a policy-OFF run writes none, so :meth:`CapacityPoolPlotter.plot_all` draws
 nothing. Unknown ledger vocabulary raises rather than being dropped from a sum.
 Capacity-policy concepts have no house colour, so they take a stable slice of
 the house region palette in first-seen order. Chart set:
-docs/domain_simulation_logic/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts.
+docs/domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts.
 """
 
 import csv

@@ -29,7 +29,7 @@ The simulation year begins by updating the environment year counter and calculat
 
 **Key Output**: Active operating plants with current-year costs, demand, and carbon pricing ready for production allocation
 
-**For Details**: See [Environment](environment.md)
+**For Details**: See [Environment](overarching_elements/environment.md)
 
 ### 2. Trade (or Allocation) Model (TM)
 
@@ -50,7 +50,7 @@ The Trade Module solves a linear programming optimization problem representing t
 **Purpose**: Make economic decisions for all plants and plant groups
 
 **Process**:
-The Plant Agent Model uses data from the Trade Model obtained via the TM-PAM Connector (e.g., utilization rates, bills of materials, emissions) to evaluate economic viability through NPV calculations and issue strategic commands. After establishing market conditions (carbon costs, current and forecast prices), the model evaluates each furnace group for optimal action: renovate at end-of-life, switch technology mid-lifetime (accounting for stranded assets), close if unprofitable, or continue operations. Plant groups then evaluate expansion opportunities using 3-year price forecasts to identify the best NPV options across all plants and technologies. All capacity additions are subject to annual buildout limits, with separate constraints for steel and iron production to reflect supply chain realities. When China's capacity-replacement policy is enabled, Chinese replacements and additions are additionally gated on a national pool of retirement credits (see [China Capacity-Replacement Policy](capacity_replacement_policy.md)).
+The Plant Agent Model uses data from the Trade Model obtained via the TM-PAM Connector (e.g., utilization rates, bills of materials, emissions) to evaluate economic viability through NPV calculations and issue strategic commands. After establishing market conditions (carbon costs, current and forecast prices), the model evaluates each furnace group for optimal action: renovate at end-of-life, switch technology mid-lifetime (accounting for stranded assets), close if unprofitable, or continue operations. Plant groups then evaluate expansion opportunities using 3-year price forecasts to identify the best NPV options across all plants and technologies. All capacity additions are subject to annual buildout limits, with separate constraints for steel and iron production to reflect supply chain realities. When China's capacity-replacement policy is enabled, Chinese replacements and additions are additionally gated on a national pool of retirement credits (see [China Capacity-Replacement Policy](plant_agent_model/capacity_replacement_policy.md)).
 
 **Key Outputs**:
 - Strategic commands (renovate, switch, close, expand)
@@ -182,7 +182,16 @@ Data Collector
 - **Regional constraints**: Scrap availability and other secondary feedstock limits
 
 ## Related Documentation
-- [Plant Agent Model](plant_agent_model/overview_plant_agent_model.md)
-- [Geospatial Model](geospatial_model/overview_geospatial_model.md)
-- [Trade Model](trade_model/overview_trade_model.md)
-- [Environment Module](environment.md)
+- [Trade Model (TM)](trade_model/overview_trade_model.md)
+- [Plant Agent Model (PAM)](plant_agent_model/overview_plant_agent_model.md)
+- [Geospatial Model (GEO)](geospatial_model/overview_geospatial_model.md)
+- [Model Overarching Elements](overarching_elements/index.md): environment, sub-national geography, checkpoints, outputs
+
+```{toctree}
+:hidden:
+
+trade_model/overview_trade_model
+plant_agent_model/overview_plant_agent_model
+geospatial_model/overview_geospatial_model
+overarching_elements/index
+```

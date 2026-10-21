@@ -1,4 +1,4 @@
-# Trade LP Model - High-Level Overview
+# Trade Model (TM)
 
 ## Purpose
 
@@ -290,7 +290,7 @@ sum(incoming flows to demand center) + slack_variable = demand_quantity
 sum(flows matching tariff pattern) ≤ quota_limit
 ```
 
-**Example:** "China → EU steel flows ≤ 1M tons/year"
+**Example:** "China → Germany steel flows ≤ 1M tons/year". See [Tariffs, Quotas and Carbon Border Adjustments](trade_policy.md#tariffs-and-quotas).
 
 ---
 
@@ -547,12 +547,7 @@ LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)
 
 ### Carbon Border Adjustments
 
-**Applied during `build_lp_model()`, before the objective** (see `adapt_allocation_costs_for_carbon_border_mechanisms()` in the setup page):
-- Every legal arc from a production centre into a country covered by an active mechanism pays `max(0, E × P_d − C)` per tonne: embedded direct emissions of the product (own stage plus last year's upstream) at the destination's carbon price, net of carbon already paid (own stage plus last year's upstream)
-- The destination price is the country's national series, or the bloc's common series where the CBAM sheet flags one; a country under several mechanisms takes the highest
-- Two members of one mechanism never adjust each other's flows; supplier arcs are never adjusted
-- Export rebates are off by default (`SimulationConfig.carbon_border_export_rebates`)
-- The per-arc charge is recorded on `Allocations.carbon_border_charges` and booked into the importer's material cost like a tariff
+**Applied during `build_lp_model()`, before the objective.** Every legal arc from a production centre into a country covered by an active mechanism pays `max(0, E × P_d − C)` per tonne: the product's embedded direct emissions at the destination's carbon price, net of carbon already paid. See [Tariffs, Quotas and Carbon Border Adjustments](trade_policy.md#carbon-border-adjustments).
 
 ---
 
@@ -656,3 +651,11 @@ Key methods to review:
 - `add_objective_function_to_lp()` - Cost minimization formulation
 - `solve_lp_model()` - Solver invocation and diagnostics
 - `extract_solution()` - Result extraction and validation
+
+
+```{toctree}
+:hidden:
+
+trade_model_setup
+trade_policy
+```
