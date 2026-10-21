@@ -2,7 +2,7 @@
 
 Capacities flow in model tonnes at run time; the ``amount_mt`` names are a
 sheet-side convention. Filter rules, purges and units:
-docs/domain_simulation_logic/capacity_replacement_policy_reference.md#pool-arithmetic-and-units.
+docs/domain_simulation_logic/plant_agent_model/capacity_replacement_policy_reference.md#pool-arithmetic-and-units.
 """
 
 import bisect

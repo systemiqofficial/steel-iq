@@ -32,4 +32,5 @@ Centralized data preparation architecture transforming master Excel into validat
 003_configuration
 004_project_layout
 005_event_driven_architecture
+006_data_input_strategy
 ```

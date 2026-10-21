@@ -1,6 +1,6 @@
 # China Capacity-Replacement Policy
 
-Narrative companion to the reference sections in [Furnace Group Strategy](plant_agent_model/furnace_group_strategy.md) (the REPLACE hook), [Plant Expansions](plant_agent_model/plant_expansions.md) (the expansion gate), [New Plant Opening](geospatial_model/new_plant_opening.md) (the greenfield gate) and [Outputs and Post-Processing](outputs_and_postprocessing.md) (the artefacts a policy run leaves behind). The feature is built on the same pattern as the [CO2 Storage Capacity Gate](co2_storage_gate.md): a finite shared national stock, gated per decision at lifecycle transitions, injected as optional callables that default to `None`.
+Narrative companion to the reference sections in [Furnace Group Strategy](furnace_group_strategy.md) (the REPLACE hook), [Plant Expansions](plant_expansions.md) (the expansion gate), [New Plant Opening](../geospatial_model/new_plant_opening.md) (the greenfield gate) and [Outputs and Post-Processing](../overarching_elements/outputs_and_postprocessing.md) (the artefacts a policy run leaves behind). The feature is built on the same pattern as the [CO2 Storage Capacity Gate](co2_storage_gate.md): a finite shared national stock, gated per decision at lifecycle transitions, injected as optional callables that default to `None`.
 
 ## Why we need it
 
@@ -85,9 +85,9 @@ run_simulation --enable-capacity-policy
 run_simulation --enable-capacity-policy --credit-validity-years 5
 ```
 
-The run needs the three `Capacity pool - …` sheets in the master Excel (`CHN provinces`, `technologies`, `opening credits`), prepared into fixtures like every other sheet; their columns, allowed values and validation rules are in the [Master Input Reference](../user_guide/master_input_reference.md#china-capacity-replacement-policy-sheets). Data preparation validates them: authoring mistakes fail the preparation, unauthored classification flags only warn, and a policy-enabled run then refuses to bootstrap on any of those warnings. The policy also needs sub-national geo units for Chinese plants; when the geo-unit reference data is missing the run warns that it is region-blind, and every Chinese location that resolves to a bare `CHN` key is treated as non-key.
+The run needs the three `Capacity pool - …` sheets in the master Excel (`CHN provinces`, `technologies`, `opening credits`), prepared into fixtures like every other sheet; their columns, allowed values and validation rules are in the [Master Input Reference](../../user_guide/master_input_reference.md#china-capacity-replacement-policy-sheets). Data preparation validates them: authoring mistakes fail the preparation, unauthored classification flags only warn, and a policy-enabled run then refuses to bootstrap on any of those warnings. The policy also needs sub-national geo units for Chinese plants; when the geo-unit reference data is missing the run warns that it is region-blind, and every Chinese location that resolves to a bare `CHN` key is treated as non-key.
 
-Every gate decision, deposit and withdrawal is logged as a `[CAPACITY POOL] …` line, and the run writes a ledger, a yearly pool state, the gate decisions and the Chinese fleet motions to `data/policy/`, drawn as charts in `plots/capacity_pool/` — see [Outputs and Post-Processing](outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts).
+Every gate decision, deposit and withdrawal is logged as a `[CAPACITY POOL] …` line, and the run writes a ledger, a yearly pool state, the gate decisions and the Chinese fleet motions to `data/policy/`, drawn as charts in `plots/capacity_pool/` — see [Outputs and Post-Processing](../overarching_elements/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts).
 
 ## Key design choices
 
@@ -119,5 +119,5 @@ The policy's effect is largely what it *prevented*, which is why the ledger and 
 
 - [Capacity-Replacement Policy: Technical Reference](capacity_replacement_policy_reference.md) — module layout, the input sheets column by column, pool arithmetic and the artefact contract
 - [CO2 Storage Capacity Gate](co2_storage_gate.md) — the structurally identical gate this feature copies
-- [Furnace Group Strategy](plant_agent_model/furnace_group_strategy.md), [Plant Expansions](plant_agent_model/plant_expansions.md), [New Plant Opening](geospatial_model/new_plant_opening.md) — the decision paths the hooks sit in
-- [Outputs and Post-Processing](outputs_and_postprocessing.md) — the policy CSVs, charts and the decision-flow viewer
+- [Furnace Group Strategy](furnace_group_strategy.md), [Plant Expansions](plant_expansions.md), [New Plant Opening](../geospatial_model/new_plant_opening.md) — the decision paths the hooks sit in
+- [Outputs and Post-Processing](../overarching_elements/outputs_and_postprocessing.md) — the policy CSVs, charts and the decision-flow viewer

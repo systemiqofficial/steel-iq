@@ -53,3 +53,13 @@ Documentation of known technical debt and areas for improvement. Helps developer
 - Areas requiring refactoring
 - Future improvement opportunities
 - Migration plans and deprecations
+
+```{toctree}
+:hidden:
+
+just_commands
+style_guide_and_variable_naming
+electron_app
+create_modelrun_native_validation
+technical_debt
+```

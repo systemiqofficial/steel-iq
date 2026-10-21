@@ -186,13 +186,41 @@ usage: steelo-data-prepare [-h] [--output-dir OUTPUT_DIR]
 Prepare all data files for simulation.
 ```
 
-Key options:
-- `--output-dir`: Destination for generated JSON repositories (defaults to `$STEELO_HOME/data`).
-- `--cache-dir`: Location of reusable intermediate artefacts.
-- `--master-excel-file`: Alternate master input workbook to ingest.
-- `--force-refresh`: Rebuild everything even if cached results exist.
+Prepares every data file a simulation needs by extracting the raw files and creating the JSON repositories. `run_simulation` already prepares data automatically and caches the result, so you only need this command to prepare data without running a simulation.
+
+```bash
+# Prepare all data (uses the cache if available)
+steelo-data-prepare
+
+# Force fresh preparation (bypasses the cache and recreates all files)
+steelo-data-prepare --force-refresh
+
+# Use a specific master input workbook
+steelo-data-prepare --master-excel-file /path/to/master_input.xlsx
+
+# List all files that can be prepared
+steelo-data-prepare --list-files
+```
+
+Options:
+- `--output-dir`: Destination for the prepared files (default: `./data`). A custom directory bypasses the cache.
+- `--cache-dir`: Cache directory for downloaded data.
+- `--master-excel-file`: Master input workbook to use instead of the downloaded one.
+- `--geo-version`: Version of the geo-data package to use, for example `1.1.0-dev`. Can also be set with the `STEELO_GEO_VERSION` environment variable.
+- `--force-refresh`: Prepare again even if cached results exist. Implies `--no-skip-existing`.
+- `--skip-existing` / `--no-skip-existing`: Keep files that already exist (default) or recreate all of them.
+- `--list-files`: List every file that can be prepared, then exit.
+- `--verbose`: Show detailed progress.
 - `--use-furnace-units-sheet`: Build the starting fleet from the `Furnace units` sheet (default).
 - `--use-plants-sheet`: Build it from the older `Iron and steel plants` sheet instead, for workbooks authored before the `Furnace units` sheet existed. See the [Master Input Reference](master_input_reference.md#furnace-units).
+
+The command prepares files from four sources, in this order:
+1. **Master Excel files**: extracted from the master input workbook.
+2. **Core data files**: copied from the core-data package.
+3. **Derived files**: generated from other data files.
+4. **Geo data files**: extracted from the geo-data package.
+
+**Caching**: when `run_simulation` prepares data, it caches the result in `$STEELO_HOME/preparation_cache/`, keyed on the content of the master workbook. Later runs with the same workbook reuse the cache, typically in under a second. The timing shown is the original preparation time, even when the cache is used.
 
 ### steelo-data-recreate
 
@@ -214,6 +242,14 @@ Key options:
 
 Use `steelo-data-recreate` when you already have the packaged data archives and only need to regenerate the JSON repositories.
 
+```bash
+# Recreate from one package only
+steelo-data-recreate --package core-data
+
+# Download the packages again before recreating
+steelo-data-recreate --force-download
+```
+
 ### generate-geo-options
 
 ```shell
@@ -230,6 +266,7 @@ options:
                         ~/.steelo/data/fixtures)
   --out OUT             Output CSV path (default: ./geo_options.csv)
 ```
+
 
 Writes the list of province keys (`CHN:CN-HE` and so on) that the master workbook can use in its geo-keyed sheets, one row per unit. Data preparation already writes `geo_options.csv` to the data root when the geo-data package includes the Natural Earth admin-1 shapefile; run this command to regenerate it after preparation, or to write it elsewhere. It fails if `geo_hierarchy.json` has not been prepared yet. See [Sub-national Geography](../domain_simulation_logic/sub_national_geography.md).
 

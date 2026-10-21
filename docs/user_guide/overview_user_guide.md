@@ -27,18 +27,13 @@ Complete guide to running steel model simulations on your local machine. Covers:
 ### [CLI Commands](cli_commands.md)
 Reference documentation for all command-line interface tools:
 - **run_simulation**: Main command to run simulations with automatic data preparation and caching
+- **steelo-data-prepare** and **steelo-data-recreate**: Prepare the data files a simulation needs
+- **generate-geo-options**: List the sub-national geography keys the master workbook can use
 - **list-binaries**: View available Steel Model standalone binaries on S3
 - **download-binaries**: Download specific builds of the Electron app
 - **download-latest**: Get the latest version of the Electron app for your platform
 
 Each command includes usage examples, options, and practical tips.
-
-### [Command-Line Entrypoints](commandline_entrypoints.md)
-Detailed reference for programmatic access to CLI functionality. Covers:
-- Python functions behind CLI commands
-- Integration patterns for custom workflows
-- Examples of programmatic usage
-- Advanced configuration options
 
 ### [Configuration](configuration.md)
 Comprehensive guide to configuring the Steel Model simulation:
@@ -160,7 +155,10 @@ The Steel Model uses a structured data flow:
 
 ## Related Documentation
 
+:::{only} not public
 - **[Architecture Overview](../architecture/overview_architecture.md)**: Overall system design
+:::
+
 - **[Dashboard & UI](../dashboard/overview_dashboard.md)**: Web interface and Electron app documentation
 
 ## Getting Help
@@ -179,3 +177,15 @@ Common issues and solutions are documented in:
 - **Issue Tracker**: Report bugs and request features
 - **Documentation**: Comprehensive guides and API references
 - **Community**: Share experiences and get help
+
+
+```{toctree}
+:hidden:
+
+installation_guide
+running_simulations_locally
+configuration
+master_input_reference
+cli_commands
+LOGGING_GUIDE
+```

@@ -4,52 +4,28 @@ Welcome to the public-facing documentation for the Steel Model. This collection 
 installation, configuration, and conceptual understanding of the simulation model for external
 stakeholders.
 
+**New to Steel Model?** Start with the [User Guide Overview](user_guide/overview_user_guide) for installation, configuration, and running simulations.
+
+**Interested in the logic behind the model?** Check the [Model Overview](domain_simulation_logic/overview_simulation) to understand how the different modules of the model interact and the principles they follow.
+
+## Quick Navigation
+
+- **[User Guide](user_guide/overview_user_guide)** - Install, configure, and operate the Steel Model
+- **[Model Overview](domain_simulation_logic/overview_simulation)** - Understand how simulations work conceptually
+- **[Dashboards](dashboard/overview_dashboard)** - Explore the UI and monitoring tools
+
 ```{toctree}
 :caption: Get Started
 :maxdepth: 1
 
-README
 user_guide/overview_user_guide
-user_guide/installation_guide
-user_guide/running_simulations_locally
-user_guide/configuration
-user_guide/master_input_reference
-user_guide/cli_commands
-user_guide/commandline_entrypoints
-user_guide/LOGGING_GUIDE
 ```
 
 ```{toctree}
 :caption: Model Overview
-:maxdepth: 2
+:maxdepth: 1
 
 domain_simulation_logic/overview_simulation
-domain_simulation_logic/environment
-domain_simulation_logic/sub_national_geography
-domain_simulation_logic/checkpoint
-domain_simulation_logic/plant_agent_model/overview_plant_agent_model
-domain_simulation_logic/plant_agent_model/agent_definitions
-domain_simulation_logic/plant_agent_model/plant_agents_model_orchestration
-domain_simulation_logic/plant_agent_model/plant_agent_model_logic
-domain_simulation_logic/plant_agent_model/market_price_calculation
-domain_simulation_logic/plant_agent_model/furnace_group_strategy
-domain_simulation_logic/plant_agent_model/plant_expansions
-domain_simulation_logic/plant_agent_model/introduction_of_new_technologies
-domain_simulation_logic/co2_storage_gate
-domain_simulation_logic/capacity_replacement_policy
-domain_simulation_logic/capacity_replacement_policy_reference
-domain_simulation_logic/plant_agent_model/economic_considerations
-domain_simulation_logic/plant_agent_model/reductant_choice_and_opex
-domain_simulation_logic/plant_agent_model/debt_accumulation_impact
-domain_simulation_logic/plant_agent_model/calculate_costs
-domain_simulation_logic/plant_agent_model/trade_model_connector
-domain_simulation_logic/geospatial_model/overview_geospatial_model
-domain_simulation_logic/geospatial_model/new_plant_opening
-domain_simulation_logic/geospatial_model/priority_location_selection
-domain_simulation_logic/geospatial_model/baseload_optimization_atlas
-domain_simulation_logic/trade_model/overview_trade_model
-domain_simulation_logic/trade_model/trade_model_setup
-architecture/overview_architecture
 ```
 
 ```{toctree}
@@ -57,5 +33,4 @@ architecture/overview_architecture
 :maxdepth: 1
 
 dashboard/overview_dashboard
-dashboard/django_electron_overview
 ```

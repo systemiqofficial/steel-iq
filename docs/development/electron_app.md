@@ -1,6 +1,6 @@
 # Electron Desktop App
 
-This document covers development and maintenance of the STEEL-IQ Electron desktop application.
+This document covers development and maintenance of the STEEL-IQ Electron desktop application. For what users see and how the desktop app compares with the Django web interface, see [Django Web Interface & Electron Standalone Application](../dashboard/django_electron_overview.md).
 
 ## Overview
 

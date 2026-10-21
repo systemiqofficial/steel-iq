@@ -6,7 +6,7 @@ no environment, no domain imports. Branch ① RETIRE is
 and :meth:`TreeEvaluator.permitted_renovation`, ③ INCREASE
 :meth:`TreeEvaluator.on_increase`. Capacities are model tonnes at run time;
 the ``_mt`` names are a sheet-side convention.
-See docs/domain_simulation_logic/capacity_replacement_policy.md#the-decision-tree.
+See docs/domain_simulation_logic/plant_agent_model/capacity_replacement_policy.md#the-decision-tree.
 """
 
 import logging

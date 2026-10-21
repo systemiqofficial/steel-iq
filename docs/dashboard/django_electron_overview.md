@@ -8,6 +8,10 @@ The Steel Model provides two deployment options:
 
 Both options provide the same functionality through an intuitive web interface for configuring and running steel industry simulations.
 
+:::{only} not public
+For building, packaging and releasing the desktop app, see <a href="../development/electron_app.html">Electron Desktop App</a>.
+:::
+
 :::{only} public
 ## What to Expect
 

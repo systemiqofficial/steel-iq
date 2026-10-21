@@ -2,7 +2,7 @@
 
 Nested on ``SimulationConfig`` as ``capacity_policy`` and read at run time as
 ``bus.env.config.capacity_policy.<field>``. Lever meanings:
-docs/domain_simulation_logic/capacity_replacement_policy.md#configuration.
+docs/domain_simulation_logic/plant_agent_model/capacity_replacement_policy.md#configuration.
 """
 
 from dataclasses import dataclass
