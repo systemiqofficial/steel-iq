@@ -142,7 +142,7 @@ config = SimulationConfig.from_data_directory(
 )
 ```
 
-To swap in a single input file (e.g. a plants JSON or demand Excel), point `data_dir` at a directory that contains the customised files using the standard layout.
+To swap in a single input file (e.g. a plants JSON), point `data_dir` at a directory that contains the customised files using the standard layout.
 
 ### Technology Constraints Example
 

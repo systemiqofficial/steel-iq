@@ -259,7 +259,7 @@ steelo-data-download
 # 2. Recreate JSON repositories
 steelo-data-recreate
 
-# 3. Run simulation using the data
+# 3. Run a simulation; it prepares its own data from the master Excel
 run_simulation
 ```
 
