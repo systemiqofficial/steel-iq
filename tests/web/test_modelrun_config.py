@@ -295,7 +295,10 @@ def test_every_connected_form_field_reaches_the_simulation_config(
         (fixtures / name).write_text("[]")
     ready_data_preparation.master_excel_file.save("master.xlsx", ContentFile(b"fake excel content"), save=True)
     posted = {name: "on" if value is True else value for name, value in OFF_DEFAULT_POST.items() if value is not False}
-    form_data = {**valid_modelrun_form_data, **posted, **{name: "on" for name in KEPT_ON}}
+    greenfield = {
+        f"tech_{slug}_greenfield": "on" for slug in ready_data_preparation.get_technologies() if slug != "EAF"
+    }
+    form_data = {**valid_modelrun_form_data, **posted, **{name: "on" for name in KEPT_ON}, **greenfield}
 
     response = client.post(reverse("create-modelrun"), data=form_data)
     ModelRun.objects.get().run()
@@ -305,3 +308,22 @@ def test_every_connected_form_field_reaches_the_simulation_config(
     held = {name: held_value(config, name) for name in OFF_DEFAULT_POST}
     expected = {name: value * MT_TO_T if name in MT_FIELDS else value for name, value in OFF_DEFAULT_POST.items()}
     assert held == expected
+    assert config.geo_config.excluded_greenfield_technologies == ["EAF"]
+
+
+@pytest.mark.django_db
+def test_create_form_stores_the_technologies_left_unticked_for_greenfield(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+    ready_data_preparation,
+):
+    """Unticking EAF's "Greenfield" box and ticking BOF's stores ``["EAF"]``, lifting BOF's class-default exclusion."""
+    greenfield = {
+        f"tech_{slug}_greenfield": "on" for slug in ready_data_preparation.get_technologies() if slug != "EAF"
+    }
+
+    response = client.post(reverse("create-modelrun"), data={**valid_modelrun_form_data, **greenfield})
+
+    assert response.status_code == 302
+    assert ModelRun.objects.get().config["excluded_greenfield_technologies"] == ["EAF"]

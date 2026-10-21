@@ -502,7 +502,7 @@ def _get_tech_to_product_mapping(prep: DataPreparation) -> dict[str, str]:
 def _merge_posted_technology_values(request, technologies: dict) -> None:
     """Merge posted form values into technologies dict to preserve user input on validation errors.
 
-    Modifies technologies dict in place, updating 'allowed', 'from_year', and 'to_year' fields
+    Modifies technologies dict in place, updating 'allowed', 'greenfield', 'from_year', and 'to_year' fields
     based on values from request.POST.
 
     Args:
@@ -522,6 +522,7 @@ def _merge_posted_technology_values(request, technologies: dict) -> None:
         # Checkbox: preserve exact user selection
         # If checkbox was posted, it was checked; otherwise it was unchecked
         tech_info["allowed"] = slug in posted_allowed_techs
+        tech_info["greenfield"] = f"tech_{slug}_greenfield" in request.POST
 
         # Year values: preserve if posted
         posted_from_year = request.POST.get(f"tech_{slug}_from_year")
@@ -721,6 +722,27 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
     return settings
 
 
+def _excluded_greenfield_technologies(request, prep: DataPreparation) -> list[str]:
+    """The technologies whose "Greenfield" box the posted technology table leaves unticked.
+
+    Args:
+        request: The create form's POST request.
+        prep: The run's data preparation, whose technologies the table lists.
+
+    Returns:
+        The raw ``code`` of each unticked row, as the master's "Technology" column holds it.
+
+    Notes:
+        The plant agent compares these names with the capex reader's technology names, read from the same column
+        without normalisation, so a ``normalized_code`` (``BFCCS`` for ``BF+CCS``) would never match.
+    """
+    return [
+        tech_info["code"]
+        for slug, tech_info in prep.get_technologies().items()
+        if f"tech_{slug}_greenfield" not in request.POST
+    ]
+
+
 def create_modelrun(request):
     """
     Create a new model run with custom configuration
@@ -778,6 +800,9 @@ def create_modelrun(request):
                     context = _build_validation_error_context(request, form, data_preparation)
                     return render(request, "steeloweb/create_modelrun.html", context)
                 config["technology_settings"] = technology_settings
+                config["excluded_greenfield_technologies"] = _excluded_greenfield_technologies(
+                    request, data_preparation
+                )
             else:
                 messages.error(request, "Data preparation is required to configure technologies")
                 return render(request, "steeloweb/create_modelrun.html", {"form": form})
@@ -919,6 +944,9 @@ def technologies_fragment(request):
     # Set default availability years and reset metadata
     # set_from_year=True for initial load (sets both from_year and default_from_year)
     _enrich_technology_defaults(technologies, set_from_year=True)
+    excluded = config_default("geo_config.excluded_greenfield_technologies")
+    for tech in technologies.values():
+        tech["greenfield"] = tech["code"] not in excluded
 
     context = {
         "technologies": technologies,
