@@ -12,15 +12,19 @@ CAPACITY_POOL_FIXTURES = (
 )
 
 
-def add_capacity_pool_fixtures(data_preparation):
+def add_capacity_pool_fixtures(data_preparation, empty=()):
     """Write the three capacity pool fixtures into a preparation's ``data/fixtures``.
 
     Args:
         data_preparation: The ready ``DataPreparation``.
+        empty: Fixture names to write without records; every other one gets a single record.
+
+    Notes:
+        The form checks only that the provinces and technologies fixtures hold a record, not what it holds.
     """
     fixtures = data_preparation.get_data_path() / "data" / "fixtures"
     for name in CAPACITY_POOL_FIXTURES:
-        (fixtures / name).write_text("[]")
+        (fixtures / name).write_text("[]" if name in empty else "[{}]")
 
 
 def form_error_messages(response):
@@ -105,3 +109,25 @@ def test_create_form_shown_again_with_the_policy_off_starts_the_levers_at_their_
     assert form["capacity_policy_replacement_ratio"].value() == str(
         form.fields["capacity_policy_replacement_ratio"].initial
     )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("empty_fixture", ["capacity_pool_provinces.json", "capacity_pool_technologies.json"])
+def test_create_form_refuses_the_capacity_policy_on_an_empty_provinces_or_technologies_fixture(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+    ready_data_preparation,
+    empty_fixture,
+):
+    """An empty provinces or technologies fixture refuses the switch, as the capacity policy bootstrap would."""
+    add_capacity_pool_fixtures(ready_data_preparation, empty=(empty_fixture,))
+
+    response = client.post(
+        reverse("create-modelrun"),
+        data={**valid_modelrun_form_data, "capacity_policy_enabled": "on"},
+    )
+
+    assert response.status_code == 200
+    assert response.context["form"].has_error("capacity_policy_enabled")
+    assert not ModelRun.objects.exists()

@@ -502,20 +502,25 @@ class DataPreparation(models.Model):
         return sorted({record["boundary"] for record in records})
 
     def has_capacity_pool_fixtures(self) -> bool:
-        """Whether the prepared data holds the three capacity pool fixtures an enabled capacity policy needs.
+        """Whether the prepared data holds the capacity pool fixtures an enabled capacity policy needs.
 
         Returns:
             True when ``capacity_pool_provinces.json``, ``capacity_pool_technologies.json`` and
-            ``capacity_pool_opening_credits.json`` all exist under the preparation's ``data/fixtures``.
+            ``capacity_pool_opening_credits.json`` all exist under the preparation's ``data/fixtures`` and the first
+            two hold at least one record.
+
+        Notes:
+            Mirrors the capacity policy bootstrap, which refuses a missing fixture and an empty provinces or
+            technologies one; empty opening credits are a zero-pool start there.
         """
+        import json
+
         fixtures = Path(self.data_directory) / "data" / "fixtures"
+        if not (fixtures / "capacity_pool_opening_credits.json").is_file():
+            return False
         return all(
-            (fixtures / name).is_file()
-            for name in (
-                "capacity_pool_provinces.json",
-                "capacity_pool_technologies.json",
-                "capacity_pool_opening_credits.json",
-            )
+            (fixtures / name).is_file() and bool(json.loads((fixtures / name).read_text(encoding="utf-8")))
+            for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json")
         )
 
 

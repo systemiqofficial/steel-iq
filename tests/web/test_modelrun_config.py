@@ -83,11 +83,6 @@ REMOVED_INPUTS = (
 KEPT_ON = ("probabilistic_agents", "enable_furnace_group_clustering")
 MT_FIELDS = ("expanded_capacity", "capacity_limit_iron", "capacity_limit_steel")
 TRANSPORT_ROUTES = ("iron_mine_to_plant", "iron_to_steel_plant", "steel_to_demand")
-CAPACITY_POOL_FIXTURES = (
-    "capacity_pool_provinces.json",
-    "capacity_pool_technologies.json",
-    "capacity_pool_opening_credits.json",
-)
 
 
 def ready_model_run(tmp_path, name, config):
@@ -136,8 +131,11 @@ def make_runnable(data_preparation):
     emissivity = json.loads((fixtures / "region_emissivity.json").read_text())
     emissivity["root"].append({**emissivity["root"][0], "scenario": "Net Zero"})
     (fixtures / "region_emissivity.json").write_text(json.dumps(emissivity))
-    for name in ("plants.json", "demand_centers.json", *CAPACITY_POOL_FIXTURES):
+    for name in ("plants.json", "demand_centers.json", "capacity_pool_opening_credits.json"):
         (fixtures / name).write_text("[]")
+    # The form refuses the policy on provinces or technologies without a record
+    for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json"):
+        (fixtures / name).write_text("[{}]")
     data_preparation.master_excel_file.save("master.xlsx", ContentFile(b"fake excel content"), save=True)
 
 
