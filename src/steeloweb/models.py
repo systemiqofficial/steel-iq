@@ -1,14 +1,17 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import hashlib
 import shutil
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from django.utils import timezone
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from steelo.simulation import GeoConfig
 
 # Cache for technology configurations
 # Cache structure: key -> {ts: timestamp, fp: (mtime_ns, size), data: dict}
@@ -502,6 +505,47 @@ class Progress:
         return round(progress_ratio * 100)
 
 
+def _simulation_and_geo_settings(settings: dict[str, Any], geo_names: set[str]) -> tuple[dict[str, Any], "GeoConfig"]:
+    """Split a run's stored settings into its ``SimulationConfig`` keyword arguments and its ``GeoConfig``.
+
+    Args:
+        settings: The run's stored settings, each named after a ``SimulationConfig`` or ``GeoConfig`` field.
+        geo_names: The ``GeoConfig`` field names, less those ``SimulationConfig`` also has.
+
+    Returns:
+        The settings that are no geo setting, and a ``GeoConfig`` holding every stored geo setting that is not
+        None; the others keep their class defaults.
+
+    Notes:
+        Numbers are cast so a Decimal or int stored by an older form reaches the config as float (int for
+        ``consideration_time``); a blank transport route is left out of the transport costs.
+    """
+    from steelo.simulation import GeoConfig
+
+    float_names = {
+        "max_latitude",
+        "max_altitude",
+        "max_slope",
+        "hydrogen_ceiling_percentile",
+        "long_dist_pipeline_transport_cost",
+        "pick_priority_sites_share",
+    }
+    geo_settings = {}
+    for name in geo_names & settings.keys():
+        value = settings[name]
+        if value is None:
+            continue
+        if name in float_names:
+            value = float(value)
+        elif name == "transportation_cost_per_km_per_ton":
+            value = {route: float(cost) for route, cost in value.items() if cost not in (None, "")}
+        geo_settings[name] = value
+    simulation_settings = {name: value for name, value in settings.items() if name not in geo_names}
+    if "consideration_time" in simulation_settings:
+        simulation_settings["consideration_time"] = int(simulation_settings["consideration_time"])
+    return simulation_settings, GeoConfig(**geo_settings)
+
+
 class ModelRun(models.Model):
     """
     Model to track steel model simulation runs.
@@ -679,111 +723,13 @@ class ModelRun(models.Model):
                 # Geo data paths will be auto-detected by the factory method
                 pass  # Factory method will auto-detect all geo paths
 
-        # Add circularity file path if custom circularity file was uploaded
-        if "circularity_file_path" in config_data and config_data["circularity_file_path"]:
-            # The path is already stored in the config
-            pass
+        from steelo.capacity_policy.config import CapacityPolicyConfig
+        from steelo.simulation import SimulationConfig, GeoConfig, config_as_json_dict
 
-        # Filter config_data to only include keys that SimulationConfig expects
-        expected_params = {
-            # Core parameters (required)
-            "start_year",
-            "end_year",
-            "master_excel_path",
-            "output_dir",
-            # Data directory (optional - for locating fixtures)
-            "data_dir",
-            # Economic parameters
-            "plant_lifetime",
-            "global_risk_free_rate",
-            "steel_price_buffer",
-            "iron_price_buffer",
-            "steel_market_clearing_share",
-            "iron_market_clearing_share",
-            "peg_iron_to_steel_price",
-            "iron_to_steel_price_ratio",
-            "opening_balance_multiplier",
-            # Output paths (optional, will be derived from output_dir if not provided)
-            "plots_dir",
-            "geo_plots_dir",
-            "pam_plots_dir",
-            # Core simulation parameters (have defaults)
-            "active_statuses",
-            "capacity_limit",
-            "soft_minimum_capacity_share",
-            "hot_metal_radius",
-            "random_seed",
-            "construction_time",
-            "consideration_time",
-            "probabilistic_agents",
-            "probability_of_construction",
-            "probability_of_announcement",
-            "top_n_loctechs_as_business_op",
-            "opportunity_pool_depth",
-            "calculate_npv_sites_share",
-            # Plant capacity parameters
-            "expanded_capacity",
-            "capacity_limit_iron",
-            "capacity_limit_steel",
-            "new_capacity_share_from_new_plants",
-            "pick_priority_sites_share",
-            "hydrogen_ceiling_percentile",
-            "intraregional_trade_allowed",
-            "long_dist_pipeline_transport_cost",
-            # Trade module parameters
-            "lp_epsilon",
-            "minimum_active_utilisation_rate",
-            "minimum_margin",
-            # Status lists
-            "announced_statuses",
-            # Scenario and policy settings
-            "chosen_emissions_boundary_for_carbon_costs",
-            "chosen_grid_emissions_scenario",
-            "use_iron_ore_premiums",
-            "include_tariffs",
-            "green_steel_emissions_limit",
-            "enable_furnace_group_clustering",
-            "geographical_clustering_scope",
-            # Feature flags
-            "include_infrastructure_cost",
-            "include_transport_cost",
-            "include_lulc_cost",
-            "use_master_excel",
-            "transportation_cost_per_km_per_ton",
-            # Technology availability settings
-            "technology_settings",
-            # Optional geo data paths
-            "terrain_nc_path",
-            "land_cover_tif_path",
-            "rail_distance_nc_path",
-            "countries_shapefile_dir",
-            "disputed_areas_shapefile_dir",
-            "landtype_percentage_nc_path",
-            # Other optional parameters
-            "log_level",
-            "run_name",
-            "demand_sheet_name",
-            "technology_lifetimes",
-            # Baseload power simulation parameters
-            "baseload_demand",
-            "years_of_operation",
-            "included_power_mix",
-            # Data processing parameters
-            "steel_plant_gem_data_year",
-            "production_gem_data_years",
-            "excel_reader_start_year",
-            "excel_reader_end_year",
-            # Geo processing parameters
-            "max_altitude",
-            "max_slope",
-            "max_latitude",
-        }
-
-        # Helper function for defensive extraction with type casting
-        def _pick(cfg, key, default):
-            """Extract value from config with defensive handling of None/empty values."""
-            val = cfg.get(key, default)
-            return default if val in (None, "", []) else val
+        # Geo settings are stored flat, so geo_config itself is no stored key
+        simulation_names = {config_field.name for config_field in fields(SimulationConfig) if config_field.init}
+        simulation_names.discard("geo_config")
+        geo_names = {config_field.name for config_field in fields(GeoConfig)} - simulation_names
 
         # Create a deep copy of config data first to avoid modifying the original
         from copy import deepcopy
@@ -797,10 +743,14 @@ class ModelRun(models.Model):
                 logger.warning(f"Ignoring deprecated parameter '{param}' from stored configuration")
                 filtered_config.pop(param)
 
-        # Remove any parameters not in the expected set
-        for key in list(filtered_config.keys()):
-            if key not in expected_params:
+        # Runs stored before a form input was removed still start
+        unknown_keys = sorted(set(filtered_config) - simulation_names - geo_names)
+        if unknown_keys:
+            logger.warning(f"Dropping stored settings that are no run setting: {', '.join(unknown_keys)}")
+            for key in unknown_keys:
                 filtered_config.pop(key)
+        if "capacity_policy" in filtered_config:
+            filtered_config["capacity_policy"] = CapacityPolicyConfig(**filtered_config["capacity_policy"])
 
         # Load and validate technology settings if not already present
         if "technology_settings" not in filtered_config:
@@ -917,57 +867,10 @@ class ModelRun(models.Model):
 
         # Create the SimulationConfig using the factory method when data preparation is available,
         # otherwise use the manual config creation for backwards compatibility
-        from steelo.simulation import SimulationConfig, GeoConfig, config_as_json_dict
         from steelo.domain import Year
 
         if data_dir is not None and data_dir.exists():
-            # Separate GeoConfig parameters from SimulationConfig parameters
-            geo_params = [
-                "max_altitude",
-                "max_slope",
-                "max_latitude",
-                "hydrogen_ceiling_percentile",
-                "included_power_mix",
-                "intraregional_trade_allowed",
-                "long_dist_pipeline_transport_cost",
-                "include_infrastructure_cost",
-                "include_transport_cost",
-                "include_lulc_cost",
-                "transportation_cost_per_km_per_ton",
-                "pick_priority_sites_share",
-            ]
-            # Only include geo parameters that are not None to avoid overriding defaults
-            # Apply defensive type casting for specific fields
-            geo_config_data = {}
-            for k in geo_params:
-                if k in filtered_config and filtered_config[k] is not None:
-                    val = filtered_config[k]
-                    # Cast max_latitude to float to ensure no Decimal leakage
-                    if k == "max_latitude":
-                        val = float(_pick(filtered_config, k, 65.0))
-                    # Cast other numeric fields appropriately
-                    elif k == "max_altitude":
-                        val = float(_pick(filtered_config, k, 1500.0))
-                    elif k == "max_slope":
-                        val = float(_pick(filtered_config, k, 2.0))
-                    elif k == "hydrogen_ceiling_percentile":
-                        val = float(_pick(filtered_config, k, 100.0))
-                    elif k == "long_dist_pipeline_transport_cost":
-                        val = float(_pick(filtered_config, k, 1.0))
-                    elif k == "pick_priority_sites_share":
-                        val = float(_pick(filtered_config, k, 0.05))
-                    elif k == "transportation_cost_per_km_per_ton":
-                        val = {route: float(v) for route, v in filtered_config[k].items() if v not in (None, "")}
-                    geo_config_data[k] = val
-            sim_config_data = {k: v for k, v in filtered_config.items() if k not in geo_params}
-            # Apply type casting for consideration_time
-            if "consideration_time" in sim_config_data:
-                sim_config_data["consideration_time"] = int(_pick(sim_config_data, "consideration_time", 3))
-
-            # Create GeoConfig if we have geo parameters
-            extra_kwargs = {}
-            if geo_config_data:
-                extra_kwargs["geo_config"] = GeoConfig(**geo_config_data)
+            sim_config_data, geo_config = _simulation_and_geo_settings(filtered_config, geo_names)
 
             # Use factory method with auto-detected paths
             config = SimulationConfig.from_data_directory(
@@ -981,58 +884,12 @@ class ModelRun(models.Model):
                     for k, v in sim_config_data.items()
                     if k not in ["start_year", "end_year", "output_dir", "master_excel_path", "data_dir"]
                 },
-                **extra_kwargs,
+                geo_config=geo_config,
             )
         else:
             # Fallback to manual config creation
-            # Separate GeoConfig parameters from SimulationConfig parameters
-            geo_params = [
-                "max_altitude",
-                "max_slope",
-                "max_latitude",
-                "hydrogen_ceiling_percentile",
-                "included_power_mix",
-                "intraregional_trade_allowed",
-                "long_dist_pipeline_transport_cost",
-                "include_infrastructure_cost",
-                "include_transport_cost",
-                "include_lulc_cost",
-                "transportation_cost_per_km_per_ton",
-                "pick_priority_sites_share",
-            ]
-            # Only include geo parameters that are not None to avoid overriding defaults
-            # Apply defensive type casting for specific fields
-            geo_config_data = {}
-            for k in geo_params:
-                if k in filtered_config and filtered_config[k] is not None:
-                    val = filtered_config[k]
-                    # Cast max_latitude to float to ensure no Decimal leakage
-                    if k == "max_latitude":
-                        val = float(_pick(filtered_config, k, 65.0))
-                    # Cast other numeric fields appropriately
-                    elif k == "max_altitude":
-                        val = float(_pick(filtered_config, k, 1500.0))
-                    elif k == "max_slope":
-                        val = float(_pick(filtered_config, k, 2.0))
-                    elif k == "hydrogen_ceiling_percentile":
-                        val = float(_pick(filtered_config, k, 100.0))
-                    elif k == "long_dist_pipeline_transport_cost":
-                        val = float(_pick(filtered_config, k, 1.0))
-                    elif k == "pick_priority_sites_share":
-                        val = float(_pick(filtered_config, k, 0.05))
-                    elif k == "transportation_cost_per_km_per_ton":
-                        val = {route: float(v) for route, v in filtered_config[k].items() if v not in (None, "")}
-                    geo_config_data[k] = val
-            sim_config_data = {k: v for k, v in filtered_config.items() if k not in geo_params}
-            # Apply type casting for consideration_time
-            if "consideration_time" in sim_config_data:
-                sim_config_data["consideration_time"] = int(_pick(sim_config_data, "consideration_time", 3))
-
-            # Create GeoConfig if we have geo parameters
-            if geo_config_data:
-                sim_config_data["geo_config"] = GeoConfig(**geo_config_data)
-
-            config = SimulationConfig(**sim_config_data)
+            sim_config_data, geo_config = _simulation_and_geo_settings(filtered_config, geo_names)
+            config = SimulationConfig(**sim_config_data, geo_config=geo_config)
 
         # Write simulation_config.json and preparation_metadata.json alongside the
         # other run outputs, mirroring the terminal `run_simulation` CLI layout.
