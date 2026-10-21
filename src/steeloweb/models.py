@@ -481,6 +481,23 @@ class DataPreparation(models.Model):
             scenarios.insert(0, "Business As Usual")
         return scenarios
 
+    def has_capacity_pool_fixtures(self) -> bool:
+        """Whether the prepared data holds the three capacity pool fixtures an enabled capacity policy needs.
+
+        Returns:
+            True when ``capacity_pool_provinces.json``, ``capacity_pool_technologies.json`` and
+            ``capacity_pool_opening_credits.json`` all exist under the preparation's ``data/fixtures``.
+        """
+        fixtures = Path(self.data_directory) / "data" / "fixtures"
+        return all(
+            (fixtures / name).is_file()
+            for name in (
+                "capacity_pool_provinces.json",
+                "capacity_pool_technologies.json",
+                "capacity_pool_opening_credits.json",
+            )
+        )
+
 
 @dataclass
 class Progress:

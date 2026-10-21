@@ -19,6 +19,7 @@ NO_COUNTERPART = {
     "moe_cost_scenario",
     "electrowinning_cost_scenario",
     "ccs_cost_scenario",
+    "capacity_policy_no_swap_cutoff",
 }
 # Entered in Mt, stored in tonnes
 MT_FIELDS = {"expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"}
@@ -33,9 +34,12 @@ def class_default_of_form_field(name):
         name: The form field's name.
 
     Returns:
-        The year constant, the transport cost entry, or the ``SimulationConfig`` (else ``GeoConfig``) field's
-        default, divided by ``MT_TO_T`` for the three capacity fields.
+        The year constant, the transport cost entry, the ``CapacityPolicyConfig`` lever of a ``capacity_policy_*``
+        field, or the ``SimulationConfig`` (else ``GeoConfig``) field's default, divided by ``MT_TO_T`` for the
+        three capacity fields.
     """
+    if name.startswith("capacity_policy_"):
+        return simulation.config_default(f"capacity_policy.{name.removeprefix('capacity_policy_')}")
     if name == "start_year":
         return constants.START_YEAR_DEFAULT
     if name == "end_year":

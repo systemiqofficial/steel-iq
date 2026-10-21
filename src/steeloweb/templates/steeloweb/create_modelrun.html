@@ -86,8 +86,11 @@ function resetPolicySettings() {
     if (gridScenario && !gridScenario.disabled) {
         gridScenario.value = 'Business As Usual';
     }
+    document.getElementById('id_carbon_border_export_rebates').checked = {{ form.fields.carbon_border_export_rebates.initial|yesno:"true,false" }};
+    document.getElementById('id_capacity_policy_enabled').checked = {{ form.fields.capacity_policy_enabled.initial|yesno:"true,false" }};
     // Trigger change to update dependent field disabled state
     document.getElementById('id_enable_furnace_group_clustering').dispatchEvent(new Event('change'));
+    document.getElementById('id_capacity_policy_enabled').dispatchEvent(new Event('change'));
 }
 
 function resetDemandSettings() {
@@ -323,6 +326,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
     updateChildField();
     parentCheckbox.addEventListener('change', updateChildField);
+});
+
+// Show the capacity policy levers only with the policy on; disabled inputs are not posted
+document.addEventListener('DOMContentLoaded', function() {
+    var policySwitch = document.getElementById('id_capacity_policy_enabled');
+    var levers = document.getElementById('capacity_policy_levers');
+    var noCutoff = document.getElementById('id_capacity_policy_no_swap_cutoff');
+    var cutoffYear = document.getElementById('id_capacity_policy_inter_company_swap_cutoff_year');
+
+    function updateLevers() {
+        levers.style.display = policySwitch.checked ? '' : 'none';
+        levers.querySelectorAll('input, select').forEach(function(input) {
+            input.disabled = !policySwitch.checked;
+        });
+        cutoffYear.disabled = !policySwitch.checked || noCutoff.checked;
+    }
+
+    updateLevers();
+    policySwitch.addEventListener('change', updateLevers);
+    noCutoff.addEventListener('change', updateLevers);
 });
 
 // Ensure native browser validation runs even if fields still have focus
@@ -1234,6 +1257,64 @@ document.head.appendChild(style);
                                             </ul>
                                         </small>
                                     </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.carbon_border_export_rebates.id_for_label }}" class="col-sm-3 col-form-label">{{ form.carbon_border_export_rebates.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.carbon_border_export_rebates }}
+                                            <label class="form-check-label" for="{{ form.carbon_border_export_rebates.id_for_label }}">
+                                                {{ form.carbon_border_export_rebates.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.carbon_border_export_rebates.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.carbon_border_export_rebates.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.capacity_policy_enabled.id_for_label }}" class="col-sm-3 col-form-label">{{ form.capacity_policy_enabled.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.capacity_policy_enabled }}
+                                            <label class="form-check-label" for="{{ form.capacity_policy_enabled.id_for_label }}">
+                                                {{ form.capacity_policy_enabled.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.capacity_policy_enabled.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.capacity_policy_enabled.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div id="capacity_policy_levers" class="border-start ps-3 mb-3">
+                                    {% for field in form.capacity_policy_levers %}
+                                    <div class="mb-3 row">
+                                        <label for="{{ field.id_for_label }}" class="col-sm-3 col-form-label">{{ field.label }}:</label>
+                                        <div class="col-sm-9">
+                                            {% if field.widget_type == "checkbox" %}
+                                            <div class="form-check">
+                                                {{ field }}
+                                                <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.help_text }}</label>
+                                            </div>
+                                            {% else %}
+                                            {{ field }}
+                                            <small class="form-text text-muted">{{ field.help_text }}</small>
+                                            {% endif %}
+                                            {% if field.errors %}
+                                            <div class="invalid-feedback d-block">
+                                                {{ field.errors }}
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    {% endfor %}
                                 </div>
 
                                 <div class="text-end">

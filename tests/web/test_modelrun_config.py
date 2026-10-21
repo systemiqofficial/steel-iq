@@ -55,11 +55,27 @@ OFF_DEFAULT_POST = {
     "max_slope": 5.0,
     "max_altitude": 2000,
     "max_latitude": 60.0,
+    "carbon_border_export_rebates": True,
+    "capacity_policy_enabled": True,
+    "capacity_policy_replacement_ratio": 2.0,
+    "capacity_policy_emission_intense_penalty_divisor": 2.5,
+    "capacity_policy_min_utilization_for_renovation": 0.4,
+    "capacity_policy_utilization_window_years": 3,
+    "capacity_policy_inter_company_swap_cutoff_year": 2030,
+    "capacity_policy_banked_credit_rule": "persist",
+    "capacity_policy_credit_validity_years": 5,
+    "capacity_policy_capacity_pool_max_retry_years": 4,
+    "capacity_policy_renovation_counts_as_replace": False,
 }
 # Switched off, these overwrite or reset other posted values, so they stay at their default (on)
 KEPT_ON = ("probabilistic_agents", "enable_furnace_group_clustering")
 MT_FIELDS = ("expanded_capacity", "capacity_limit_iron", "capacity_limit_steel")
 TRANSPORT_ROUTES = ("iron_mine_to_plant", "iron_to_steel_plant", "steel_to_demand")
+CAPACITY_POOL_FIXTURES = (
+    "capacity_pool_provinces.json",
+    "capacity_pool_technologies.json",
+    "capacity_pool_opening_credits.json",
+)
 
 
 def ready_model_run(tmp_path, name, config):
@@ -102,8 +118,11 @@ def held_value(config, name):
         name: The form field's name.
 
     Returns:
-        The transport cost of that route, else the ``SimulationConfig`` attribute, else the ``GeoConfig`` one.
+        The transport cost of that route, the capacity policy lever of a ``capacity_policy_*`` field, else the
+        ``SimulationConfig`` attribute, else the ``GeoConfig`` one.
     """
+    if name.startswith("capacity_policy_"):
+        return getattr(config.capacity_policy, name.removeprefix("capacity_policy_"))
     if name in TRANSPORT_ROUTES:
         return config.geo_config.transportation_cost_per_km_per_ton[name]
     return getattr(config, name) if hasattr(config, name) else getattr(config.geo_config, name)
@@ -272,8 +291,8 @@ def test_every_connected_form_field_reaches_the_simulation_config(
     emissivity = json.loads((fixtures / "region_emissivity.json").read_text())
     emissivity["root"].append({**emissivity["root"][0], "scenario": "Net Zero"})
     (fixtures / "region_emissivity.json").write_text(json.dumps(emissivity))
-    (fixtures / "plants.json").write_text("[]")
-    (fixtures / "demand_centers.json").write_text("[]")
+    for name in ("plants.json", "demand_centers.json", *CAPACITY_POOL_FIXTURES):
+        (fixtures / name).write_text("[]")
     ready_data_preparation.master_excel_file.save("master.xlsx", ContentFile(b"fake excel content"), save=True)
     posted = {name: "on" if value is True else value for name, value in OFF_DEFAULT_POST.items() if value is not False}
     form_data = {**valid_modelrun_form_data, **posted, **{name: "on" for name in KEPT_ON}}

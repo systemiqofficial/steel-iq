@@ -2,7 +2,10 @@ from django import forms
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from decimal import Decimal
 
+from steelo.capacity_policy.config import CapacityPolicyConfig
+from steelo.capacity_policy.pool import BANKED_CREDIT_RULES
 from steelo.domain.constants import END_YEAR_DEFAULT, MT_TO_T, START_YEAR_DEFAULT
 from steelo.simulation import config_default
 
@@ -499,6 +502,110 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.Select(attrs={"class": "form-select field-connected"}),
     )
 
+    carbon_border_export_rebates = forms.BooleanField(
+        label="Carbon border export rebates",
+        initial=config_default("carbon_border_export_rebates"),
+        required=False,
+        help_text="Rebate the carbon already paid on exports leaving a carbon border region",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
+    # Capacity policy: the clean() step gathers the capacity_policy_* fields into one stored dictionary
+    capacity_policy_enabled = forms.BooleanField(
+        label="Capacity-replacement policy",
+        initial=config_default("capacity_policy.enabled"),
+        required=False,
+        help_text="Enable China's capacity-replacement policy",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
+    capacity_policy_replacement_ratio = forms.DecimalField(
+        label="Replacement ratio",
+        initial=config_default("capacity_policy.replacement_ratio"),
+        required=False,
+        help_text="Old-to-new capacity ratio for a penalised replacement; the furnace group shrinks to old / ratio",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    capacity_policy_emission_intense_penalty_divisor = forms.DecimalField(
+        label="Emission-intense penalty divisor",
+        initial=config_default("capacity_policy.emission_intense_penalty_divisor"),
+        required=False,
+        help_text="Divisor on an emission-intense new build's permitted capacity; a lever separate from the ratio",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    capacity_policy_min_utilization_for_renovation = forms.DecimalField(
+        label="Minimum utilisation for renovation",
+        initial=config_default("capacity_policy.min_utilization_for_renovation"),
+        required=False,
+        help_text="Utilisation floor of the renovation gate (0.0-1.0); applies to renovations and replacements alike",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    capacity_policy_utilization_window_years = forms.IntegerField(
+        label="Utilisation window (years)",
+        initial=config_default("capacity_policy.utilization_window_years"),
+        required=False,
+        help_text="Consecutive recorded years at or below the floor that make a furnace group ineligible",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+    )
+
+    capacity_policy_inter_company_swap_cutoff_year = forms.IntegerField(
+        label="Inter-company swap cutoff year",
+        initial=config_default("capacity_policy.inter_company_swap_cutoff_year"),
+        required=False,
+        help_text="First year a company may only spend its own credits; blank keeps the default year",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+    )
+
+    capacity_policy_no_swap_cutoff = forms.BooleanField(
+        label="No cutoff",
+        initial=False,
+        required=False,
+        help_text="Companies keep swapping credits throughout the run",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
+    capacity_policy_banked_credit_rule = forms.ChoiceField(
+        label="Banked credit rule",
+        choices=[(rule, rule) for rule in BANKED_CREDIT_RULES],
+        initial=config_default("capacity_policy.banked_credit_rule"),
+        required=False,
+        help_text=(
+            "Treatment of pre-cutoff credits from the cutoff on: reassign (stay with their depositor, unowned ones "
+            "swept), persist (freely spendable) or expire (unusable)"
+        ),
+        widget=forms.Select(attrs={"class": "form-select field-connected"}),
+    )
+
+    capacity_policy_credit_validity_years = forms.IntegerField(
+        label="Credit validity (years)",
+        initial=config_default("capacity_policy.credit_validity_years"),
+        required=False,
+        help_text="Years a banked credit stays usable (a credit of year V through V + N - 1); blank never expires",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+    )
+
+    capacity_policy_capacity_pool_max_retry_years = forms.IntegerField(
+        label="Maximum retry years",
+        initial=config_default("capacity_policy.capacity_pool_max_retry_years"),
+        required=False,
+        help_text="Blocked years after which a considered greenfield site is discarded",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+    )
+
+    capacity_policy_renovation_counts_as_replace = forms.BooleanField(
+        label="Renovation counts as replacement",
+        initial=config_default("capacity_policy.renovation_counts_as_replace"),
+        required=False,
+        help_text=(
+            "A same-technology renovation is a full replacement (gate, ratio, shrink, deposit); unticked exempts it "
+            "from the ratio alone"
+        ),
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
     # Demand and Circularity fields
     total_steel_demand_scenario = forms.ChoiceField(
         choices=SCENARIO_CHOICES,
@@ -826,6 +933,18 @@ class ModelRunCreateForm(forms.ModelForm):
             "enable_furnace_group_clustering",
             "geographical_clustering_scope",
             "chosen_grid_emissions_scenario",
+            "carbon_border_export_rebates",
+            "capacity_policy_enabled",
+            "capacity_policy_replacement_ratio",
+            "capacity_policy_emission_intense_penalty_divisor",
+            "capacity_policy_min_utilization_for_renovation",
+            "capacity_policy_utilization_window_years",
+            "capacity_policy_inter_company_swap_cutoff_year",
+            "capacity_policy_no_swap_cutoff",
+            "capacity_policy_banked_credit_rule",
+            "capacity_policy_credit_validity_years",
+            "capacity_policy_capacity_pool_max_retry_years",
+            "capacity_policy_renovation_counts_as_replace",
             # Demand and Circularity
             "total_steel_demand_scenario",
             "green_steel_demand_scenario",
@@ -857,8 +976,30 @@ class ModelRunCreateForm(forms.ModelForm):
             "data_preparation": forms.Select(attrs={"class": "form-select field-connected"}),
         }
 
+    @property
+    def capacity_policy_levers(self) -> list[forms.BoundField]:
+        """The capacity policy's lever fields, shown under its switch.
+
+        Returns:
+            The bound ``capacity_policy_*`` fields other than the switch, in declaration order.
+        """
+        return [
+            self[name]
+            for name in self.fields
+            if name.startswith("capacity_policy_") and name != "capacity_policy_enabled"
+        ]
+
     def clean(self):
-        """Validate that end_year is not before start_year."""
+        """Validate the years, settle the seed and the clustering scope, and gather the capacity policy.
+
+        Returns:
+            The cleaned data; with the policy switch on, the ``capacity_policy_*`` fields replaced by one
+            ``capacity_policy`` dictionary of every lever, a blank lever taking its class default.
+
+        Notes:
+            A lever set that ``CapacityPolicyConfig`` refuses, the switch on a preparation without the capacity pool
+            fixtures, and a credit validity without the switch are form errors.
+        """
         cleaned_data = super().clean()
         start_year = cleaned_data.get("start_year")
         end_year = cleaned_data.get("end_year")
@@ -881,6 +1022,39 @@ class ModelRunCreateForm(forms.ModelForm):
         # With clustering off the model uses "plant" for hot metal access, so the stored config records that
         if not cleaned_data.get("enable_furnace_group_clustering"):
             cleaned_data["geographical_clustering_scope"] = "plant"
+
+        lever_names = [name for name in self.fields if name.startswith("capacity_policy_")]
+        if not any(self.has_error(name) for name in lever_names):
+            policy = {name.removeprefix("capacity_policy_"): cleaned_data.pop(name) for name in lever_names}
+            no_cutoff = policy.pop("no_swap_cutoff")
+            if policy["enabled"]:
+                for lever, value in policy.items():
+                    if value is None or value == "":
+                        policy[lever] = config_default(f"capacity_policy.{lever}")
+                    elif isinstance(value, Decimal):
+                        policy[lever] = float(value)
+                if no_cutoff:
+                    policy["inter_company_swap_cutoff_year"] = None
+                try:
+                    CapacityPolicyConfig(**policy)
+                except ValueError as error:
+                    self.add_error(None, str(error))
+                # Bootstrap refuses an enabled policy without these, so the form says so before the run starts
+                if (
+                    "data_preparation" in cleaned_data
+                    and not cleaned_data["data_preparation"].has_capacity_pool_fixtures()
+                ):
+                    self.add_error(
+                        "capacity_policy_enabled",
+                        "The selected data preparation has no capacity pool data; prepare a master holding the "
+                        "capacity pool sheets to enable the policy.",
+                    )
+                cleaned_data["capacity_policy"] = policy
+            elif policy["credit_validity_years"] is not None:
+                self.add_error(
+                    "capacity_policy_credit_validity_years",
+                    "Credit validity requires the capacity-replacement policy to be enabled.",
+                )
 
         # Set default values for fields that are not required but need values
         if not cleaned_data.get("total_steel_demand_scenario"):
