@@ -196,7 +196,9 @@ function rdTechnologies(ctx, g) {
       track.appendChild(fill);
     } else if (allowed) track.classList.add("rd-out");
     const gf = rtEl("div");
-    if (greenfield && greenfield.items.includes(code))
+    // The excluded list holds the master's raw codes (BF+CCS), the rows normalised ones (BFCCS)
+    const norm = c => c.normalize("NFKD").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    if (greenfield && greenfield.items.some(item => norm(item) === norm(code)))
       gf.appendChild(rtEl("span", "rd-gf" + (greenfield.changed ? " rd-hl" : ""), "Excluded"));
     grid.append(name, when, track, gf);
     for (const s of states) rdPlace(ctx, s, name);
