@@ -4,9 +4,11 @@
 
 {% block extra_css %}
 <style>
-    /* The frame fills the window below the navigation and the header row */
+    /* A compact title row right under the navigation, and the frame filling the window below it */
     body { display: flex; flex-direction: column; height: 100vh; padding-bottom: 0; }
     footer { display: none; }
+    .navbar { margin-bottom: 0; }
+    #viewer-title { padding: 6px 0; }
     #scenario-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     #scenario-viewer iframe { flex: 1; width: 100%; border: 0; border-top: 1px solid #dee2e6; }
 </style>
@@ -14,14 +16,14 @@
 
 {% block content %}
 <div id="scenario-viewer">
-    <div class="container mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1>STEEL-IQ Scenario Viewer</h1>
+    <div class="container">
+        <div id="viewer-title" class="d-flex justify-content-between align-items-center">
+            <h1 class="h4 mb-0">STEEL-IQ Scenario Viewer</h1>
             <div>
-                <button type="button" id="viewer-tour" class="btn btn-outline-primary">
+                <button type="button" id="viewer-tour" class="btn btn-sm btn-outline-primary">
                     <i class="fas fa-question-circle"></i> Tour
                 </button>
-                <a href="{{ browser_url }}" target="_blank" rel="noopener" class="btn btn-outline-primary">
+                <a href="{{ browser_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">
                     <i class="fas fa-external-link-alt"></i> Open in browser
                 </a>
             </div>
