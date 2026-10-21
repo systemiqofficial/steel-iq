@@ -233,26 +233,31 @@ def test_create_form_stores_no_output_file_key(mock_technology_extraction, clien
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    ("posted", "stored"),
+    ("field", "posted", "stored"),
     [
-        ("", simulation.config_default("global_risk_free_rate")),
-        ("0", 0),
+        ("construction_time", "", simulation.config_default("construction_time")),
+        ("global_risk_free_rate", "0", 0),
     ],
 )
 def test_create_form_stores_the_class_default_for_a_blank_field_and_an_entered_zero_as_zero(
     mock_technology_extraction,
     client,
     valid_modelrun_form_data,
+    field,
     posted,
     stored,
 ):
-    """A numeric field left blank stores the ``SimulationConfig`` default; the same field entered as 0 stores 0."""
-    form_data = {**valid_modelrun_form_data, "global_risk_free_rate": posted}
+    """A numeric field left blank stores the ``SimulationConfig`` default; a field entered as 0 stores 0.
+
+    The blank case uses ``construction_time``, which the form stored as None before; it refuses 0, so the zero case
+    uses ``global_risk_free_rate``.
+    """
+    form_data = {**valid_modelrun_form_data, field: posted}
 
     response = client.post(reverse("create-modelrun"), data=form_data)
 
     assert response.status_code == 302
-    assert ModelRun.objects.get().config["global_risk_free_rate"] == stored
+    assert ModelRun.objects.get().config[field] == stored
 
 
 @pytest.mark.django_db
