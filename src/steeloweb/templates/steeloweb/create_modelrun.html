@@ -715,7 +715,7 @@ document.head.appendChild(style);
                                 const checkbox = document.getElementById('id_randomise_seed');
                                 const seedInput = document.getElementById('id_random_seed');
                                 if (!checkbox || !seedInput) return;
-                                const DEFAULT_SEED = 42;
+                                const DEFAULT_SEED = {{ form.fields.random_seed.initial }};
                                 // Remember the user's last manually-entered seed so we can restore it on untick.
                                 let lastUserSeed = seedInput.value || String(DEFAULT_SEED);
                                 const drawSeed = () => Math.floor(Math.random() * 0x80000000); // [0, 2^31)

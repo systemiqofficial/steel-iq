@@ -2,6 +2,10 @@ from django import forms
 import tempfile
 from pathlib import Path
 from datetime import datetime
+
+from steelo.domain.constants import END_YEAR_DEFAULT, MT_TO_T, START_YEAR_DEFAULT
+from steelo.simulation import config_default
+
 from .models import ModelRun, DataPreparation, MasterExcelFile
 
 
@@ -96,7 +100,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     random_seed = forms.IntegerField(
         label="Random seed",
-        initial=42,
+        initial=config_default("random_seed"),
         min_value=0,
         required=False,
         help_text=(
@@ -172,7 +176,7 @@ class ModelRunCreateForm(forms.ModelForm):
     ]
 
     start_year = forms.IntegerField(
-        initial=2025,
+        initial=START_YEAR_DEFAULT,
         min_value=2020,
         max_value=2060,
         help_text="Start year for the simulation",
@@ -180,7 +184,7 @@ class ModelRunCreateForm(forms.ModelForm):
     )
 
     end_year = forms.IntegerField(
-        initial=2060,
+        initial=END_YEAR_DEFAULT,
         min_value=2020,
         max_value=2060,
         help_text="End year for the simulation",
@@ -189,7 +193,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     # Economic parameters
     plant_lifetime = forms.IntegerField(
-        initial=20,
+        initial=config_default("plant_lifetime"),
         min_value=1,
         max_value=100,
         help_text="Lifetime of steel plants in years",
@@ -197,7 +201,7 @@ class ModelRunCreateForm(forms.ModelForm):
     )
 
     global_risk_free_rate = forms.DecimalField(
-        initial=0.0209,
+        initial=config_default("global_risk_free_rate"),
         min_value=0.0,
         max_value=0.5,
         max_digits=5,
@@ -209,7 +213,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     steel_price_buffer = forms.DecimalField(
         label="Steel premium",
-        initial=200.0,
+        initial=config_default("steel_price_buffer"),
         min_value=0.0,
         max_value=2000.0,
         max_digits=6,
@@ -221,7 +225,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     iron_price_buffer = forms.DecimalField(
         label="Iron premium",
-        initial=200.0,
+        initial=config_default("iron_price_buffer"),
         min_value=0.0,
         max_value=2000.0,
         max_digits=6,
@@ -233,7 +237,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     steel_market_clearing_share = forms.DecimalField(
         label="Steel market clearing share",
-        initial=0.95,
+        initial=config_default("steel_market_clearing_share"),
         min_value=0.5,
         max_value=0.995,
         max_digits=4,
@@ -249,7 +253,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     iron_market_clearing_share = forms.DecimalField(
         label="Iron market clearing share",
-        initial=0.95,
+        initial=config_default("iron_market_clearing_share"),
         min_value=0.5,
         max_value=0.995,
         max_digits=4,
@@ -265,7 +269,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     peg_iron_to_steel_price = forms.BooleanField(
         label="Peg iron price to steel price",
-        initial=False,
+        initial=config_default("peg_iron_to_steel_price"),
         required=False,
         help_text="When enabled, iron price is floored at a percentage of the steel price instead of following cost curves alone",
         widget=forms.CheckboxInput(
@@ -275,7 +279,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     iron_to_steel_price_ratio = forms.DecimalField(
         label="Iron-to-steel price ratio",
-        initial=0.8,
+        initial=config_default("iron_to_steel_price_ratio"),
         min_value=0.0,
         max_value=1.0,
         max_digits=3,
@@ -287,7 +291,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     opening_balance_multiplier = forms.DecimalField(
         label="Plant opening balance multiplier",
-        initial=1.0,
+        initial=config_default("opening_balance_multiplier"),
         min_value=0.0,
         max_value=100.0,
         max_digits=5,
@@ -298,7 +302,7 @@ class ModelRunCreateForm(forms.ModelForm):
     )
 
     construction_time = forms.IntegerField(
-        initial=4,
+        initial=config_default("construction_time"),
         min_value=1,
         max_value=10,
         required=False,
@@ -307,17 +311,19 @@ class ModelRunCreateForm(forms.ModelForm):
     )
 
     consideration_time = forms.IntegerField(
-        initial=3,
+        initial=config_default("consideration_time"),
         min_value=1,
         max_value=10,
         required=False,
         help_text="Years to consider a business opportunity and track its financial viability before deciding on announcement (planning horizon)",
-        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "data-default": "3"}),
+        widget=forms.NumberInput(
+            attrs={"class": "form-control field-connected", "data-default": str(config_default("consideration_time"))}
+        ),
     )
 
     probabilistic_agents = forms.BooleanField(
         label="Probabilistic agents",
-        initial=True,
+        initial=config_default("probabilistic_agents"),
         required=False,
         help_text="Enable probabilistic decision-making (mimics human behavior). When disabled, uses deterministic approach.",
         widget=forms.CheckboxInput(
@@ -327,7 +333,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     probability_of_announcement = forms.DecimalField(
         label="Probability of announcement",
-        initial=0.7,
+        initial=config_default("probability_of_announcement"),
         min_value=0.0,
         max_value=1.0,
         max_digits=3,
@@ -339,7 +345,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     probability_of_construction = forms.DecimalField(
         label="Probability of construction",
-        initial=0.9,
+        initial=config_default("probability_of_construction"),
         min_value=0.0,
         max_value=1.0,
         max_digits=3,
@@ -351,7 +357,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     top_n_loctechs_as_business_op = forms.IntegerField(
         label="Top N location-technologies",
-        initial=15,
+        initial=config_default("top_n_loctechs_as_business_op"),
         min_value=1,
         max_value=20,
         required=False,
@@ -361,7 +367,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     opportunity_pool_depth = forms.IntegerField(
         label="Opportunity pool depth",
-        initial=3,
+        initial=config_default("opportunity_pool_depth"),
         min_value=1,
         max_value=10,
         required=False,
@@ -374,7 +380,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     pick_priority_sites_share = forms.DecimalField(
         label="Priority sites fraction",
-        initial=0.05,
+        initial=config_default("geo_config.pick_priority_sites_share"),
         min_value=0.001,
         max_value=1.0,
         max_digits=4,
@@ -386,7 +392,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     calculate_npv_sites_share = forms.DecimalField(
         label="NPV sample fraction",
-        initial=0.1,
+        initial=config_default("calculate_npv_sites_share"),
         min_value=0.0,
         max_value=1.0,
         max_digits=3,
@@ -402,7 +408,7 @@ class ModelRunCreateForm(forms.ModelForm):
     # Plant capacity parameters
     expanded_capacity = forms.DecimalField(
         label="Expanded capacity",
-        initial=2.5,
+        initial=config_default("expanded_capacity") / MT_TO_T,
         min_value=0.1,
         max_value=1000.0,
         max_digits=6,
@@ -414,7 +420,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     capacity_limit_iron = forms.DecimalField(
         label="Capacity limit - Iron",
-        initial=100.0,
+        initial=config_default("capacity_limit_iron") / MT_TO_T,
         min_value=0.1,
         max_value=1000.0,
         max_digits=6,
@@ -426,7 +432,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     capacity_limit_steel = forms.DecimalField(
         label="Capacity limit - Steel",
-        initial=100.0,
+        initial=config_default("capacity_limit_steel") / MT_TO_T,
         min_value=0.1,
         max_value=1000.0,
         max_digits=6,
@@ -438,7 +444,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     new_capacity_share_from_new_plants = forms.DecimalField(
         label="Proportion of new capacity from new plants",
-        initial=0.4,
+        initial=config_default("new_capacity_share_from_new_plants"),
         min_value=0.0,
         max_value=1.0,
         max_digits=3,
@@ -451,7 +457,7 @@ class ModelRunCreateForm(forms.ModelForm):
     # Policy Settings fields
     use_iron_ore_premiums = forms.BooleanField(
         label="Use iron ore premiums",
-        initial=True,
+        initial=config_default("use_iron_ore_premiums"),
         required=False,
         help_text="Include iron ore premiums in calculations",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
@@ -459,7 +465,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     include_tariffs = forms.BooleanField(
         label="Include tariffs",
-        initial=True,
+        initial=config_default("include_tariffs"),
         required=False,
         help_text="Include tariffs in trade calculations",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
@@ -467,7 +473,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     enable_furnace_group_clustering = forms.BooleanField(
         label="Enable furnace group clustering",
-        initial=True,
+        initial=config_default("enable_furnace_group_clustering"),
         required=False,
         help_text=(
             "Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) "
@@ -483,7 +489,7 @@ class ModelRunCreateForm(forms.ModelForm):
             ("plant_group", "Plant group (corporate)"),
             ("plant", "Individual plant"),
         ],
-        initial="plant",
+        initial=config_default("geographical_clustering_scope"),
         required=False,
         help_text=(
             "Geographical scope for clustering furnace groups consuming/producing closely-allocated commodities. "
@@ -512,7 +518,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     chosen_grid_emissions_scenario = forms.ChoiceField(
         choices=[],
-        initial="Business As Usual",
+        initial=config_default("chosen_grid_emissions_scenario"),
         required=False,
         help_text="Trajectory of grid electricity emissivity used to compute indirect emissions for each furnace group.",
         widget=forms.Select(attrs={"class": "form-select"}),
@@ -575,7 +581,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     hydrogen_ceiling_percentile = forms.DecimalField(
         label="Hydrogen ceiling percentile",
-        initial=100.0,
+        initial=config_default("geo_config.hydrogen_ceiling_percentile"),
         min_value=0.0,
         max_value=100.0,
         max_digits=5,
@@ -587,7 +593,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     intraregional_trade_allowed = forms.BooleanField(
         label="Intraregional trade allowed",
-        initial=False,
+        initial=config_default("geo_config.intraregional_trade_allowed"),
         required=False,
         help_text="Allow hydrogen trade between linked regions (e.g., trade between Africa and Western Europe)",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
@@ -595,7 +601,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     include_infrastructure_cost = forms.BooleanField(
         label="Include infrastructure cost",
-        initial=True,
+        initial=config_default("geo_config.include_infrastructure_cost"),
         required=False,
         help_text="Include costs for building new rail infrastructure to connect plants",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
@@ -603,7 +609,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     include_transport_cost = forms.BooleanField(
         label="Include transport cost",
-        initial=True,
+        initial=config_default("geo_config.include_transport_cost"),
         required=False,
         help_text="Include costs for transporting iron ore and steel between locations",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
@@ -612,7 +618,7 @@ class ModelRunCreateForm(forms.ModelForm):
     # Transportation cost fields (USD/tonne/km) - using GeoConfig dict key names
     iron_mine_to_plant = forms.DecimalField(
         label="Iron mine to iron plant",
-        initial=0.013,
+        initial=config_default("geo_config.transportation_cost_per_km_per_ton")["iron_mine_to_plant"],
         min_value=0.0,
         max_value=10.0,
         max_digits=6,
@@ -624,7 +630,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     iron_to_steel_plant = forms.DecimalField(
         label="Iron plant to steel plant",
-        initial=0.015,
+        initial=config_default("geo_config.transportation_cost_per_km_per_ton")["iron_to_steel_plant"],
         min_value=0.0,
         max_value=10.0,
         max_digits=6,
@@ -636,7 +642,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     steel_to_demand = forms.DecimalField(
         label="Steel plant to demand center",
-        initial=0.019,
+        initial=config_default("geo_config.transportation_cost_per_km_per_ton")["steel_to_demand"],
         min_value=0.0,
         max_value=10.0,
         max_digits=6,
@@ -648,7 +654,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     include_lulc_cost = forms.BooleanField(
         label="Include land use/land cover cost",
-        initial=True,
+        initial=config_default("geo_config.include_lulc_cost"),
         required=False,
         help_text="Include land use/land cover factors in CAPEX calculations",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
@@ -656,7 +662,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     long_dist_pipeline_transport_cost = forms.DecimalField(
         label="Long distance pipeline transport cost",
-        initial=1.0,
+        initial=config_default("geo_config.long_dist_pipeline_transport_cost"),
         min_value=0.0,
         max_value=10.0,
         max_digits=3,
@@ -699,7 +705,7 @@ class ModelRunCreateForm(forms.ModelForm):
     # Power and Hydrogen mix options
     included_power_mix = forms.ChoiceField(
         choices=INCLUDED_POWER_MIX_CHOICES,
-        initial="85% baseload + 15% grid",
+        initial=config_default("geo_config.included_power_mix"),
         widget=forms.Select(attrs={"class": "form-select field-connected"}),
         required=False,
         help_text="Select the power mix configuration for the simulation. When combining baseload and grid power, the minimum between the mix (e.g., 85% baseload + 15% grid) and the grid price is selected at each location.",
@@ -707,7 +713,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     # Maximum slope (degrees)
     max_slope = forms.DecimalField(
-        initial=2.0,
+        initial=config_default("geo_config.max_slope"),
         min_value=0,
         max_value=90,
         decimal_places=1,
@@ -718,7 +724,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     # Maximum altitude (m)
     max_altitude = forms.IntegerField(
-        initial=1500,
+        initial=int(config_default("geo_config.max_altitude")),
         min_value=0,
         max_value=10000,
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
@@ -729,11 +735,15 @@ class ModelRunCreateForm(forms.ModelForm):
     # Maximum absolute latitude (degrees)
     max_latitude = forms.FloatField(
         label="Maximum absolute latitude (°)",
-        initial=70.0,
+        initial=config_default("geo_config.max_latitude"),
         min_value=0,
         max_value=90,
         widget=forms.NumberInput(
-            attrs={"class": "form-control field-connected", "step": "0.1", "data-default": "70.0"}
+            attrs={
+                "class": "form-control field-connected",
+                "step": "0.1",
+                "data-default": str(config_default("geo_config.max_latitude")),
+            }
         ),
         help_text="Maximum absolute latitude — sites limited to |latitude| ≤ this value. To ignore, set value to 90",
         required=False,
@@ -769,8 +779,8 @@ class ModelRunCreateForm(forms.ModelForm):
 
         scenarios = active_prep.get_region_emissivity_scenarios() if active_prep is not None else []
         self.fields["chosen_grid_emissions_scenario"].choices = [(s, s) for s in scenarios]
-        # Override field-level "Business As Usual" only when it is missing from the prep
-        if scenarios and "Business As Usual" not in scenarios:
+        # Override the field-level class default only when it is missing from the prep
+        if scenarios and self.fields["chosen_grid_emissions_scenario"].initial not in scenarios:
             self.fields["chosen_grid_emissions_scenario"].initial = scenarios[0]
 
     class Meta:
@@ -866,7 +876,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
         randomise = cleaned_data.pop("randomise_seed", False)
         if cleaned_data.get("random_seed") is None:
-            cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else 42
+            cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else config_default("random_seed")
 
         # With clustering off the model uses "plant" for hot metal access, so the stored config records that
         if not cleaned_data.get("enable_furnace_group_clustering"):
