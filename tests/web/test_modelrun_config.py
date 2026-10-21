@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from django.core.files.base import ContentFile
+from django.urls import reverse
 
 from steeloweb.models import DataPackage, DataPreparation, ModelRun
 
@@ -46,3 +47,20 @@ def test_run_passes_include_tariffs_to_the_simulation_config(mock_bootstrap_simu
 
     config = mock_bootstrap_simulation.call_args[0][0]
     assert config.include_tariffs is False
+
+
+@pytest.mark.django_db
+def test_create_form_keeps_an_entered_zero(mock_technology_extraction, client, valid_modelrun_form_data):
+    """A 0 typed into a field whose form allows 0 is stored as 0, not replaced by the field's default."""
+    form_data = {
+        **valid_modelrun_form_data,
+        "hydrogen_ceiling_percentile": 0,
+        "probability_of_announcement": 0,
+    }
+
+    response = client.post(reverse("create-modelrun"), data=form_data)
+
+    assert response.status_code == 302
+    config = ModelRun.objects.get().config
+    assert config["hydrogen_ceiling_percentile"] == 0
+    assert config["probability_of_announcement"] == 0
