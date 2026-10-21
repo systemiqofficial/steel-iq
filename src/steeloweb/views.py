@@ -23,6 +23,7 @@ from steelo.core.parse import parse_bool_strict, parse_int_strict
 from steelo.validation import SimulationConfigError, validate_technology_settings
 from steelo.simulation_types import TechnologySettings
 from steelo.data.manager import DataManager
+from steelo.viewer.extract import RUN_NAME, VIEWER_DIR
 
 
 class ModelRunListView(ListView):
@@ -104,6 +105,16 @@ class ModelRunDetailView(DetailView):
 
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
+
+        # The viewer lists a finished run once the run's end has written its viewer files
+        output_dir = Path(self.object.output_directory)
+        context["viewer_run"] = (
+            output_dir.name
+            if self.object.state == ModelRun.RunState.FINISHED
+            and self.object.output_directory
+            and (output_dir / VIEWER_DIR / RUN_NAME).is_file()
+            else None
+        )
 
         # Split simulation plots: cost curves, emissions, and the production/capacity
         # group each go into their own collapsible accordions; anything else falls

@@ -96,6 +96,7 @@ urlpatterns = [
         name="upload-circularity-for-modelrun",
     ),
     # Scenario viewer: the page fetches everything relative to /viewer/
+    path("scenario-viewer/", views_viewer.scenario_viewer, name="scenario-viewer"),
     path("viewer/", views_viewer.viewer_index, name="viewer-index"),
     path("viewer/manifest.json", views_viewer.viewer_manifest, name="viewer-manifest"),
     path("viewer/inputs.json", views_viewer.viewer_inputs, name="viewer-inputs"),

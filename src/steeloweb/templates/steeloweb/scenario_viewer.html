@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Scenario viewer{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* The frame fills the window below the navigation and the header row */
+    body { display: flex; flex-direction: column; height: 100vh; }
+    footer { display: none; }
+    #scenario-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #scenario-viewer iframe { flex: 1; width: 100%; border: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="scenario-viewer">
+    <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
+        <h1 class="h5 mb-0">Scenario viewer</h1>
+        <a href="{{ browser_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">
+            <i class="fas fa-external-link-alt"></i> Open in browser
+        </a>
+    </div>
+    <iframe src="{{ frame_src }}" title="Scenario viewer"></iframe>
+</div>
+{% endblock %}

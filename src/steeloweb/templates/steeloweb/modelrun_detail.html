@@ -17,6 +17,11 @@
             <a href="{% url 'modelrun-list' %}" class="btn btn-secondary">
                 <i class="fas fa-arrow-left"></i> Back to List
             </a>
+            {% if viewer_run %}
+            <a href="{% url 'scenario-viewer' %}?run={{ viewer_run|urlencode }}" class="btn btn-outline-primary">
+                <i class="fas fa-chart-line"></i> Open in viewer
+            </a>
+            {% endif %}
             {% if modelrun.state == 'created' %}
                 {% if request.session.simulation_warning %}
                     {# Warning state - show Start Anyway button #}

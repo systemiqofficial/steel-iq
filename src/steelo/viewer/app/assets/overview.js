@@ -246,7 +246,8 @@ function rdOverview(ctx, section, run) {
   const box = rtEl("div");
   const link = rtEl("a", null, run.dir + " ↗");
   link.href = run.link;
-  link.target = "_blank";
+  // A run page (an app run, in the app) replaces the app's window; a run folder opens beside the viewer
+  link.target = run.link.startsWith("runs/") ? "_blank" : "_top";
   link.rel = "noopener";
   const meta = rtEl("div", "rd-meta");
   meta.append("Input data ", rtEl("b", null, run.input_data), " · Made in ", rtEl("b", null, run.made_in),

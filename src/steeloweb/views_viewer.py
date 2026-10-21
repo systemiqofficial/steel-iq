@@ -2,7 +2,8 @@
 
 The page and its assets come from the ``steelo.viewer`` package; ``manifest.json``, ``inputs.json`` and ``geo.json``
 from its catalogue, over the runs found on disk again with each of them; each run's files through the CLI server's
-path check. Every view answers GET only and may be framed by the app's own pages.
+path check. Every ``/viewer/`` view answers GET only and may be framed by the app's own pages, as the scenario viewer
+page frames the viewer below the app's navigation.
 
 Notes:
     ``steelo.viewer``'s catalogue and server import ``steelo.simulation``, which takes over a second, so the views
@@ -22,6 +23,7 @@ from django.http import (
     JsonResponse,
 )
 from django.http.response import HttpResponseBase
+from django.shortcuts import render
 from django.urls import reverse
 from django.views import static
 from django.views.decorators.clickjacking import xframe_options_sameorigin
@@ -232,3 +234,29 @@ def viewer_run_file(request: HttpRequest, folder: str, path: str = "") -> HttpRe
             return HttpResponsePermanentRedirect(request.path + "/")
         return static.serve(request, path, document_root=str(runs[folder]), show_indexes=True)
     return FileResponse(run_file.open("rb"))
+
+
+@require_GET
+def scenario_viewer(request: HttpRequest) -> HttpResponse:
+    """The app page holding the viewer in a frame below the app's navigation, with a link to open it in a browser.
+
+    Args:
+        request: The GET request; ``?run=<folder>`` opens the viewer on that run.
+
+    Returns:
+        The page, its frame on ``/viewer/``, or on the run when one is named.
+
+    Raises:
+        Http404: If ``run`` names no run the viewer lists, so only a listed folder name reaches the frame's URL.
+    """
+    viewer_url = reverse("viewer-index")
+    frame_src = viewer_url
+    if "run" in request.GET:
+        runs, _ = viewer_runs()
+        folder = request.GET["run"]
+        if folder not in {run_dir.name for run_dir in runs}:
+            raise Http404("No such run in the viewer")
+        # The viewer's one set is "local", and its hash names a run as #<set>/<folder>/<plot>
+        frame_src += f"#local/{folder}/"
+    context = {"frame_src": frame_src, "browser_url": request.build_absolute_uri(viewer_url)}
+    return render(request, "steeloweb/scenario_viewer.html", context)
