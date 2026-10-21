@@ -17,6 +17,22 @@ def temp_media_root(tmp_path_factory):
     # Pytest will automatically clean up the tmp_path_factory directories
 
 
+@pytest.fixture(autouse=True)
+def steelo_home(monkeypatch, tmp_path):
+    """Point ``STEELO_HOME`` at a folder of the test's own, so no test reads the developer's ``~/.steelo``.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        The test home, ``<tmp_path>/home``, not yet created.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("STEELO_HOME", str(home))
+    return home
+
+
 def add_dynamic_technology_fields(form_data, technologies=None):
     """Add dynamic technology fields to form data for testing.
 

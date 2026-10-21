@@ -637,6 +637,8 @@ class ModelRun(models.Model):
             self.save(update_fields=["state", "error_message"])
             return
 
+        config_data["run_name"] = self.name or f"Model Run #{self.pk}"
+
         # Add isolated output directory configuration
         if output_path:
             config_data["output_dir"] = str(output_path)
@@ -759,6 +761,7 @@ class ModelRun(models.Model):
             "landtype_percentage_nc_path",
             # Other optional parameters
             "log_level",
+            "run_name",
             "demand_sheet_name",
             "technology_lifetimes",
             # Baseload power simulation parameters

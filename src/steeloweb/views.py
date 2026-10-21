@@ -18,6 +18,7 @@ from django_htmx.http import HttpResponseClientRefresh
 from .tasks import run_simulation_task
 from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
+from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
 from steelo.validation import SimulationConfigError, validate_technology_settings
 from steelo.simulation_types import TechnologySettings
@@ -708,6 +709,10 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
 def create_modelrun(request):
     """
     Create a new model run with custom configuration
+
+    Notes:
+        A name already held by another run, or by a CLI run under ``$STEELO_HOME/output``, gets the first free ``_2``,
+        ``_3`` suffix; a blank name stays blank.
     """
     if request.method == "POST":
         form = ModelRunCreateForm(request.POST)
@@ -895,9 +900,19 @@ def create_modelrun(request):
                 if any(key.startswith(p) for p in LEGACY_PREFIXES):
                     del config[key]
 
+            name = form.cleaned_data["name"]
+            if name:
+                from steelo import simulation
+
+                taken = {other.strip() for other in ModelRun.objects.values_list("name", flat=True) if other.strip()}
+                output_base = cli_base()
+                if output_base is not None:
+                    taken |= simulation.run_names_in_use(output_base)
+                name = simulation.unique_run_name(name, taken)
+
             # Create the model run
             modelrun = ModelRun.objects.create(
-                name=form.cleaned_data.get("name", ""),
+                name=name,
                 config=config,
                 data_preparation=data_preparation,
             )
