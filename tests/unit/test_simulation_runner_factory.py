@@ -29,6 +29,9 @@ def test_factory_configures_environment_from_config(tmp_path):
     (fixtures_dir / "plants.json").write_text('{"root": []}')
     (fixtures_dir / "demand_centers.json").write_text('{"root": []}')
     (fixtures_dir / "suppliers.json").write_text('{"root": []}')
+    (fixtures_dir / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
     (fixtures_dir / "plant_groups.json").write_text('{"root": []}')
     (fixtures_dir / "tariffs.json").write_text('{"root": []}')
     (fixtures_dir / "subsidies.json").write_text('{"root": []}')

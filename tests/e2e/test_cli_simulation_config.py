@@ -62,6 +62,14 @@ def stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep
         (fixtures_subdir / "plants.json").write_text("[]")
         (fixtures_subdir / "demand_centers.json").write_text("[]")
         (fixtures_subdir / "suppliers.json").write_text("[]")
+        (fixtures_subdir / "scenarios.json").write_text(
+            json.dumps(
+                {
+                    "demand": {"BAU": "demand_centers.json", "High growth": "demand_centers.json"},
+                    "scrap": {"BAU": "suppliers.json", "High recycling": "suppliers.json"},
+                },
+            ),
+        )
         (fixtures_subdir / "country_mappings.json").write_text("[]")
         (fixtures_subdir / "railway_costs.json").write_text("[]")
 

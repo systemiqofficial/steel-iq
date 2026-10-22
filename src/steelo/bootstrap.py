@@ -11,7 +11,7 @@ from .domain.constants import Commodities
 from .domain.models import Environment, PlantGroup, Supplier
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
 from .capacity_policy.bootstrap import configure_capacity_policy
-from .data.path_resolver import DataPathResolver
+from .data.path_resolver import DataPathResolver, resolve_scenario_fixtures
 from .motions import bind_global_motions
 
 if TYPE_CHECKING:
@@ -308,12 +308,15 @@ def bootstrap_simulation(
             raise FileNotFoundError(f"Fixtures directory not found: {fixtures_dir}")
 
         logger.info(f"Using fixtures directory: {fixtures_dir}")
+        demand_centers_path, suppliers_path = resolve_scenario_fixtures(
+            fixtures_dir, config.chosen_demand_scenario, config.chosen_scrap_scenario
+        )
 
         repository_json = JsonRepository(
             plant_lifetime=config.plant_lifetime,
             plants_path=fixtures_dir / "plants.json",
-            demand_centers_path=fixtures_dir / "demand_centers.json",
-            suppliers_path=fixtures_dir / "suppliers.json",
+            demand_centers_path=demand_centers_path,
+            suppliers_path=suppliers_path,
             plant_groups_path=fixtures_dir / "plant_groups.json",
             trade_tariffs_path=fixtures_dir / "tariffs.json",
             subsidies_path=fixtures_dir / "subsidies.json",

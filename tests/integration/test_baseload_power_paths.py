@@ -194,6 +194,10 @@ class TestBaseloadPowerCLIArgument:
         # Create minimal required files
         (fixtures_dir / "plants.json").write_text("[]")
         (fixtures_dir / "demand_centers.json").write_text("[]")
+        (fixtures_dir / "suppliers.json").write_text("[]")
+        (fixtures_dir / "scenarios.json").write_text(
+            '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+        )
 
         # Create custom baseload directory
         custom_baseload_dir = tmp_path / "custom_boa_output"
@@ -223,6 +227,10 @@ class TestBaseloadPowerCLIArgument:
         fixtures_dir.mkdir(parents=True)
         (fixtures_dir / "plants.json").write_text("[]")
         (fixtures_dir / "demand_centers.json").write_text("[]")
+        (fixtures_dir / "suppliers.json").write_text("[]")
+        (fixtures_dir / "scenarios.json").write_text(
+            '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+        )
 
         # Create config with custom baseload dir
         config = SimulationConfig.from_data_directory(

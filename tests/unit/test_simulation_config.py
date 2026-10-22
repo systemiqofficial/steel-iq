@@ -28,6 +28,10 @@ def prepared_data_dir(tmp_path):
     # Create some dummy files that the resolver should find
     (fixtures_dir / "plants.json").touch()
     (fixtures_dir / "demand_centers.json").touch()
+    (fixtures_dir / "suppliers.json").touch()
+    (fixtures_dir / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
     (geo_dir / "feasibility_mask.nc").touch()
 
     return data_dir

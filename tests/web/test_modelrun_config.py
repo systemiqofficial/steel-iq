@@ -125,15 +125,18 @@ def make_runnable(data_preparation):
         data_preparation: The ready ``DataPreparation`` of the ``ready_data_preparation`` fixture.
 
     Notes:
-        Adds a master, the two files the config factory checks, the capacity pool fixtures and a second grid
-        scenario ("Net Zero").
+        Adds a master, the files the config factory checks with their scenario index, the capacity pool fixtures
+        and a second grid scenario ("Net Zero").
     """
     fixtures = data_preparation.get_data_path() / "data" / "fixtures"
     emissivity = json.loads((fixtures / "region_emissivity.json").read_text())
     emissivity["root"].append({**emissivity["root"][0], "scenario": "Net Zero"})
     (fixtures / "region_emissivity.json").write_text(json.dumps(emissivity))
-    for name in ("plants.json", "demand_centers.json", "capacity_pool_opening_credits.json"):
+    for name in ("plants.json", "demand_centers.json", "suppliers.json", "capacity_pool_opening_credits.json"):
         (fixtures / name).write_text("[]")
+    (fixtures / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
     # The form refuses the policy on provinces or technologies without a record
     for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json"):
         (fixtures / name).write_text("[{}]")
