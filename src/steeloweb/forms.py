@@ -848,20 +848,20 @@ class ModelRunCreateForm(forms.ModelForm):
         # A preparation made before run-time scenarios holds no index; clean() refuses a post naming it
         self.scenario_index_error = None
         try:
-            demand_scenarios = active_prep.get_demand_scenarios() if active_prep is not None else []
-            scrap_scenarios = active_prep.get_scrap_scenarios() if active_prep is not None else []
+            self.demand_scenarios = active_prep.get_demand_scenarios() if active_prep is not None else []
+            self.scrap_scenarios = active_prep.get_scrap_scenarios() if active_prep is not None else []
         except (OSError, ValueError, KeyError, TypeError):
-            demand_scenarios, scrap_scenarios = [], []
+            self.demand_scenarios, self.scrap_scenarios = [], []
             self.scenario_index_error = (
                 "This data preparation was made before steel demand and scrap scenarios were picked per run; "
                 "prepare this master again."
             )
         demand_field = self.fields["chosen_demand_scenario"]
-        demand_field.choices = [(name, name) for name in demand_scenarios]
-        if demand_scenarios and demand_field.initial not in demand_scenarios:
-            demand_field.initial = demand_scenarios[0]
+        demand_field.choices = [(name, name) for name in self.demand_scenarios]
+        if self.demand_scenarios and demand_field.initial not in self.demand_scenarios:
+            demand_field.initial = self.demand_scenarios[0]
         scrap_field = self.fields["chosen_scrap_scenario"]
-        scrap_field.choices = [*scrap_field.choices[:1], *((name, name) for name in scrap_scenarios)]
+        scrap_field.choices = [*scrap_field.choices[:1], *((name, name) for name in self.scrap_scenarios)]
 
         # Disabled while the switch is off, the levers post nothing; shown again, they start from their initials
         if self.is_bound and "capacity_policy_enabled" not in self.data:
@@ -979,20 +979,31 @@ class ModelRunCreateForm(forms.ModelForm):
 
         Notes:
             A lever set that ``CapacityPolicyConfig`` refuses, the switch on a preparation without the capacity pool
-            fixtures, a credit validity without the switch, a preparation whose emission factors cannot be read and
-            one without the scenario index are form errors. A blank steel demand scenario is the class default, and
-            a blank scrap scenario ("Same as demand") the steel demand one.
+            fixtures, a credit validity without the switch, a preparation whose emission factors cannot be read,
+            one without the scenario index and a scenario pair its index lacks are form errors. A blank steel demand
+            scenario takes the field's initial (the class default when the preparation holds it, else its first),
+            and a blank scrap scenario ("Same as demand") the steel demand one.
         """
         cleaned_data = super().clean()
         if self.emission_boundaries_error:
             self.add_error("chosen_emissions_boundary_for_carbon_costs", self.emission_boundaries_error)
         if self.scenario_index_error:
             self.add_error("chosen_demand_scenario", self.scenario_index_error)
-        # Scrap follows demand unless chosen, as the CLI's --scrap-scenario does
+        # Scrap follows demand unless chosen, as the CLI's --scrap-scenario does, and the run refuses a pair not held
         if not self.has_error("chosen_demand_scenario") and not self.has_error("chosen_scrap_scenario"):
-            demand = cleaned_data["chosen_demand_scenario"] or config_default("chosen_demand_scenario")
+            demand = cleaned_data["chosen_demand_scenario"] or self.fields["chosen_demand_scenario"].initial
             cleaned_data["chosen_demand_scenario"] = demand
             cleaned_data["chosen_scrap_scenario"] = cleaned_data["chosen_scrap_scenario"] or demand
+            for name, held in [
+                ("chosen_demand_scenario", self.demand_scenarios),
+                ("chosen_scrap_scenario", self.scrap_scenarios),
+            ]:
+                if cleaned_data[name] not in held:
+                    self.add_error(
+                        name,
+                        f"This data preparation has no {self.fields[name].label.lower()} named "
+                        f"{cleaned_data[name]!r}; pick one it holds.",
+                    )
         start_year = cleaned_data.get("start_year")
         end_year = cleaned_data.get("end_year")
 

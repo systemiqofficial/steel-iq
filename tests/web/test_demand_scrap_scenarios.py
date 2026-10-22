@@ -74,6 +74,25 @@ def test_same_as_demand_stores_the_steel_demand_scenario_as_the_scrap_scenario(
 
 
 @pytest.mark.django_db
+def test_same_as_demand_is_refused_when_the_preparation_has_no_scrap_scenario_of_that_name(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+    ready_data_preparation,
+):
+    """A scrap scenario left at "Same as demand" on a demand name the scrap list lacks is refused, as the CLI does."""
+    write_scenario_index(ready_data_preparation, demand=["BAU", "High growth"], scrap=["BAU", "High recycling"])
+    form_data = {**valid_modelrun_form_data, "chosen_demand_scenario": "High growth", "chosen_scrap_scenario": ""}
+
+    response = client.post(reverse("create-modelrun"), data=form_data)
+
+    assert response.status_code == 200
+    error = response.context["form"].errors["chosen_scrap_scenario"][0]
+    assert "no scrap availability scenario named 'High growth'" in error
+    assert not ModelRun.objects.exists()
+
+
+@pytest.mark.django_db
 def test_run_form_asks_to_prepare_again_for_a_preparation_without_the_scenario_index(
     mock_technology_extraction,
     client,
