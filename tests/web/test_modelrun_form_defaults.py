@@ -13,6 +13,8 @@ NO_COUNTERPART = {
     "data_preparation",
     "capacity_policy_no_swap_cutoff",
 }
+# Starts at "Same as demand", which follows the steel demand scenario as the CLI's --scrap-scenario does
+FOLLOWS_DEMAND = {"chosen_scrap_scenario"}
 # Entered in Mt, stored in tonnes
 MT_FIELDS = {"expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"}
 # Entries of geo_config.transportation_cost_per_km_per_ton
@@ -47,14 +49,14 @@ def test_every_form_field_with_a_counterpart_starts_at_the_class_default():
     """Each field of the run form that sets a config field shows the class default as its initial (Mt scaled).
 
     A field with no config field must be listed in ``NO_COUNTERPART``; any other field without a class default
-    fails the test with a ``KeyError``. A ``data-default`` widget attribute, read by the page's reset buttons,
+    fails the test with a ``KeyError``. The scrap scenario starts at "Same as demand" (``FOLLOWS_DEMAND``). A ``data-default`` widget attribute, read by the page's reset buttons,
     must show the same value.
     """
     base_fields = forms.ModelRunCreateForm.base_fields
     initial_mismatches = {
         name: (form_field.initial, class_default_of_form_field(name))
         for name, form_field in base_fields.items()
-        if name not in NO_COUNTERPART and form_field.initial != class_default_of_form_field(name)
+        if name not in NO_COUNTERPART | FOLLOWS_DEMAND and form_field.initial != class_default_of_form_field(name)
     }
     data_defaults = {
         name: (form_field.widget.attrs["data-default"], str(form_field.initial))

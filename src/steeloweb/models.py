@@ -501,6 +501,42 @@ class DataPreparation(models.Model):
         records = json.loads(path.read_text(encoding="utf-8"))
         return sorted({record["boundary"] for record in records})
 
+    def get_demand_scenarios(self) -> list[str]:
+        """The steel demand scenarios the prepared data holds, one of which a run picks.
+
+        Returns:
+            The sorted names under ``demand`` in ``fixtures/scenarios.json``.
+
+        Raises:
+            FileNotFoundError: When the preparation has no index, as one made before run-time scenarios.
+        """
+        return self._scenario_names("demand")
+
+    def get_scrap_scenarios(self) -> list[str]:
+        """The scrap availability scenarios the prepared data holds, one of which a run picks.
+
+        Returns:
+            The sorted names under ``scrap`` in ``fixtures/scenarios.json``.
+
+        Raises:
+            FileNotFoundError: When the preparation has no index, as one made before run-time scenarios.
+        """
+        return self._scenario_names("scrap")
+
+    def _scenario_names(self, kind: str) -> list[str]:
+        """The scenario names of one kind in the preparation's scenario index.
+
+        Args:
+            kind: ``demand`` or ``scrap``.
+
+        Returns:
+            The names under ``kind`` in ``fixtures/scenarios.json``, sorted.
+        """
+        import json
+
+        path = Path(self.data_directory) / "data" / "fixtures" / "scenarios.json"
+        return sorted(json.loads(path.read_text(encoding="utf-8"))[kind])
+
     def has_capacity_pool_fixtures(self) -> bool:
         """Whether the prepared data holds the capacity pool fixtures an enabled capacity policy needs.
 

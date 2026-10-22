@@ -67,6 +67,9 @@ class TestPolicySettingsFields(TestCase):
         (data_directory / "data" / "fixtures" / "technology_emission_factors.json").write_text(
             '[{"boundary": "rs-inspired"}]'
         )
+        (data_directory / "data" / "fixtures" / "scenarios.json").write_text(
+            '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+        )
         data_prep = DataPreparation.objects.create(
             name="Test Data Preparation",
             status=DataPreparation.Status.READY,

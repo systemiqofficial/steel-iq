@@ -37,18 +37,26 @@ def steelo_home(monkeypatch, tmp_path):
 
 @pytest.fixture
 def prepared_data_directory(tmp_path):
-    """A preparation folder holding the one fixture the run form reads from every ready preparation.
+    """A preparation folder holding the fixtures the run form reads from every ready preparation.
 
     Args:
         tmp_path: The test's temporary folder.
 
     Returns:
         ``<tmp_path>/prepared``, whose ``data/fixtures/technology_emission_factors.json`` offers the class default
-        emissions boundary.
+        emissions boundary and whose ``data/fixtures/scenarios.json`` the class default demand and scrap scenarios.
     """
     fixtures = tmp_path / "prepared" / "data" / "fixtures"
     fixtures.mkdir(parents=True)
     (fixtures / "technology_emission_factors.json").write_text(json.dumps([{"boundary": "rs-inspired"}]))
+    (fixtures / "scenarios.json").write_text(
+        json.dumps(
+            {
+                "demand": {"BAU": "demand_scenarios/bau/demand_centers.json"},
+                "scrap": {"BAU": "scrap_scenarios/bau/suppliers.json"},
+            },
+        ),
+    )
     return tmp_path / "prepared"
 
 

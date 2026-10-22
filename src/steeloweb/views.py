@@ -993,6 +993,25 @@ def technologies_fragment(request):
 
 
 @require_http_methods(["GET"])
+def demand_scrap_scenarios_fragment(request):
+    """HTMX endpoint: the steel demand and scrap availability scenario selects for a given preparation.
+
+    Returns:
+        The two selects of a run form on the requested preparation, each keeping the choice sent along when the
+        preparation offers it.
+
+    Notes:
+        The form builds the choices, the initials and the warning for a preparation without the scenario index, so
+        the fragment and the create page show the same selects.
+    """
+    form = ModelRunCreateForm(initial={"data_preparation": request.GET.get("data_preparation")})
+    for name in ("chosen_demand_scenario", "chosen_scrap_scenario"):
+        if request.GET.get(name) in dict(form.fields[name].choices):
+            form.initial[name] = request.GET[name]
+    return render(request, "steeloweb/partials/_demand_scrap_scenarios.html", {"form": form})
+
+
+@require_http_methods(["GET"])
 @require_http_methods(["GET"])
 def grid_emissions_scenario_fragment(request):
     """

@@ -548,6 +548,13 @@ def ready_data_preparation(db, tmp_path):
     ]
     (fixtures_dir / "technology_emission_factors.json").write_text(json.dumps(technology_emission_factors))
 
+    # The run form offers the demand and scrap scenarios of the preparation's index
+    scenario_index = {
+        "demand": {"BAU": "demand_scenarios/bau/demand_centers.json"},
+        "scrap": {"BAU": "scrap_scenarios/bau/suppliers.json"},
+    }
+    (fixtures_dir / "scenarios.json").write_text(json.dumps(scenario_index))
+
     # Create required data packages
     core_package, _ = DataPackage.objects.get_or_create(
         name=DataPackage.PackageType.CORE_DATA,

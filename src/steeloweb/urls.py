@@ -60,6 +60,11 @@ urlpatterns = [
         views.grid_emissions_scenario_fragment,
         name="create-modelrun-grid-emissions-fragment",
     ),
+    path(
+        "modelrun/demand-scrap-scenarios-fragment/",
+        views.demand_scrap_scenarios_fragment,
+        name="create-modelrun-demand-scrap-fragment",
+    ),
     # Master Excel URLs
     path("master-excel/", views.MasterExcelFileListView.as_view(), name="master-excel-list"),
     path("master-excel/create/", views.MasterExcelFileCreateView.as_view(), name="master-excel-create"),

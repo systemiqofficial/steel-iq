@@ -831,6 +831,15 @@ document.head.appendChild(style);
                                         </small>
                                     </div>
                                 </div>
+
+                                <div id="demand-scrap-scenarios"
+                                     hx-get="{% url 'create-modelrun-demand-scrap-fragment' %}"
+                                     hx-trigger="change from:#id_data_preparation"
+                                     hx-target="this"
+                                     hx-swap="innerHTML"
+                                     hx-include="#id_data_preparation, #id_chosen_demand_scenario, #id_chosen_scrap_scenario">
+                                    {% include "steeloweb/partials/_demand_scrap_scenarios.html" %}
+                                </div>
                             </div>
                         </div>
 

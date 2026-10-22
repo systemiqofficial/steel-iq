@@ -42,6 +42,8 @@ OFF_DEFAULT_POST = {
     "use_iron_ore_premiums": False,
     "include_tariffs": False,
     "geographical_clustering_scope": "iso3",
+    "chosen_demand_scenario": "High growth",
+    "chosen_scrap_scenario": "High recycling",
     "chosen_grid_emissions_scenario": "Net Zero",
     "chosen_emissions_boundary_for_carbon_costs": "worldsteel_opt_credits",
     "hydrogen_ceiling_percentile": 90.0,
@@ -125,8 +127,8 @@ def make_runnable(data_preparation):
         data_preparation: The ready ``DataPreparation`` of the ``ready_data_preparation`` fixture.
 
     Notes:
-        Adds a master, the files the config factory checks with their scenario index, the capacity pool fixtures
-        and a second grid scenario ("Net Zero").
+        Adds a master, the files the config factory checks with a scenario index naming a second demand and scrap
+        scenario, the capacity pool fixtures and a second grid scenario ("Net Zero").
     """
     fixtures = data_preparation.get_data_path() / "data" / "fixtures"
     emissivity = json.loads((fixtures / "region_emissivity.json").read_text())
@@ -134,9 +136,11 @@ def make_runnable(data_preparation):
     (fixtures / "region_emissivity.json").write_text(json.dumps(emissivity))
     for name in ("plants.json", "demand_centers.json", "suppliers.json", "capacity_pool_opening_credits.json"):
         (fixtures / name).write_text("[]")
-    (fixtures / "scenarios.json").write_text(
-        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
-    )
+    scenario_index = {
+        "demand": {"BAU": "demand_centers.json", "High growth": "demand_centers.json"},
+        "scrap": {"BAU": "suppliers.json", "High recycling": "suppliers.json"},
+    }
+    (fixtures / "scenarios.json").write_text(json.dumps(scenario_index))
     # The form refuses the policy on provinces or technologies without a record
     for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json"):
         (fixtures / name).write_text("[{}]")

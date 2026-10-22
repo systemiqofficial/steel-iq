@@ -1,0 +1,27 @@
+{% if form.scenario_index_error and not form.is_bound %}
+    <div class="alert alert-warning py-2 mb-2">{{ form.scenario_index_error }}</div>
+{% endif %}
+<div class="mb-3 row">
+    <label for="{{ form.chosen_demand_scenario.id_for_label }}" class="col-sm-3 col-form-label">{{ form.chosen_demand_scenario.label }}:</label>
+    <div class="col-sm-9">
+        {{ form.chosen_demand_scenario }}
+        <small class="form-text text-muted">{{ form.chosen_demand_scenario.help_text }}</small>
+        {% if form.chosen_demand_scenario.errors %}
+        <div class="invalid-feedback d-block">
+            {{ form.chosen_demand_scenario.errors }}
+        </div>
+        {% endif %}
+    </div>
+</div>
+<div class="mb-3 row">
+    <label for="{{ form.chosen_scrap_scenario.id_for_label }}" class="col-sm-3 col-form-label">{{ form.chosen_scrap_scenario.label }}:</label>
+    <div class="col-sm-9">
+        {{ form.chosen_scrap_scenario }}
+        <small class="form-text text-muted">{{ form.chosen_scrap_scenario.help_text }}</small>
+        {% if form.chosen_scrap_scenario.errors %}
+        <div class="invalid-feedback d-block">
+            {{ form.chosen_scrap_scenario.errors }}
+        </div>
+        {% endif %}
+    </div>
+</div>
