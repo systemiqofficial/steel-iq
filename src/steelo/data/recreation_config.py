@@ -125,7 +125,9 @@ FILE_RECREATION_SPECS = {
         source_type="master-excel",
         master_excel_sheet="Demand and scrap availability",
         dependencies=["gravity_distances_dict.pkl", "countries.csv"],
-        description="Demand centers per demand scenario and mine and scrap suppliers per scrap scenario, with their index",
+        description=(
+            "Demand centers per demand scenario and mine and scrap suppliers per scrap scenario, with their index"
+        ),
     ),
     "tariffs.json": FileRecreationSpec(
         filename="tariffs.json",

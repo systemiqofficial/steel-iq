@@ -80,7 +80,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scrap-scenario",
         type=str,
         default=None,
-        help="Scrap availability scenario of the run, named and picked the same way (default: same as --demand-scenario)",
+        help=(
+            "Scrap availability scenario of the run, named and picked the same way (default: same as --demand-scenario)"
+        ),
     )
     parser.add_argument(
         "--grid-emissions-scenario",

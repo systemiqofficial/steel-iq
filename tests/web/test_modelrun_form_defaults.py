@@ -49,8 +49,8 @@ def test_every_form_field_with_a_counterpart_starts_at_the_class_default():
     """Each field of the run form that sets a config field shows the class default as its initial (Mt scaled).
 
     A field with no config field must be listed in ``NO_COUNTERPART``; any other field without a class default
-    fails the test with a ``KeyError``. The scrap scenario starts at "Same as demand" (``FOLLOWS_DEMAND``). A ``data-default`` widget attribute, read by the page's reset buttons,
-    must show the same value.
+    fails the test with a ``KeyError``. The scrap scenario starts at "Same as demand" (``FOLLOWS_DEMAND``). A
+    ``data-default`` widget attribute, read by the page's reset buttons, must show the same value.
     """
     base_fields = forms.ModelRunCreateForm.base_fields
     initial_mismatches = {
