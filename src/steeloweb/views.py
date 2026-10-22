@@ -2,6 +2,8 @@ import hashlib
 import datetime
 import logging
 import os
+from dataclasses import fields
+from decimal import Decimal
 from pathlib import Path
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
@@ -11,6 +13,7 @@ from django.urls import reverse_lazy, reverse
 from django.http import Http404, HttpResponse, FileResponse, HttpResponseNotModified
 from django.core.files.base import ContentFile
 from django.views.decorators.http import require_http_methods, require_POST
+from django.template.loader import get_template
 from django.utils import timezone
 
 from django_htmx.http import HttpResponseClientRefresh
@@ -20,10 +23,18 @@ from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPr
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
 from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
-from steelo.validation import SimulationConfigError, validate_technology_settings
+from steelo.validation import SimulationConfigError, ValidationError, validate_technology_settings
 from steelo.simulation_types import TechnologySettings
 from steelo.data.manager import DataManager
+from steelo.domain.constants import MT_TO_T
+from steelo.simulation import SimulationConfig, config_default
 from steelo.viewer.extract import RUN_NAME, VIEWER_DIR
+
+
+# Posted by the technology table, so a table without its Greenfield column is told apart from one with every box
+# unticked
+GREENFIELD_COLUMN_MARKER = "greenfield_column"
+TECHNOLOGY_TABLE_TEMPLATE = "steeloweb/partials/_technology_table.html"
 
 
 class ModelRunListView(ListView):
@@ -498,7 +509,7 @@ def _get_tech_to_product_mapping(prep: DataPreparation) -> dict[str, str]:
 def _merge_posted_technology_values(request, technologies: dict) -> None:
     """Merge posted form values into technologies dict to preserve user input on validation errors.
 
-    Modifies technologies dict in place, updating 'allowed', 'from_year', and 'to_year' fields
+    Modifies technologies dict in place, updating 'allowed', 'greenfield', 'from_year', and 'to_year' fields
     based on values from request.POST.
 
     Args:
@@ -513,11 +524,19 @@ def _merge_posted_technology_values(request, technologies: dict) -> None:
             slug = key[5:-8]  # Extract slug from "tech_{slug}_allowed"
             posted_allowed_techs.add(slug)
 
+    # A table without the Greenfield column posts no box, so its rows start again from the class default
+    has_greenfield_column = GREENFIELD_COLUMN_MARKER in request.POST
+    excluded = config_default("geo_config.excluded_greenfield_technologies")
+
     # Merge posted values for each technology
     for slug, tech_info in technologies.items():
         # Checkbox: preserve exact user selection
         # If checkbox was posted, it was checked; otherwise it was unchecked
         tech_info["allowed"] = slug in posted_allowed_techs
+        if has_greenfield_column:
+            tech_info["greenfield"] = f"tech_{slug}_greenfield" in request.POST
+        else:
+            tech_info["greenfield"] = tech_info["code"] not in excluded
 
         # Year values: preserve if posted
         posted_from_year = request.POST.get(f"tech_{slug}_from_year")
@@ -680,8 +699,8 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
     from steelo.validation import check_product_coverage_enhanced
 
     # Get simulation timeframe from validated form data
-    start_year = form.cleaned_data.get("start_year", 2025)
-    end_year = form.cleaned_data.get("end_year", 2060)
+    start_year = form.cleaned_data["start_year"]
+    end_year = form.cleaned_data["end_year"]
 
     # Get tech-to-product mapping and technology data
     try:
@@ -717,181 +736,78 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
     return settings
 
 
+def _excluded_greenfield_technologies(request, prep: DataPreparation) -> list[str]:
+    """The technologies whose "Greenfield" box the posted technology table leaves unticked.
+
+    Args:
+        request: The create form's POST request.
+        prep: The run's data preparation, whose technologies the table lists.
+
+    Returns:
+        The raw ``code`` of each unticked row, as the master's "Technology" column holds it.
+
+    Notes:
+        The plant agent compares these names with the capex reader's technology names, read from the same column
+        without normalisation, so a ``normalized_code`` (``BFCCS`` for ``BF+CCS``) would never match.
+    """
+    return [
+        tech_info["code"]
+        for slug, tech_info in prep.get_technologies().items()
+        if f"tech_{slug}_greenfield" not in request.POST
+    ]
+
+
 def create_modelrun(request):
     """
     Create a new model run with custom configuration
 
     Notes:
         A name already held by another run, or by a CLI run under ``$STEELO_HOME/output``, gets the first free ``_2``,
-        ``_3`` suffix; a blank name stays blank.
+        ``_3`` suffix; a blank name stays blank. A blank setting stores its class default (``config_default``); an
+        entered one is stored as entered, so 0 stays 0.
     """
     if request.method == "POST":
         form = ModelRunCreateForm(request.POST)
         if form.is_valid():
-            # Create config dictionary from form data
-            config = {
-                "start_year": form.cleaned_data["start_year"],
-                "end_year": form.cleaned_data["end_year"],
-                "random_seed": form.cleaned_data.get("random_seed", 42),
-                "plant_lifetime": form.cleaned_data.get("plant_lifetime", 20),
-                "global_risk_free_rate": float(
-                    form.cleaned_data.get("global_risk_free_rate")
-                    if form.cleaned_data.get("global_risk_free_rate") is not None
-                    else 0.0209
-                ),
-                "steel_price_buffer": float(
-                    form.cleaned_data.get("steel_price_buffer")
-                    if form.cleaned_data.get("steel_price_buffer") is not None
-                    else 200.0
-                ),
-                "iron_price_buffer": float(
-                    form.cleaned_data.get("iron_price_buffer")
-                    if form.cleaned_data.get("iron_price_buffer") is not None
-                    else 200.0
-                ),
-                "steel_market_clearing_share": float(
-                    form.cleaned_data.get("steel_market_clearing_share")
-                    if form.cleaned_data.get("steel_market_clearing_share") is not None
-                    else 0.95
-                ),
-                "iron_market_clearing_share": float(
-                    form.cleaned_data.get("iron_market_clearing_share")
-                    if form.cleaned_data.get("iron_market_clearing_share") is not None
-                    else 0.95
-                ),
-                "peg_iron_to_steel_price": form.cleaned_data.get("peg_iron_to_steel_price", False),
-                "iron_to_steel_price_ratio": float(
-                    form.cleaned_data.get("iron_to_steel_price_ratio")
-                    if form.cleaned_data.get("iron_to_steel_price_ratio") is not None
-                    else 0.8
-                ),
-                "opening_balance_multiplier": float(
-                    form.cleaned_data.get("opening_balance_multiplier")
-                    if form.cleaned_data.get("opening_balance_multiplier") is not None
-                    else 1.0
-                ),
-                "consideration_time": form.cleaned_data.get("consideration_time", 3),
-                "construction_time": form.cleaned_data.get("construction_time", 4),
-                "probabilistic_agents": form.cleaned_data.get("probabilistic_agents", True),
-                "probability_of_announcement": float(
-                    form.cleaned_data.get("probability_of_announcement")
-                    if form.cleaned_data.get("probability_of_announcement") is not None
-                    else 0.7
-                ),
-                "probability_of_construction": float(
-                    form.cleaned_data.get("probability_of_construction")
-                    if form.cleaned_data.get("probability_of_construction") is not None
-                    else 0.9
-                ),
-                "top_n_loctechs_as_business_op": form.cleaned_data.get("top_n_loctechs_as_business_op", 15),
-                "opportunity_pool_depth": int(
-                    form.cleaned_data.get("opportunity_pool_depth")
-                    if form.cleaned_data.get("opportunity_pool_depth") is not None
-                    else 3
-                ),
-                "pick_priority_sites_share": float(
-                    form.cleaned_data.get("pick_priority_sites_share")
-                    if form.cleaned_data.get("pick_priority_sites_share") is not None
-                    else 0.05
-                ),
-                "calculate_npv_sites_share": float(
-                    form.cleaned_data.get("calculate_npv_sites_share")
-                    if form.cleaned_data.get("calculate_npv_sites_share") is not None
-                    else 0.1
-                ),
-                # Plant capacity parameters (convert Mt to t)
-                "expanded_capacity": float(
-                    form.cleaned_data.get("expanded_capacity")
-                    if form.cleaned_data.get("expanded_capacity") is not None
-                    else 2.5
-                )
-                * 1000000,
-                "capacity_limit_iron": float(
-                    form.cleaned_data.get("capacity_limit_iron")
-                    if form.cleaned_data.get("capacity_limit_iron") is not None
-                    else 100
-                )
-                * 1000000,
-                "capacity_limit_steel": float(
-                    form.cleaned_data.get("capacity_limit_steel")
-                    if form.cleaned_data.get("capacity_limit_steel") is not None
-                    else 100
-                )
-                * 1000000,
-                "new_capacity_share_from_new_plants": float(
-                    form.cleaned_data.get("new_capacity_share_from_new_plants")
-                    if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
-                    else 0.4
-                ),
-                "hydrogen_ceiling_percentile": float(
-                    form.cleaned_data.get("hydrogen_ceiling_percentile")
-                    if form.cleaned_data.get("hydrogen_ceiling_percentile") is not None
-                    else 100.0
-                ),
-                "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", False),
-                "long_dist_pipeline_transport_cost": float(
-                    form.cleaned_data.get("long_dist_pipeline_transport_cost")
-                    if form.cleaned_data.get("long_dist_pipeline_transport_cost") is not None
-                    else 1.0
-                ),
-                # Policy settings
-                "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
-                "green_steel_emissions_limit": 0.4,  # Hardcoded - no longer user-configurable
-                "include_tariffs": form.cleaned_data.get("include_tariffs", True),
-                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", True),
-                "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope") or "plant",
-                # Add new demand and circularity fields
-                "total_steel_demand_scenario": form.cleaned_data.get(
-                    "total_steel_demand_scenario", "business_as_usual"
-                ),
-                "green_steel_demand_scenario": form.cleaned_data.get(
-                    "green_steel_demand_scenario", "business_as_usual"
-                ),
-                "chosen_grid_emissions_scenario": form.cleaned_data.get(
-                    "chosen_grid_emissions_scenario", "Business As Usual"
-                ),
-                "circularity_file": form.cleaned_data.get("circularity_file", ""),
-                # Technology fields will be added after extraction from POST data
-                "hydrogen_subsidies": form.cleaned_data.get("hydrogen_subsidies", False),
-                "esf_cost_scenario": form.cleaned_data.get("esf_cost_scenario", ""),
-                "moe_cost_scenario": form.cleaned_data.get("moe_cost_scenario", ""),
-                "electrowinning_cost_scenario": form.cleaned_data.get("electrowinning_cost_scenario", ""),
-                "ccs_cost_scenario": form.cleaned_data.get("ccs_cost_scenario", ""),
-                # Geospatial fields
-                "included_power_mix": form.cleaned_data.get("included_power_mix", "85% baseload + 15% grid"),
-                "max_slope": float(
-                    form.cleaned_data.get("max_slope") if form.cleaned_data.get("max_slope") is not None else 2.0
-                ),
-                "max_altitude": form.cleaned_data.get("max_altitude", 1500),
-                "max_latitude": float(
-                    form.cleaned_data.get("max_latitude") if form.cleaned_data.get("max_latitude") is not None else 70.0
-                ),
-                "include_infrastructure_cost": form.cleaned_data.get("include_infrastructure_cost", True),
-                "include_transport_cost": form.cleaned_data.get("include_transport_cost", True),
-                "include_lulc_cost": form.cleaned_data.get("include_lulc_cost", True),
-                # Transportation cost fields - assembled into the expected dictionary structure
-                "transportation_cost_per_km_per_ton": {
-                    "iron_mine_to_plant": float(
-                        form.cleaned_data.get("iron_mine_to_plant")
-                        if form.cleaned_data.get("iron_mine_to_plant") is not None
-                        else 0.013
-                    ),
-                    "iron_to_steel_plant": float(
-                        form.cleaned_data.get("iron_to_steel_plant")
-                        if form.cleaned_data.get("iron_to_steel_plant") is not None
-                        else 0.015
-                    ),
-                    "steel_to_demand": float(
-                        form.cleaned_data.get("steel_to_demand")
-                        if form.cleaned_data.get("steel_to_demand") is not None
-                        else 0.019
-                    ),
-                },
+            # A blank field takes the class default; an entered value is kept, so 0 stays 0
+            simulation_fields = {config_field.name for config_field in fields(SimulationConfig)}
+            transport_costs = config_default("geo_config.transportation_cost_per_km_per_ton")
+            config = {}
+            for field_name, value in form.cleaned_data.items():
+                if field_name in ("name", "data_preparation") or field_name in transport_costs:
+                    continue
+                if isinstance(value, Decimal):
+                    value = float(value)
+                if value is None or value == "":
+                    config_name = field_name if field_name in simulation_fields else f"geo_config.{field_name}"
+                    config[field_name] = config_default(config_name)
+                elif field_name in ("expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"):
+                    config[field_name] = value * MT_TO_T
+                else:
+                    config[field_name] = value
+            config["transportation_cost_per_km_per_ton"] = {
+                route: default if form.cleaned_data[route] is None else float(form.cleaned_data[route])
+                for route, default in transport_costs.items()
             }
 
             # Extract technology settings from POST data if data preparation is available
             data_preparation = form.cleaned_data.get("data_preparation")
             if data_preparation:
+                # A table served before the Greenfield column posts no box, which would read as every row unticked
+                if GREENFIELD_COLUMN_MARKER not in request.POST:
+                    form.technology_validation_errors = [
+                        ValidationError(
+                            title="Technology table out of date",
+                            description=(
+                                "The technology table was loaded before it had the Greenfield column. Check the "
+                                "table below, then create the simulation again."
+                            ),
+                            suggestions=[],
+                            product_type=None,
+                        )
+                    ]
+                    context = _build_validation_error_context(request, form, data_preparation)
+                    return render(request, "steeloweb/create_modelrun.html", context)
                 technology_settings = _extract_technology_settings(request, data_preparation, form)
                 if not technology_settings:  # Validation failed
                     # ALWAYS build context with preserved user input, regardless of error type
@@ -901,6 +817,9 @@ def create_modelrun(request):
                     context = _build_validation_error_context(request, form, data_preparation)
                     return render(request, "steeloweb/create_modelrun.html", context)
                 config["technology_settings"] = technology_settings
+                config["excluded_greenfield_technologies"] = _excluded_greenfield_technologies(
+                    request, data_preparation
+                )
             else:
                 messages.error(request, "Data preparation is required to configure technologies")
                 return render(request, "steeloweb/create_modelrun.html", {"form": form})
@@ -1008,7 +927,11 @@ def technologies_fragment(request):
 
     if tech_path.exists():
         st = tech_path.stat()
-        etag_val = hashlib.md5(f"{st.st_mtime_ns}:{st.st_size}:{prep.id}".encode()).hexdigest()
+        # The partial's own version too, so a table cached before the template changed is not reused
+        partial = Path(get_template(TECHNOLOGY_TABLE_TEMPLATE).origin.name).stat()
+        etag_val = hashlib.md5(
+            f"{st.st_mtime_ns}:{st.st_size}:{prep.id}:{partial.st_mtime_ns}:{partial.st_size}".encode()
+        ).hexdigest()
 
         # Normalize client ETag (strip quotes) for comparison
         client_tag = (request.headers.get("If-None-Match", "") or "").strip('"')
@@ -1042,6 +965,9 @@ def technologies_fragment(request):
     # Set default availability years and reset metadata
     # set_from_year=True for initial load (sets both from_year and default_from_year)
     _enrich_technology_defaults(technologies, set_from_year=True)
+    excluded = config_default("geo_config.excluded_greenfield_technologies")
+    for tech in technologies.values():
+        tech["greenfield"] = tech["code"] not in excluded
 
     context = {
         "technologies": technologies,
@@ -1067,6 +993,25 @@ def technologies_fragment(request):
 
 
 @require_http_methods(["GET"])
+def demand_scrap_scenarios_fragment(request):
+    """HTMX endpoint: the steel demand and scrap availability scenario selects for a given preparation.
+
+    Returns:
+        The two selects of a run form on the requested preparation, each keeping the choice sent along when the
+        preparation offers it.
+
+    Notes:
+        The form builds the choices, the initials and the warning for a preparation without the scenario index, so
+        the fragment and the create page show the same selects.
+    """
+    form = ModelRunCreateForm(initial={"data_preparation": request.GET.get("data_preparation")})
+    for name in ("chosen_demand_scenario", "chosen_scrap_scenario"):
+        if request.GET.get(name) in dict(form.fields[name].choices):
+            form.initial[name] = request.GET[name]
+    return render(request, "steeloweb/partials/_demand_scrap_scenarios.html", {"form": form})
+
+
+@require_http_methods(["GET"])
 @require_http_methods(["GET"])
 def grid_emissions_scenario_fragment(request):
     """
@@ -1081,7 +1026,7 @@ def grid_emissions_scenario_fragment(request):
     from django.http import HttpResponse
 
     prep_id = request.GET.get("data_preparation")
-    selected = request.GET.get("chosen_grid_emissions_scenario", "Business As Usual")
+    selected = request.GET.get("chosen_grid_emissions_scenario", config_default("chosen_grid_emissions_scenario"))
 
     scenarios: list[str] = []
     if prep_id:

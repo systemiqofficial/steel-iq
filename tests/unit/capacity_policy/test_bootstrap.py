@@ -287,6 +287,9 @@ def minimal_simulation_config(tmp_path):
         "cost_of_capital",
     ):
         (fixtures_dir / f"{name}.json").write_text('{"root": []}')
+    (fixtures_dir / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
     (fixtures_dir / "input_costs.json").write_text(
         '{"root": ['
         '{"iso3": "DEU", "year": 2025, "costs": {"electricity": 0.05}},'

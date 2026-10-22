@@ -128,8 +128,7 @@ class TestModelRunOutputIsolation:
 
     @patch("steelo.validation.validate_technology_settings")  # Skip validation
     @patch("steelo.bootstrap.bootstrap_simulation")
-    @patch("steelo.simulation.SimulationConfig")
-    def test_run_method_uses_isolated_directories(self, mock_config_class, mock_bootstrap_simulation, mock_validate):
+    def test_run_method_uses_isolated_directories(self, mock_bootstrap_simulation, mock_validate):
         """Test that the run method passes isolated output directories to SimulationConfig."""
         # Create data packages and preparation like in the integration tests
         from steeloweb.models import DataPackage, DataPreparation

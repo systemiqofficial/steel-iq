@@ -174,7 +174,7 @@ def scrap_supply_rows(
     """Local scrap supply per year and country, from the prepared suppliers.
 
     Args:
-        suppliers: The prepared suppliers (``fixtures/suppliers.json``); only the
+        suppliers: The prepared suppliers of the run's scrap scenario; only the
             scrap ones count.
         country_mappings: The run's country mappings, to resolve suppliers placed by
             country name rather than ISO3.

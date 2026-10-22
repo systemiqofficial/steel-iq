@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, InitVar, fields, asdict
+from dataclasses import MISSING, dataclass, field, InitVar, fields, asdict
 from pathlib import Path
 from typing import Optional, Callable, Any, TYPE_CHECKING
 import logging
@@ -420,8 +420,7 @@ class SimulationConfig:
     )
 
     # === Scenario and Policy Settings ===
-    # Applied at data-prep time (rows of the "Demand and scrap availability" sheet) and part of the
-    # prep cache key; kept on the config so the choice is recorded in simulation_config.json
+    # Scenario names of the "Demand and scrap availability" sheet; the run reads their prepared files
     chosen_demand_scenario: str = "BAU"
     chosen_scrap_scenario: str = "BAU"
     chosen_grid_emissions_scenario: str = "Business As Usual"
@@ -499,6 +498,7 @@ class SimulationConfig:
     def _create_repository(self) -> "Repository":
         """Create repository based on available data sources."""
         from .adapters.repositories import JsonRepository, InMemoryRepository
+        from .data.path_resolver import resolve_scenario_fixtures
         from .domain.models import PlantGroup
 
         if self.data_dir:
@@ -508,12 +508,15 @@ class SimulationConfig:
                 raise ValueError(f"Fixtures directory not found: {fixtures_dir}")
 
             logger.info(f"Loading repository from fixtures: {fixtures_dir}")
+            demand_centers_path, suppliers_path = resolve_scenario_fixtures(
+                fixtures_dir, self.chosen_demand_scenario, self.chosen_scrap_scenario
+            )
 
             json_repo = JsonRepository(
                 plant_lifetime=self.plant_lifetime,
                 plants_path=fixtures_dir / "plants.json",
-                demand_centers_path=fixtures_dir / "demand_centers.json",
-                suppliers_path=fixtures_dir / "suppliers.json",
+                demand_centers_path=demand_centers_path,
+                suppliers_path=suppliers_path,
                 plant_groups_path=fixtures_dir / "plant_groups.json",
                 trade_tariffs_path=fixtures_dir / "tariffs.json",
                 subsidies_path=fixtures_dir / "subsidies.json",
@@ -694,8 +697,11 @@ class SimulationConfig:
 
         Returns:
             Fully configured SimulationConfig instance
+
+        Raises:
+            ValueError: When the prepared data has no ``scenarios.json`` or lacks the config's demand or scrap scenario.
         """
-        from .data.path_resolver import DataPathResolver
+        from .data.path_resolver import DataPathResolver, resolve_scenario_fixtures
 
         data_dir = Path(data_dir)
         output_dir = Path(output_dir)
@@ -707,8 +713,8 @@ class SimulationConfig:
         # Use DataPathResolver to get all the standard data paths
         path_resolver = DataPathResolver(data_directory=data_dir)
 
-        # Validate that required files exist
-        path_resolver.validate_required_files(["plants.json", "demand_centers.json"])
+        # Validate that required files exist; the scenario pair is checked once the config holds it
+        path_resolver.validate_required_files(["plants.json"])
 
         # Build the config with detected paths
         config_data: dict[str, Any] = {
@@ -824,7 +830,11 @@ class SimulationConfig:
             if key not in typed_config:
                 typed_config[key] = value
 
-        return cls(**typed_config)
+        config = cls(**typed_config)
+        resolve_scenario_fixtures(
+            path_resolver.fixtures_dir, config.chosen_demand_scenario, config.chosen_scrap_scenario
+        )
+        return config
 
     @classmethod
     def for_testing(
@@ -914,14 +924,27 @@ class SimulationConfig:
             fixtures_dir = temp_dir / "fixtures"
             fixtures_dir.mkdir(exist_ok=True)
 
-            # Create dummy required files to satisfy validation
-            dummy_files = ["plants.json", "demand_centers.json"]
-            for dummy_file in dummy_files:
-                dummy_path = fixtures_dir / dummy_file
+            # Create dummy required files to satisfy validation, the scenario files for the run's pair
+            from .data.recreation_functions import scenario_fixture_path, write_scenario_index
+
+            scenario_paths = {
+                kind: {name: scenario_fixture_path(fixtures_dir, kind, name)}
+                for kind, name in [
+                    ("demand", kwargs.get("chosen_demand_scenario", config_default("chosen_demand_scenario"))),
+                    ("scrap", kwargs.get("chosen_scrap_scenario", config_default("chosen_scrap_scenario"))),
+                ]
+            }
+            write_scenario_index(fixtures_dir / "scenarios.json", scenario_paths)
+            dummy_files = [
+                fixtures_dir / "plants.json",
+                *(path for paths in scenario_paths.values() for path in paths.values()),
+            ]
+            for dummy_path in dummy_files:
                 if not dummy_path.exists():
                     # Create minimal valid JSON
                     import json
 
+                    dummy_path.parent.mkdir(parents=True, exist_ok=True)
                     dummy_path.write_text(json.dumps([]))
 
             # Move extracted files to expected locations
@@ -967,6 +990,30 @@ class SimulationConfig:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to create config from master Excel: {e}") from e
+
+
+def config_default(name: str) -> Any:
+    """The class default of one run setting, the one source the CLI and the app take their defaults from.
+
+    Args:
+        name: A ``SimulationConfig`` field name, or ``geo_config.<field>`` or ``capacity_policy.<field>`` for a
+            field of the nested ``GeoConfig`` or ``CapacityPolicyConfig``.
+
+    Returns:
+        The field's default; a ``default_factory`` is called, so a mutable default comes back as a fresh copy.
+
+    Raises:
+        KeyError: When the name is no such field, or the field has no default (``start_year``, for one).
+    """
+    nested_classes: dict[str, type] = {"geo_config": GeoConfig, "capacity_policy": CapacityPolicyConfig}
+    prefix, _, field_name = name.rpartition(".")
+    config_class = nested_classes[prefix] if prefix else SimulationConfig
+    config_field = {f.name: f for f in fields(config_class)}[field_name]
+    if config_field.default is not MISSING:
+        return config_field.default
+    if config_field.default_factory is not MISSING:
+        return config_field.default_factory()
+    raise KeyError(f"{name} has no class default")
 
 
 def config_as_json_dict(config: SimulationConfig) -> dict[str, Any]:
@@ -1677,6 +1724,7 @@ class SimulationRunner:
         # Interactive viewers (self-contained plotly HTML) under plots/interactive; after the
         # market-prices export so the cost curves can read the recorded steel demand
         from steelo.utilities.interactive import InteractivePlotter, clearing_config, run_display_title
+        from .data.path_resolver import resolve_scenario_fixtures
 
         if self.config.plots_dir is not None:
             interactive = InteractivePlotter(
@@ -1688,10 +1736,17 @@ class SimulationRunner:
                 else None,
             )
             fixtures_dir = self.config.data_dir / "fixtures" if self.config.data_dir else None
+            demand_centers_json, suppliers_json = (
+                resolve_scenario_fixtures(
+                    fixtures_dir, self.config.chosen_demand_scenario, self.config.chosen_scrap_scenario
+                )
+                if fixtures_dir
+                else (None, None)
+            )
             interactive.plot_emissions(post_processed_csv=Path(output_path))
             interactive.plot_capacity_and_production(
                 post_processed_csv=Path(output_path),
-                demand_centers_json=fixtures_dir / "demand_centers.json" if fixtures_dir else None,
+                demand_centers_json=demand_centers_json,
             )
             interactive.plot_cost_curves(
                 post_processed_csv=Path(output_path),
@@ -1716,9 +1771,9 @@ class SimulationRunner:
             )
             interactive.plot_supply_demand(
                 tm_dir=self.config.output_dir / "TM",
-                suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
+                suppliers_json=suppliers_json,
                 biomass_availability_json=fixtures_dir / "biomass_availability.json" if fixtures_dir else None,
-                demand_centers_json=fixtures_dir / "demand_centers.json" if fixtures_dir else None,
+                demand_centers_json=demand_centers_json,
             )
             interactive.plot_reductant_use(
                 post_processed_csv=Path(output_path),
@@ -1727,7 +1782,7 @@ class SimulationRunner:
             interactive.plot_metallic_charge_use(
                 post_processed_csv=Path(output_path),
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
-                suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
+                suppliers_json=suppliers_json,
             )
             interactive.plot_greenfield_status(
                 greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",

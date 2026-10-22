@@ -106,7 +106,7 @@ def technology_form_converter():
 
     def _convert_to_form_data(tech_settings: TechSettingsMap) -> dict[str, str]:
         """Convert TechSettingsMap to Django form POST data format."""
-        form_data = {}
+        form_data = {"greenfield_column": "1"}
 
         # Production mapping from normalized codes to form field slugs
         # This should ideally come from the production code, but for now inline it
@@ -531,6 +531,29 @@ def ready_data_preparation(db, tmp_path):
         ]
     }
     (fixtures_dir / "region_emissivity.json").write_text(json.dumps(region_emissivity))
+
+    # The run form offers the emissions boundaries of this file, one record per boundary is enough
+    emission_factor = {
+        "business_case": "iron_bf",
+        "technology": "BF",
+        "metallic_charge": "hot_metal",
+        "reductant": "coke",
+        "direct_ghg_factor": 1.0,
+        "direct_with_biomass_ghg_factor": 1.0,
+        "indirect_ghg_factor": 0.1,
+    }
+    technology_emission_factors = [
+        {**emission_factor, "boundary": boundary}
+        for boundary in ("rs-inspired", "worldsteel_no_opt_credits", "worldsteel_opt_credits")
+    ]
+    (fixtures_dir / "technology_emission_factors.json").write_text(json.dumps(technology_emission_factors))
+
+    # The run form offers the demand and scrap scenarios of the preparation's index
+    scenario_index = {
+        "demand": {"BAU": "demand_scenarios/bau/demand_centers.json"},
+        "scrap": {"BAU": "scrap_scenarios/bau/suppliers.json"},
+    }
+    (fixtures_dir / "scenarios.json").write_text(json.dumps(scenario_index))
 
     # Create required data packages
     core_package, _ = DataPackage.objects.get_or_create(

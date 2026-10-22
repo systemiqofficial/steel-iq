@@ -980,6 +980,33 @@ def _select_scenario_rows(df: pd.DataFrame, scenario: str, sheet_name: str) -> p
     return selected
 
 
+def read_demand_and_scrap_scenarios(excel_path: Path, sheet_name: str) -> dict[str, list[str]]:
+    """
+    Read the scenario names of the demand and scrap sheet, per kind.
+
+    Args:
+        excel_path: Workbook holding the sheet.
+        sheet_name: Sheet with "Scenario" and "Metric" columns.
+
+    Returns:
+        dict[str, list[str]]: Under "demand" the sorted names with rows of metric "Crude steel consumption for
+        forming [kt]", under "scrap" those with rows of "Total available scrap".
+
+    Raises:
+        ValueError: If a name of either kind is not text, such as a number, naming each one and the sheet.
+    """
+    df = pd.read_excel(excel_path, sheet_name=sheet_name, usecols=["Scenario", "Metric"])
+    metric = df["Metric"].str.strip()
+    names = {
+        "demand": df.loc[metric == "Crude steel consumption for forming [kt]", "Scenario"].dropna().unique(),
+        "scrap": df.loc[metric == "Total available scrap", "Scenario"].dropna().unique(),
+    }
+    not_text = sorted({str(name) for kind_names in names.values() for name in kind_names if not isinstance(name, str)})
+    if not_text:
+        raise ValueError(f"Scenario names in sheet {sheet_name!r} must be text; found {', '.join(not_text)}")
+    return {kind: sorted(kind_names) for kind, kind_names in names.items()}
+
+
 def read_demand_centers(
     *,
     gravity_distances_path: Path,

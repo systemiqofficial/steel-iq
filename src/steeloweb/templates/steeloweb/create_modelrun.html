@@ -86,14 +86,12 @@ function resetPolicySettings() {
     if (gridScenario && !gridScenario.disabled) {
         gridScenario.value = 'Business As Usual';
     }
+    document.getElementById('id_chosen_emissions_boundary_for_carbon_costs').value = '{{ form.fields.chosen_emissions_boundary_for_carbon_costs.initial }}';
+    document.getElementById('id_carbon_border_export_rebates').checked = {{ form.fields.carbon_border_export_rebates.initial|yesno:"true,false" }};
+    document.getElementById('id_capacity_policy_enabled').checked = {{ form.fields.capacity_policy_enabled.initial|yesno:"true,false" }};
     // Trigger change to update dependent field disabled state
     document.getElementById('id_enable_furnace_group_clustering').dispatchEvent(new Event('change'));
-}
-
-function resetDemandSettings() {
-    // Note: total_steel_demand_scenario and green_steel_demand_scenario are disabled
-    // Circularity file is disabled
-    // document.getElementById('id_circularity_file').value = '';
+    document.getElementById('id_capacity_policy_enabled').dispatchEvent(new Event('change'));
 }
 
 function resetTechnologySettings() {
@@ -323,6 +321,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
     updateChildField();
     parentCheckbox.addEventListener('change', updateChildField);
+});
+
+// Show the capacity policy levers only with the policy on; disabled inputs are not posted
+document.addEventListener('DOMContentLoaded', function() {
+    var policySwitch = document.getElementById('id_capacity_policy_enabled');
+    var levers = document.getElementById('capacity_policy_levers');
+    var noCutoff = document.getElementById('id_capacity_policy_no_swap_cutoff');
+    var cutoffYear = document.getElementById('id_capacity_policy_inter_company_swap_cutoff_year');
+
+    function updateLevers() {
+        levers.style.display = policySwitch.checked ? '' : 'none';
+        levers.querySelectorAll('input, select').forEach(function(input) {
+            input.disabled = !policySwitch.checked;
+        });
+        cutoffYear.disabled = !policySwitch.checked || noCutoff.checked;
+    }
+
+    updateLevers();
+    policySwitch.addEventListener('change', updateLevers);
+    noCutoff.addEventListener('change', updateLevers);
 });
 
 // Ensure native browser validation runs even if fields still have focus
@@ -715,7 +733,7 @@ document.head.appendChild(style);
                                 const checkbox = document.getElementById('id_randomise_seed');
                                 const seedInput = document.getElementById('id_random_seed');
                                 if (!checkbox || !seedInput) return;
-                                const DEFAULT_SEED = 42;
+                                const DEFAULT_SEED = {{ form.fields.random_seed.initial }};
                                 // Remember the user's last manually-entered seed so we can restore it on untick.
                                 let lastUserSeed = seedInput.value || String(DEFAULT_SEED);
                                 const drawSeed = () => Math.floor(Math.random() * 0x80000000); // [0, 2^31)
@@ -812,6 +830,15 @@ document.head.appendChild(style);
                                             </ol>
                                         </small>
                                     </div>
+                                </div>
+
+                                <div id="demand-scrap-scenarios"
+                                     hx-get="{% url 'create-modelrun-demand-scrap-fragment' %}"
+                                     hx-trigger="change from:#id_data_preparation"
+                                     hx-target="this"
+                                     hx-swap="innerHTML"
+                                     hx-include="#id_data_preparation, #id_chosen_demand_scenario, #id_chosen_scrap_scenario">
+                                    {% include "steeloweb/partials/_demand_scrap_scenarios.html" %}
                                 </div>
                             </div>
                         </div>
@@ -1236,64 +1263,82 @@ document.head.appendChild(style);
                                     </div>
                                 </div>
 
+                                <div class="mb-3 row">
+                                    <label for="{{ form.chosen_emissions_boundary_for_carbon_costs.id_for_label }}" class="col-sm-3 col-form-label">{{ form.chosen_emissions_boundary_for_carbon_costs.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.chosen_emissions_boundary_for_carbon_costs }}
+                                        <small class="form-text text-muted">{{ form.chosen_emissions_boundary_for_carbon_costs.help_text }}</small>
+                                        {% if form.chosen_emissions_boundary_for_carbon_costs.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.chosen_emissions_boundary_for_carbon_costs.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.carbon_border_export_rebates.id_for_label }}" class="col-sm-3 col-form-label">{{ form.carbon_border_export_rebates.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.carbon_border_export_rebates }}
+                                            <label class="form-check-label" for="{{ form.carbon_border_export_rebates.id_for_label }}">
+                                                {{ form.carbon_border_export_rebates.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.carbon_border_export_rebates.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.carbon_border_export_rebates.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.capacity_policy_enabled.id_for_label }}" class="col-sm-3 col-form-label">{{ form.capacity_policy_enabled.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.capacity_policy_enabled }}
+                                            <label class="form-check-label" for="{{ form.capacity_policy_enabled.id_for_label }}">
+                                                {{ form.capacity_policy_enabled.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.capacity_policy_enabled.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.capacity_policy_enabled.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div id="capacity_policy_levers" class="border-start ps-3 mb-3">
+                                    {% for field in form.capacity_policy_levers %}
+                                    <div class="mb-3 row">
+                                        <label for="{{ field.id_for_label }}" class="col-sm-3 col-form-label">{{ field.label }}:</label>
+                                        <div class="col-sm-9">
+                                            {% if field.widget_type == "checkbox" %}
+                                            <div class="form-check">
+                                                {{ field }}
+                                                <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.help_text }}</label>
+                                            </div>
+                                            {% else %}
+                                            {{ field }}
+                                            <small class="form-text text-muted">{{ field.help_text }}</small>
+                                            {% endif %}
+                                            {% if field.errors %}
+                                            <div class="invalid-feedback d-block">
+                                                {{ field.errors }}
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+
                                 <div class="text-end">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetPolicySettings()">Return to default settings</button>
                                 </div>
                             </div>
                         </div>
-
-                        <!-- Demand and Circularity section - commented out as requested -->
-                        <!--
-                        <div class="card mb-4">
-                            <div class="card-header bg-light">
-                                <h5 class="mb-0">Demand and circularity</h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="mb-3 row">
-                                    <label for="{{ form.total_steel_demand_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select total steel demand scenario:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.total_steel_demand_scenario }}
-                                        {% if form.total_steel_demand_scenario.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.total_steel_demand_scenario.errors }}
-                                        </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                
-                                <div class="mb-3 row">
-                                    <label for="{{ form.green_steel_demand_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select green steel demand scenario:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.green_steel_demand_scenario }}
-                                        {% if form.green_steel_demand_scenario.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.green_steel_demand_scenario.errors }}
-                                        </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                
-                                <div class="mb-3 row">
-                                    <label for="{{ form.circularity_file.id_for_label }}" class="col-sm-4 col-form-label">Circularity Data File:</label>
-                                    <div class="col-sm-8">
-                                        {{ form.circularity_file }}
-                                        {% if form.circularity_file.errors %}
-                                        <div class="invalid-feedback d-block">
-                                            {{ form.circularity_file.errors }}
-                                        </div>
-                                        {% endif %}
-                                        <small class="form-text text-muted">
-                                            {{ form.circularity_file.help_text }}
-                                        </small>
-                                    </div>
-                                </div>
-                                
-                                <div class="text-end">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetDemandSettings()">Return to default settings</button>
-                                </div>
-                            </div>
-                        </div>
-                        -->
 
                         <!-- Technologies Section - Loads dynamically via HTMX or rendered with preserved values -->
                         {% if technologies %}

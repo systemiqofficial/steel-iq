@@ -251,6 +251,12 @@
                             <dt class="col-sm-4">Plant agents:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.probabilistic_agents|yesno:"Probabilistic,Deterministic,—" }}</dd>
 
+                            <dt class="col-sm-4">Steel demand scenario:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_demand_scenario|default:"—" }}</dd>
+
+                            <dt class="col-sm-4">Scrap availability scenario:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_scrap_scenario|default:"—" }}</dd>
+
                             <dt class="col-sm-4">Grid emissivity scenario:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.chosen_grid_emissions_scenario|default:"—" }}</dd>
 
@@ -298,9 +304,9 @@
                                 {% if modelrun.config.hydrogen_ceiling_percentile is not None %}{{ modelrun.config.hydrogen_ceiling_percentile }}%{% else %}—{% endif %}
                             </dd>
 
-                            {% if modelrun.config.emissions_boundary %}
+                            {% if modelrun.config.chosen_emissions_boundary_for_carbon_costs %}
                             <dt class="col-sm-4">Emissions Boundary:</dt>
-                            <dd class="col-sm-8">{{ modelrun.config.emissions_boundary }}</dd>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_emissions_boundary_for_carbon_costs }}</dd>
                             {% endif %}
 
                             {% if modelrun.config.enable_carbon_tax %}

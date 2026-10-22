@@ -154,7 +154,7 @@ class TestRecreationManager:
         config = RecreationConfig()
         manager = RecreationManager(config)
 
-        spec = FILE_RECREATION_SPECS["demand_centers.json"]
+        spec = FILE_RECREATION_SPECS["scenarios.json"]
 
         # All dependencies missing
         missing = manager.validate_dependencies(spec, tmp_path)
@@ -187,7 +187,7 @@ class TestRecreationManager:
 
     def test_get_recreation_summary_selective(self):
         """Test summary with selective files."""
-        files = ["plants.json", "demand_centers.json"]
+        files = ["plants.json", "scenarios.json"]
         config = RecreationConfig(files_to_recreate=files)
         manager = RecreationManager(config)
 
@@ -196,7 +196,7 @@ class TestRecreationManager:
         assert summary["total_files"] == 2
         assert len(summary["files"]) == 2
         assert "plants.json" in summary["files"]
-        assert "demand_centers.json" in summary["files"]
+        assert "scenarios.json" in summary["files"]
 
 
 class TestFileRecreationSpecs:
