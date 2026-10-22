@@ -4,7 +4,9 @@ import json
 import pickle
 
 import pandas as pd
+import pytest
 
+from steelo.adapters.dataprocessing import excel_reader
 from steelo.adapters.repositories.json_repository import DemandCenterJsonRepository, SupplierJsonRepository
 from steelo.data import recreation_functions
 from steelo.domain.models import Year
@@ -78,3 +80,22 @@ def test_recreate_scenario_fixtures_writes_one_file_per_scenario_and_the_index(t
         assert sum(s.capacity_by_year[Year(2025)] for s in scrap) == scrap_kt * 1000
         assert [s.location.iso3 for s in suppliers if s.commodity != "scrap"] == ["AUS"]
     assert sorted(path.name for path in fixtures.iterdir()) == ["demand_scenarios", "scenarios.json", "scrap_scenarios"]
+
+
+def test_read_demand_and_scrap_scenarios_refuses_a_name_that_is_not_text(tmp_path):
+    """A numeric "Scenario" cell fails with a message naming it and the sheet, not a bare TypeError from sorting."""
+    rows = [
+        ["Austria", "AUT", "Crude steel consumption for forming [kt]", "BAU", "kt", 100],
+        ["Austria", "AUT", "Crude steel consumption for forming [kt]", 2050, "kt", 200],
+    ]
+    master = tmp_path / "master.xlsx"
+    pd.DataFrame(rows, columns=["Country", "ISO-3 code", "Metric", "Scenario", "Unit", 2025]).to_excel(
+        master,
+        sheet_name=SHEET,
+        index=False,
+    )
+
+    with pytest.raises(
+        ValueError, match="Scenario names in sheet 'Demand and scrap availability' must be text; found 2050"
+    ):
+        excel_reader.read_demand_and_scrap_scenarios(master, SHEET)
