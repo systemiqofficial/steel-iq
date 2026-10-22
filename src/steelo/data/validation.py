@@ -15,6 +15,7 @@ from ..adapters.repositories.json_repository import (
 )
 from ..domain.constants import PLANT_LIFETIME
 from .exceptions import DataValidationError
+from .recreation_functions import scenario_fixture_path, write_scenario_index
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,9 @@ class ExcelValidator:
 
         Raises:
             DataValidationError: If validation fails
+
+        Notes:
+            Demand centres and suppliers go where a preparation writes the BAU scenario's, with the scenario index.
         """
         # First validate all files
         validation_results = self.validate_all_files(directory)
@@ -354,16 +358,21 @@ class ExcelValidator:
             # JsonRepository saves automatically
             repo_paths["plants"] = output_dir / "plants.json"
 
-        # Demand centers
+        # Demand centers, laid out as a preparation writes them, for the one scenario the readers read
+        scenario_paths: dict[str, dict[str, Path]] = {"demand": {}, "scrap": {}}
         if "demand" in validation_results and validation_results["demand"].data:
-            demand_repo = DemandCenterJsonRepository(output_dir / "demand_centers.json")
+            demand_path = scenario_fixture_path(output_dir, "demand", "BAU")
+            demand_path.parent.mkdir(parents=True, exist_ok=True)
+            demand_repo = DemandCenterJsonRepository(demand_path)
             for dc in validation_results["demand"].data:
                 demand_repo.add(dc)
             # JsonRepository saves automatically
-            repo_paths["demand_centers"] = output_dir / "demand_centers.json"
+            repo_paths["demand_centers"] = scenario_paths["demand"]["BAU"] = demand_path
 
         # Suppliers
-        suppliers_repo = SupplierJsonRepository(output_dir / "suppliers.json")
+        suppliers_path = scenario_fixture_path(output_dir, "scrap", "BAU")
+        suppliers_path.parent.mkdir(parents=True, exist_ok=True)
+        suppliers_repo = SupplierJsonRepository(suppliers_path)
         for supplier_type in ["scrap_suppliers", "mine_suppliers"]:
             if supplier_type in validation_results and validation_results[supplier_type].data:
                 for supplier in validation_results[supplier_type].data:
@@ -372,6 +381,7 @@ class ExcelValidator:
         if supplier_type in validation_results and any(
             validation_results[st].data for st in ["scrap_suppliers", "mine_suppliers"] if st in validation_results
         ):
-            repo_paths["suppliers"] = output_dir / "suppliers.json"
+            repo_paths["suppliers"] = scenario_paths["scrap"]["BAU"] = suppliers_path
 
+        repo_paths["scenarios"] = write_scenario_index(output_dir / "scenarios.json", scenario_paths)
         return repo_paths

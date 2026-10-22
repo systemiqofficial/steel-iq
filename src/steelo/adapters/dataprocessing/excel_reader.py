@@ -980,6 +980,26 @@ def _select_scenario_rows(df: pd.DataFrame, scenario: str, sheet_name: str) -> p
     return selected
 
 
+def read_demand_and_scrap_scenarios(excel_path: Path, sheet_name: str) -> dict[str, list[str]]:
+    """
+    Read the scenario names of the demand and scrap sheet, per kind.
+
+    Args:
+        excel_path: Workbook holding the sheet.
+        sheet_name: Sheet with "Scenario" and "Metric" columns.
+
+    Returns:
+        dict[str, list[str]]: Under "demand" the sorted names with rows of metric "Crude steel consumption for
+        forming [kt]", under "scrap" those with rows of "Total available scrap".
+    """
+    df = pd.read_excel(excel_path, sheet_name=sheet_name, usecols=["Scenario", "Metric"])
+    metric = df["Metric"].str.strip()
+    return {
+        "demand": sorted(df.loc[metric == "Crude steel consumption for forming [kt]", "Scenario"].dropna().unique()),
+        "scrap": sorted(df.loc[metric == "Total available scrap", "Scenario"].dropna().unique()),
+    }
+
+
 def read_demand_centers(
     *,
     gravity_distances_path: Path,

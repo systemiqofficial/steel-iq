@@ -119,21 +119,13 @@ FILE_RECREATION_SPECS = {
         dependencies=["plants.json"],
         description="Plant groupings derived from plants data",
     ),
-    "demand_centers.json": FileRecreationSpec(
-        filename="demand_centers.json",
-        recreate_function="recreate_demand_center_data",
+    "scenarios.json": FileRecreationSpec(
+        filename="scenarios.json",
+        recreate_function="recreate_scenario_fixtures",
         source_type="master-excel",
         master_excel_sheet="Demand and scrap availability",
         dependencies=["gravity_distances_dict.pkl", "countries.csv"],
-        description="Demand centers from master Excel",
-    ),
-    "suppliers.json": FileRecreationSpec(
-        filename="suppliers.json",
-        recreate_function="recreate_mines_and_scrap_as_suppliers_data",
-        source_type="master-excel",
-        master_excel_sheet="Iron ore mines",
-        dependencies=["countries.csv"],
-        description="Mine and scrap suppliers from master Excel",
+        description="Demand centers per demand scenario and mine and scrap suppliers per scrap scenario, with their index",
     ),
     "tariffs.json": FileRecreationSpec(
         filename="tariffs.json",

@@ -239,8 +239,8 @@ class DataPreparationService:
             progress_callback: Optional callback for progress updates
             geo_version: Specific version of geo-data to use (optional)
             force_refresh: Force re-preparation even if cached
-            demand_scenario: "Scenario" column value read for demand centres (part of the cache key)
-            scrap_scenario: "Scenario" column value read for scrap suppliers (part of the cache key)
+            demand_scenario: Part of the cache key only; the preparation writes every demand scenario
+            scrap_scenario: Part of the cache key only; the preparation writes every scrap scenario
 
         Returns:
             PreparationResult with all file and timing information
@@ -314,8 +314,6 @@ class DataPreparationService:
             progress_callback=progress_callback,
             geo_version=geo_version,
             use_furnace_units_sheet=use_furnace_units_sheet,
-            demand_scenario=demand_scenario,
-            scrap_scenario=scrap_scenario,
         )
 
         # Ensure master_excel_path is set in result (it might have been resolved in _prepare_data_internal)
@@ -350,8 +348,6 @@ class DataPreparationService:
         progress_callback: Optional[Any] = None,
         geo_version: Optional[str] = None,
         use_furnace_units_sheet: bool = True,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> PreparationResult:
         """Internal method - existing prepare_data logic."""
         start_time = time.time()
@@ -409,8 +405,6 @@ class DataPreparationService:
             progress_callback,
             use_furnace_units_sheet,
             valid_geo_keys=valid_geo_keys or None,
-            demand_scenario=demand_scenario,
-            scrap_scenario=scrap_scenario,
         )
         result.add_step(PreparationStep("JSON repository creation", time.time() - step_start))
 
@@ -814,8 +808,6 @@ class DataPreparationService:
         progress_callback: Optional[Any] = None,
         use_furnace_units_sheet: bool = True,
         valid_geo_keys: Optional[set[str]] = None,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> None:
         """Create JSON repositories using the centralized recreation system."""
         # Create recreation config
@@ -838,8 +830,6 @@ class DataPreparationService:
             package_name="core-data",
             use_furnace_units_sheet=use_furnace_units_sheet,
             valid_geo_keys=valid_geo_keys,
-            demand_scenario=demand_scenario,
-            scrap_scenario=scrap_scenario,
         )
 
         # Track all created files

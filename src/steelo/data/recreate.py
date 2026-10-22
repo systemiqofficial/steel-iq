@@ -22,14 +22,13 @@ from .recreation_functions import (
     recreate_carbon_costs_data,
     recreate_cost_of_capital_data,
     recreate_country_mappings_data,
-    recreate_demand_center_data,
     recreate_region_emissivity_data,
     recreate_input_costs_data,
     recreate_legal_process_connectors_data,
-    recreate_mines_and_scrap_as_suppliers_data,
     recreate_plant_groups_data,
     recreate_plants_data,
     recreate_primary_feedstock_data,
+    recreate_scenario_fixtures,
     recreate_tarrifs_data,
     recreate_tech_switches_data,
     recreate_hydrogen_efficiency_data,
@@ -71,8 +70,6 @@ class DataRecreator:
         master_excel_path: Path | None = None,
         track_timing: bool = False,
         use_furnace_units_sheet: bool = True,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> dict[str, Path]:
         """Recreate JSON repositories from a downloaded package.
 
@@ -84,8 +81,6 @@ class DataRecreator:
             track_timing: If True, track and display timing for each file creation
             use_furnace_units_sheet: If True (default), read from 'Furnace units' sheet (new method).
                                      If False, read from 'Iron and steel plants' sheet (old method).
-            demand_scenario: "Scenario" column value read for demand centres
-            scrap_scenario: "Scenario" column value read for scrap suppliers
 
         Returns:
             Dictionary mapping repository types to their output paths
@@ -150,8 +145,7 @@ class DataRecreator:
         # Output paths
         output_paths = {
             "plants": output_dir / "plants.json",
-            "demand_centers": output_dir / "demand_centers.json",
-            "suppliers": output_dir / "suppliers.json",
+            "scenarios": output_dir / "scenarios.json",
             "tariffs": output_dir / "tariffs.json",
             "plant_groups": output_dir / "plant_groups.json",
             "carbon_costs": output_dir / "carbon_costs.json",
@@ -247,34 +241,18 @@ class DataRecreator:
                 )
                 console.print(f"  ✓ Created {output_paths['subsidies'].name} [SOURCE: master-excel - Subsidies sheet]")
 
-                console.print("[blue]Recreating suppliers data from MASTER EXCEL...[/blue]")
-                recreate_mines_and_scrap_as_suppliers_data(
-                    json_path=output_paths["suppliers"],
-                    master_excel_path=str(master_excel_path),
-                    scrap_sheet_name="Demand and scrap availability",
+                console.print("[blue]Recreating demand centers and suppliers per scenario from MASTER EXCEL...[/blue]")
+                recreate_scenario_fixtures(
+                    json_path=output_paths["scenarios"],
+                    master_excel_path=master_excel_path,
+                    sheet_name="Demand and scrap availability",
                     mines_sheet_name="Iron ore mines",
-                    location_csv=package_dir / "countries.csv",
-                    gravity_distances_pkl_path=package_dir / "gravity_distances_dict.pkl",
-                    scrap_scenario=scrap_scenario,
-                )
-                console.print(
-                    f"  ✓ Created {output_paths['suppliers'].name} "
-                    "[SOURCE: master-excel - Iron ore mines & Demand sheets]"
-                )
-
-                console.print("[blue]Recreating demand centers data from MASTER EXCEL...[/blue]")
-                # if "demand_excel" in available_files:
-                recreate_demand_center_data(
-                    json_path=output_paths["demand_centers"],
-                    demand_excel_path=master_excel_path,
-                    demand_sheet_name="Demand and scrap availability",
                     gravity_distances_path=package_dir / "gravity_distances_dict.pkl",
                     location_csv=package_dir / "countries.csv",
-                    demand_scenario=demand_scenario,
                 )
                 console.print(
-                    f"  ✓ Created {output_paths['demand_centers'].name} "
-                    "[SOURCE: master-excel - Demand and scrap availability sheet]"
+                    f"  ✓ Created {output_paths['scenarios'].name} "
+                    "[SOURCE: master-excel - Demand and scrap availability & Iron ore mines sheets]"
                 )
                 console.print("[blue]Recreating carbon costs data from MASTER EXCEL...[/blue]")
                 recreate_carbon_costs_data(
@@ -341,8 +319,6 @@ class DataRecreator:
         package_name: str = "core-data",
         use_furnace_units_sheet: bool = True,
         valid_geo_keys: set[str] | None = None,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> dict[str, Path]:
         """
         Recreate files using a RecreationConfig for fine-grained control.
@@ -357,8 +333,6 @@ class DataRecreator:
             valid_geo_keys: Recognised sub-national geo-keys for the plants readers to
                             validate against (the in-memory geo_hierarchy built during
                             prep). None falls back to the prepared geo_hierarchy.json.
-            demand_scenario: "Scenario" column value read for demand centres
-            scrap_scenario: "Scenario" column value read for scrap suppliers
 
         Returns:
             Dictionary mapping filenames to their output paths
@@ -427,8 +401,6 @@ class DataRecreator:
                         master_excel_path,
                         use_furnace_units_sheet,
                         valid_geo_keys,
-                        demand_scenario=demand_scenario,
-                        scrap_scenario=scrap_scenario,
                     )
 
                     if success and file_path.exists():
@@ -467,8 +439,6 @@ class DataRecreator:
         master_excel_path: Path | None,
         use_furnace_units_sheet: bool = True,
         valid_geo_keys: set[str] | None = None,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> bool:
         """
         Recreate a single file based on its specification.
@@ -481,8 +451,7 @@ class DataRecreator:
             "recreate_country_mappings_data": recreate_country_mappings_data,
             "recreate_plants_data": recreate_plants_data,
             "recreate_plant_groups_data": recreate_plant_groups_data,
-            "recreate_demand_center_data": recreate_demand_center_data,
-            "recreate_mines_and_scrap_as_suppliers_data": recreate_mines_and_scrap_as_suppliers_data,
+            "recreate_scenario_fixtures": recreate_scenario_fixtures,
             "recreate_tariffs_data": recreate_tarrifs_data,
             "recreate_subsidy_data": recreate_subsidy_data,
             "recreate_carbon_costs_data": recreate_carbon_costs_data,
@@ -526,24 +495,14 @@ class DataRecreator:
                     json_path=output_path,
                     master_excel_path=master_excel_path,
                 )
-            elif spec.recreate_function == "recreate_demand_center_data":
+            elif spec.recreate_function == "recreate_scenario_fixtures":
                 func(
                     json_path=output_path,
-                    demand_excel_path=master_excel_path,
-                    demand_sheet_name=spec.master_excel_sheet,
+                    master_excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet,
+                    mines_sheet_name="Iron ore mines",
                     gravity_distances_path=package_dir / "gravity_distances_dict.pkl",
                     location_csv=package_dir / "countries.csv",
-                    demand_scenario=demand_scenario,
-                )
-            elif spec.recreate_function == "recreate_mines_and_scrap_as_suppliers_data":
-                func(
-                    json_path=output_path,
-                    master_excel_path=str(master_excel_path),
-                    scrap_sheet_name="Demand and scrap availability",
-                    mines_sheet_name=spec.master_excel_sheet,
-                    location_csv=package_dir / "countries.csv",
-                    gravity_distances_pkl_path=package_dir / "gravity_distances_dict.pkl",
-                    scrap_scenario=scrap_scenario,
                 )
             elif spec.recreate_function == "recreate_tariffs_data":
                 func(
