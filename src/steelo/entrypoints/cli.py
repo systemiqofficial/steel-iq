@@ -334,9 +334,7 @@ def run_full_simulation() -> None:
         # Check if we can use cached data directly
         cached_data_dir = None
         if not args.no_cache and not args.force_refresh:
-            cached_data_dir = cache_manager.get_cached_preparation(
-                master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
-            )
+            cached_data_dir = cache_manager.get_cached_preparation(master_excel_path)
             if cached_data_dir:
                 # cached_data_dir already points to the data directory
                 console.print(f"[blue]Using cached preparation from:[/blue] {cached_data_dir}")
@@ -454,8 +452,6 @@ def run_full_simulation() -> None:
                     master_excel_path=master_excel_path,
                     force_refresh=args.force_refresh,
                     verbose=True,
-                    demand_scenario=demand_scenario,
-                    scrap_scenario=scrap_scenario,
                 )
 
                 actual_data_dir = prep_dir

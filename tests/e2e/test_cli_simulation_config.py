@@ -10,6 +10,7 @@ import tempfile
 
 import pytest
 
+from steelo.data.cache_manager import DataPreparationCache
 from steelo.simulation import SimulationConfig
 from steelo.entrypoints.cli import run_full_simulation
 from steelo.domain import Year
@@ -189,6 +190,53 @@ def test_cli_grid_emissions_scenario_flag_lands_on_the_config(
 
         config = mock_create_runner.call_args[0][0]
         assert config.chosen_grid_emissions_scenario == expected
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_runs_differing_only_by_scenario_look_up_one_cached_preparation(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+    monkeypatch,
+):
+    """A preparation holds every demand and scrap scenario, so two runs naming different scenarios share one key."""
+    stub_cli_dependencies(tmp_path, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    master = tmp_path / "master.xlsx"
+    master.write_bytes(b"workbook")
+    keys = []
+    original_get_cache_key = DataPreparationCache.get_cache_key
+
+    def recorded_get_cache_key(cache, master_excel_path):
+        keys.append(original_get_cache_key(cache, master_excel_path))
+        return keys[-1]
+
+    monkeypatch.setattr(DataPreparationCache, "get_cache_key", recorded_get_cache_key)
+
+    for scenario_argv in [[], ["--demand-scenario", "High growth", "--scrap-scenario", "High recycling"]]:
+        argv = [
+            "run_simulation",
+            "--end-year",
+            "2026",
+            "--master-excel",
+            str(master),
+            "--steelo-home",
+            str(tmp_path / "home"),
+            *scenario_argv,
+        ]
+        with patch.object(sys, "argv", argv):
+            run_full_simulation()
+
+    assert len(keys) == 2
+    assert keys[0] == keys[1]
 
 
 @pytest.mark.parametrize(

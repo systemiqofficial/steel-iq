@@ -225,8 +225,6 @@ class DataPreparationService:
         geo_version: Optional[str] = None,
         force_refresh: bool = False,
         use_furnace_units_sheet: bool = True,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> PreparationResult:
         """
         Prepare all data files for simulation.
@@ -239,8 +237,6 @@ class DataPreparationService:
             progress_callback: Optional callback for progress updates
             geo_version: Specific version of geo-data to use (optional)
             force_refresh: Force re-preparation even if cached
-            demand_scenario: Part of the cache key only; the preparation writes every demand scenario
-            scrap_scenario: Part of the cache key only; the preparation writes every scrap scenario
 
         Returns:
             PreparationResult with all file and timing information
@@ -261,9 +257,7 @@ class DataPreparationService:
 
         # Now check cache with the resolved master Excel path
         if self.use_cache and not force_refresh and master_excel_path.exists():
-            cached_dir = self.cache_manager.get_cached_preparation(
-                master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
-            )
+            cached_dir = self.cache_manager.get_cached_preparation(master_excel_path)
             if cached_dir:
                 if verbose:
                     logging.info(f"Using cached preparation from: {cached_dir}")
@@ -328,8 +322,6 @@ class DataPreparationService:
                     master_excel_path=master_excel_path,
                     preparation_time=result.total_duration,
                     result=result,
-                    demand_scenario=demand_scenario,
-                    scrap_scenario=scrap_scenario,
                 )
                 if verbose:
                     logging.info("Saved preparation to cache")
