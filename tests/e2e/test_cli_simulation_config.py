@@ -247,6 +247,51 @@ def test_cli_runs_differing_only_by_scenario_look_up_one_cached_preparation(
     assert keys[0] == keys[1]
 
 
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_unknown_demand_scenario_exits_with_the_prepared_names_before_any_run_output(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+    capsys,
+):
+    """A scenario the preparation lacks exits non-zero naming those it holds; no run file is written, the data kept."""
+    stub_cli_dependencies(tmp_path, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    home = tmp_path / "home"
+    output_base = tmp_path / "runs"
+    argv = [
+        "run_simulation",
+        "--end-year",
+        "2026",
+        "--steelo-home",
+        str(home),
+        "--output-dir",
+        str(output_base),
+        "--demand-scenario",
+        "Nope",
+    ]
+
+    with patch.object(sys, "argv", argv):
+        with pytest.raises(SystemExit) as exit_info:
+            run_full_simulation()
+
+    assert exit_info.value.code == 1
+    message = " ".join(capsys.readouterr().out.split())
+    assert "No demand scenario 'Nope'" in message
+    assert "available: ['BAU', 'High growth']" in message
+    mock_create_runner.assert_not_called()
+    assert [path for path in output_base.rglob("*") if path.is_file()] == []
+    assert list(home.glob("temp_prep/prep_*/fixtures/scenarios.json")) != []
+
+
 @pytest.mark.parametrize(
     "flag_argv, expected",
     [([], 42), (["--random-seed", "7"], 7)],

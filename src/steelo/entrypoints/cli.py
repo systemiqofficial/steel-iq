@@ -15,6 +15,7 @@ from typing import Dict
 from collections import defaultdict
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..domain import Year
@@ -22,6 +23,7 @@ from ..domain.constants import END_YEAR_DEFAULT, RANDOM_SEED_DEFAULT, START_YEAR
 
 from ..simulation import SimulationConfig, config_as_json_dict, config_default, run_names_in_use, unique_run_name
 from ..bootstrap import bootstrap_simulation
+from ..data.path_resolver import resolve_scenario_fixtures
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
 GUROBI_LICENSE_NOTICE = (
@@ -68,13 +70,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--demand-scenario",
         type=str,
         default=config_default("chosen_demand_scenario"),
-        help="Scenario name in the 'Demand and scrap availability' sheet used for steel demand (default: %(default)s)",
+        help=(
+            "Steel demand scenario of the run, named as in the 'Demand and scrap availability' sheet and picked "
+            "at run time from the prepared data; a name it lacks stops the run before it starts "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--scrap-scenario",
         type=str,
         default=None,
-        help="Scenario name in the same sheet used for scrap availability (default: same as --demand-scenario)",
+        help="Scrap availability scenario of the run, named and picked the same way (default: same as --demand-scenario)",
     )
     parser.add_argument(
         "--grid-emissions-scenario",
@@ -225,6 +231,26 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _exit_unless_prepared(console: Console, data_dir: Path, demand_scenario: str, scrap_scenario: str) -> None:
+    """Stop the CLI before the run when the prepared data lacks the run's demand or scrap scenario.
+
+    Args:
+        console: The CLI's console, for the error.
+        data_dir: The prepared data folder the run would use.
+        demand_scenario: The run's demand scenario.
+        scrap_scenario: The run's scrap scenario.
+
+    Notes:
+        Exits with code 1 and the resolver's message, which lists the scenarios the preparation holds; the
+        prepared data is kept, since one preparation serves every scenario.
+    """
+    try:
+        resolve_scenario_fixtures(data_dir / "fixtures", demand_scenario, scrap_scenario)
+    except ValueError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        sys.exit(1)
+
+
 def run_full_simulation() -> None:
     """
     Run a full simulation from start to end year with the
@@ -343,6 +369,7 @@ def run_full_simulation() -> None:
         if cached_data_dir:
             # Use cached data directory directly
             actual_data_dir = cached_data_dir
+            _exit_unless_prepared(console, actual_data_dir, demand_scenario, scrap_scenario)
 
             # Create symlink to cached data
             try:
@@ -455,6 +482,7 @@ def run_full_simulation() -> None:
                 )
 
                 actual_data_dir = prep_dir
+                _exit_unless_prepared(console, actual_data_dir, demand_scenario, scrap_scenario)
 
                 # Create symlink to prepared data
                 try:
