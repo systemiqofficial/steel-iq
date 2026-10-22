@@ -251,6 +251,12 @@
                             <dt class="col-sm-4">Plant agents:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.probabilistic_agents|yesno:"Probabilistic,Deterministic,—" }}</dd>
 
+                            <dt class="col-sm-4">Steel demand scenario:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_demand_scenario|default:"—" }}</dd>
+
+                            <dt class="col-sm-4">Scrap availability scenario:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_scrap_scenario|default:"—" }}</dd>
+
                             <dt class="col-sm-4">Grid emissivity scenario:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.chosen_grid_emissions_scenario|default:"—" }}</dd>
 

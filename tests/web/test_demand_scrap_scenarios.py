@@ -1,6 +1,7 @@
 """Tests for the steel demand and scrap availability scenarios the run form picks from a data preparation."""
 
 import json
+import re
 
 import pytest
 from django.urls import reverse
@@ -110,3 +111,17 @@ def test_run_form_asks_to_prepare_again_for_a_preparation_without_the_scenario_i
     assert response.status_code == 200
     assert "prepare this master again" in response.context["form"].errors["chosen_demand_scenario"][0]
     assert not ModelRun.objects.exists()
+
+
+@pytest.mark.django_db
+def test_run_page_shows_the_steel_demand_and_scrap_availability_scenarios(client):
+    """The run page names the run's two scenarios in its settings list, not only in the config dump."""
+    model_run = ModelRun.objects.create(
+        name="Scenarios",
+        config={"chosen_demand_scenario": "High growth", "chosen_scrap_scenario": "High recycling"},
+    )
+
+    page = client.get(reverse("modelrun-detail", kwargs={"pk": model_run.pk})).content.decode()
+
+    assert re.search(r"Steel demand scenario:</dt>\s*<dd[^>]*>High growth</dd>", page)
+    assert re.search(r"Scrap availability scenario:</dt>\s*<dd[^>]*>High recycling</dd>", page)
