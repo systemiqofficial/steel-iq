@@ -34,6 +34,7 @@ Browsing and comparing the results of local runs, offline. Covers:
 ### [CLI Commands](cli_commands.md)
 Reference documentation for all command-line interface tools:
 - **run_simulation**: Main command to run simulations with automatic data preparation and caching
+- **steelo-viewer**: Serve the scenario viewer for local runs, or rebuild a run's viewer files
 - **steelo-data-prepare** and **steelo-data-recreate**: Prepare the data files a simulation needs
 - **generate-geo-options**: List the sub-national geography keys the master workbook can use
 - **list-binaries**: View available Steel Model standalone binaries on S3
