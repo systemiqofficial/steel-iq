@@ -145,40 +145,40 @@ To swap in a single input file (e.g. a plants JSON), point `data_dir` at a direc
 ### Technology Constraints Example
 
 ```python
-from steelo.simulation_types import get_default_technology_settings, TechnologySettings
+from pathlib import Path
+from steelo.domain import Year
+from steelo.simulation import SimulationConfig
+from steelo.simulation_types import TechnologySettings
 
-# Create technology settings with specific constraints
-tech_settings = get_default_technology_settings()
+# Start from the prepared data's technology settings (fixtures/technologies.json)
+config = SimulationConfig.from_data_directory(
+    start_year=Year(2025),
+    end_year=Year(2040),
+    data_dir=Path("./data"),                         # master_excel_path defaults to data_dir/master_input.xlsx
+    output_dir=Path("./test_outputs"),
+)
 
-# The model looks a technology up by its normalised code: upper case, letters and digits only (BF, DRI, MOE)
+# The settings are keyed by normalised code: upper case, letters and digits only (BF, DRI, MOE)
 
 # Ban blast furnaces by setting allowed=False
-tech_settings['BF'] = TechnologySettings(
+config.technology_settings['BF'] = TechnologySettings(
     allowed=False,
     from_year=2025,
     to_year=None
 )
 
 # Allow DRI only from 2030
-tech_settings['DRI'] = TechnologySettings(
+config.technology_settings['DRI'] = TechnologySettings(
     allowed=True,
     from_year=2030,
     to_year=None
 )
 
 # Disable molten oxide electrolysis
-tech_settings['MOE'] = TechnologySettings(
+config.technology_settings['MOE'] = TechnologySettings(
     allowed=False,
     from_year=2025,
     to_year=None
-)
-
-config = SimulationConfig.from_data_directory(
-    start_year=Year(2025),
-    end_year=Year(2040),
-    data_dir=Path("./data"),                         # master_excel_path defaults to data_dir/master_input.xlsx
-    output_dir=Path("./test_outputs"),
-    technology_settings=tech_settings,
 )
 ```
 
@@ -440,7 +440,7 @@ uv run src/django/manage.py migrate
 Data is prepared in the app from a master Excel workbook, once the server runs (Step 3) with a worker (Step 4):
 
 1. Click **Master Excel** in the navigation bar. **Upload New** adds a workbook; **Download Template** downloads the packaged master to start from.
-2. On the workbook's page, once it has passed validation, click **Prepare Data with This Master Excel**.
+2. On the workbook's page, once it has passed validation, click **Prepare Data with This Master Excel** (if the workbook already has a preparation, delete it on that page first).
 
 The preparation runs in a background worker; without one, the app refuses to start it. Once it is ready, it appears in the run form's "Master Input Selection" dropdown.
 
@@ -471,7 +471,7 @@ The workers keep the web interface responsive during long-running simulations.
 4. Click "Create Simulation"; a name another run already holds gets `_2`, `_3` and so on
 5. On the model run detail page, click "Run Simulation"
 6. Monitor progress in real-time on the web interface
-7. Once the run has finished, "Open in viewer" on its page opens it in the [Scenario Viewer](scenario_viewer.md); "Scenario viewer" in the navigation bar shows every finished run
+7. Once the run has finished and written its viewer files, "Open in viewer" on its page opens it in the [Scenario Viewer](scenario_viewer.md); "Scenario viewer" in the navigation bar lists those runs and the command-line runs under `$STEELO_HOME/output`
 
 ### Managing Data Packages
 
