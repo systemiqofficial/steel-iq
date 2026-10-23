@@ -68,18 +68,18 @@ Data Integrity Check
 
 ### `steelo-data-validate`
 
-Validate one master Excel workbook against the expected structure.
+Validate one input Excel file, typed by its file name: a name holding `plant`, `demand`, `scrap` or `mine`, checked in that order, is validated as a plants, demand, scrap supplier or mine supplier file. Any other name, a master workbook's included, is reported as an unknown file type.
 
 ```bash
-# Validate a master workbook
-steelo-data-validate /path/to/master_input.xlsx
+# Validate a plants file
+steelo-data-validate /path/to/plants.xlsx
 
 # Strict mode (warnings become errors)
-steelo-data-validate /path/to/master_input.xlsx --strict
+steelo-data-validate /path/to/plants.xlsx --strict
 ```
 
 **Arguments:**
-- `excel_file`: Path to the master Excel file to validate
+- `excel_file`: Path to the Excel file to validate; its name sets its type
 
 **Options:**
 - `--strict`: Treat warnings as errors
@@ -201,8 +201,8 @@ steelo-data-recreate --force-download
 
 ### Validate User Data
 ```bash
-# 1. Validate the master Excel workbook
-steelo-data-validate ./user_data/master_input.xlsx
+# 1. Validate each input file (plants, demand, scrap and mine files)
+steelo-data-validate ./user_data/plants.xlsx
 
 # 2. If valid, convert to JSON
 steelo-data-convert ./user_data ./output
