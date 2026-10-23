@@ -664,6 +664,13 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+
+// htmx loads deferred, so listen for the htmx:load it fires for the page and for every fragment swapped in
+document.body.addEventListener('htmx:load', function (evt) {
+    evt.detail.elt.querySelectorAll('[data-bs-toggle="popover"]').forEach(function (el) {
+        bootstrap.Popover.getOrCreateInstance(el);
+    });
+});
 </script>
 {% endblock %}
 
@@ -873,7 +880,7 @@ document.head.appendChild(style);
                                 <h6 class="mb-3 fw-bold">Selection of New Business Opportunities</h6>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.pick_priority_sites_share.id_for_label }}" class="col-sm-3 col-form-label">{{ form.pick_priority_sites_share.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.pick_priority_sites_share.id_for_label }}">{{ form.pick_priority_sites_share.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.pick_priority_sites_share %}</div>
                                     <div class="col-sm-9">
                                         {{ form.pick_priority_sites_share }}
                                         {% if form.pick_priority_sites_share.errors %}
@@ -886,7 +893,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.top_n_loctechs_as_business_op.id_for_label }}" class="col-sm-3 col-form-label">{{ form.top_n_loctechs_as_business_op.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.top_n_loctechs_as_business_op.id_for_label }}">{{ form.top_n_loctechs_as_business_op.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.top_n_loctechs_as_business_op %}</div>
                                     <div class="col-sm-9">
                                         {{ form.top_n_loctechs_as_business_op }}
                                         {% if form.top_n_loctechs_as_business_op.errors %}
@@ -936,7 +943,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.consideration_time.id_for_label }}" class="col-sm-3 col-form-label">Consideration time:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.consideration_time.id_for_label }}">Consideration time:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.consideration_time %}</div>
                                     <div class="col-sm-9">
                                         {{ form.consideration_time }}
                                         {% if form.consideration_time.errors %}
@@ -1039,7 +1046,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.new_capacity_share_from_new_plants.id_for_label }}" class="col-sm-3 col-form-label">{{ form.new_capacity_share_from_new_plants.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.new_capacity_share_from_new_plants.id_for_label }}">{{ form.new_capacity_share_from_new_plants.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.new_capacity_share_from_new_plants %}</div>
                                     <div class="col-sm-9">
                                         {{ form.new_capacity_share_from_new_plants }}
                                         {% if form.new_capacity_share_from_new_plants.errors %}
@@ -1077,7 +1084,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.steel_price_buffer.id_for_label }}" class="col-sm-3 col-form-label">Steel premium:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.steel_price_buffer.id_for_label }}">Steel premium:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.steel_price_buffer %}</div>
                                     <div class="col-sm-9">
                                         {{ form.steel_price_buffer }}
                                         {% if form.steel_price_buffer.errors %}
@@ -1090,7 +1097,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.iron_price_buffer.id_for_label }}" class="col-sm-3 col-form-label">Iron premium:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.iron_price_buffer.id_for_label }}">Iron premium:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.iron_price_buffer %}</div>
                                     <div class="col-sm-9">
                                         {{ form.iron_price_buffer }}
                                         {% if form.iron_price_buffer.errors %}
@@ -1103,7 +1110,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.peg_iron_to_steel_price.id_for_label }}" class="col-sm-3 col-form-label">{{ form.peg_iron_to_steel_price.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.peg_iron_to_steel_price.id_for_label }}">{{ form.peg_iron_to_steel_price.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.peg_iron_to_steel_price %}</div>
                                     <div class="col-sm-9">
                                         <div class="form-check">
                                             {{ form.peg_iron_to_steel_price }}
@@ -1133,7 +1140,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.opening_balance_multiplier.id_for_label }}" class="col-sm-3 col-form-label">{{ form.opening_balance_multiplier.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.opening_balance_multiplier.id_for_label }}">{{ form.opening_balance_multiplier.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.opening_balance_multiplier %}</div>
                                     <div class="col-sm-9">
                                         {{ form.opening_balance_multiplier }}
                                         {% if form.opening_balance_multiplier.errors %}
@@ -1209,7 +1216,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row" id="geographical_clustering_scope_row">
-                                    <label for="{{ form.geographical_clustering_scope.id_for_label }}" class="col-sm-3 col-form-label">{{ form.geographical_clustering_scope.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.geographical_clustering_scope.id_for_label }}">{{ form.geographical_clustering_scope.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.geographical_clustering_scope %}</div>
                                     <div class="col-sm-9">
                                         {{ form.geographical_clustering_scope }}
                                         <small class="form-text text-muted">{{ form.geographical_clustering_scope.help_text }}</small>
@@ -1264,7 +1271,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.chosen_emissions_boundary_for_carbon_costs.id_for_label }}" class="col-sm-3 col-form-label">{{ form.chosen_emissions_boundary_for_carbon_costs.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.chosen_emissions_boundary_for_carbon_costs.id_for_label }}">{{ form.chosen_emissions_boundary_for_carbon_costs.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.chosen_emissions_boundary_for_carbon_costs %}</div>
                                     <div class="col-sm-9">
                                         {{ form.chosen_emissions_boundary_for_carbon_costs }}
                                         <small class="form-text text-muted">{{ form.chosen_emissions_boundary_for_carbon_costs.help_text }}</small>
@@ -1277,7 +1284,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.carbon_border_export_rebates.id_for_label }}" class="col-sm-3 col-form-label">{{ form.carbon_border_export_rebates.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.carbon_border_export_rebates.id_for_label }}">{{ form.carbon_border_export_rebates.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.carbon_border_export_rebates %}</div>
                                     <div class="col-sm-9">
                                         <div class="form-check">
                                             {{ form.carbon_border_export_rebates }}
@@ -1294,7 +1301,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.capacity_policy_enabled.id_for_label }}" class="col-sm-3 col-form-label">{{ form.capacity_policy_enabled.label }}:</label>
+                                    <div class="col-sm-3 col-form-label"><label for="{{ form.capacity_policy_enabled.id_for_label }}">{{ form.capacity_policy_enabled.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.capacity_policy_enabled %}</div>
                                     <div class="col-sm-9">
                                         <div class="form-check">
                                             {{ form.capacity_policy_enabled }}
@@ -1313,7 +1320,7 @@ document.head.appendChild(style);
                                 <div id="capacity_policy_levers" class="border-start ps-3 mb-3">
                                     {% for field in form.capacity_policy_levers %}
                                     <div class="mb-3 row">
-                                        <label for="{{ field.id_for_label }}" class="col-sm-3 col-form-label">{{ field.label }}:</label>
+                                        <div class="col-sm-3 col-form-label"><label for="{{ field.id_for_label }}">{{ field.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=field %}</div>
                                         <div class="col-sm-9">
                                             {% if field.widget_type == "checkbox" %}
                                             <div class="form-check">
@@ -1421,7 +1428,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.hydrogen_ceiling_percentile.id_for_label }}" class="col-sm-4 col-form-label">Hydrogen Ceiling Percentile (%):</label>
+                                    <div class="col-sm-4 col-form-label"><label for="{{ form.hydrogen_ceiling_percentile.id_for_label }}">Hydrogen Ceiling Percentile (%):</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.hydrogen_ceiling_percentile %}</div>
                                     <div class="col-sm-8">
                                         {{ form.hydrogen_ceiling_percentile }}
                                         {% if form.hydrogen_ceiling_percentile.errors %}

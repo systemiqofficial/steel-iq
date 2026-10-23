@@ -77,6 +77,165 @@ class MasterExcelFileForm(forms.ModelForm):
         return file
 
 
+# Shown in the (?) popover beside each field; Django fields take no custom keyword, so __init__ attaches them
+FIELD_EXPLANATIONS: dict[str, str] = {
+    "capacity_policy_enabled": (
+        "Gates the capacity of every plant in the country the label names on one national pool of retirement credits: "
+        "closures, and the capacity a replacement gives up, are banked as credits, and an expansion or new plant must "
+        "withdraw credits before it is built. Replacements into emission-intense routes are shrunk by the replacement "
+        "ratio, and furnace groups with low utilisation may not renovate or switch. Plants in other countries are "
+        "unaffected. Needs a data preparation of a master whose three capacity pool sheets are complete, the provinces "
+        "sheet listing every province of that country."
+    ),
+    "capacity_policy_replacement_ratio": (
+        "When a furnace group switches into a route the capacity pool technologies sheet flags as emission-intense, or "
+        "renovates on such a route with Renovation counts as replacement ticked, it may rebuild only its old capacity "
+        "divided by this ratio, and the difference is banked as a credit. The candidate's NPV is taken at that smaller "
+        "capacity. Override rows on the sheet set their own ratio, and exempt provinces always use 1. Higher values "
+        "shrink emission-intense replacements further; the ratio must be at least 1."
+    ),
+    "capacity_policy_emission_intense_penalty_divisor": (
+        "An expansion or new plant on an emission-intense route withdraws credits for its full planned capacity but "
+        "may build only that capacity divided by this number, and its NPV is taken at the built capacity. Routes not "
+        "flagged emission-intense build in full, and exempt provinces get no relief here. Higher values make credits "
+        "go less far on emission-intense builds; the divisor must be at least 1."
+    ),
+    "capacity_policy_min_utilization_for_renovation": (
+        "A furnace group whose recorded utilisation stayed at or below this share in every year of the utilisation "
+        "window may neither renovate nor switch technology. If it is still blocked when its lifetime ends, it closes "
+        "and its whole capacity is banked as credits. A missing or short utilisation history never blocks. Higher "
+        "values block more furnace groups."
+    ),
+    "capacity_policy_utilization_window_years": (
+        "The number of consecutive recorded years, ending with the latest, whose utilisation must all be at or below "
+        "the minimum utilisation for the renovation gate to block a furnace group. A longer window needs a longer run "
+        "of low utilisation, so fewer furnace groups are blocked; utilisation is recorded only for the run's own "
+        "years, so no furnace group can be blocked before it has that many recorded years. The window must be at least "
+        "1 year."
+    ),
+    "capacity_policy_inter_company_swap_cutoff_year": (
+        "Before this year an expansion may draw on any mix of companies' credits, unowned opening credits included; "
+        "from this year on it may spend only its own company's credits, apart from credits banked before this year "
+        "under the persist rule. A new plant is funded in full by a single holder of enough credits in every year, the "
+        "unowned opening credits counting as one holder until they are removed at this year unless the banked credit "
+        "rule is persist. An earlier year blocks more builds by companies short of credits of their own; tick No "
+        "cutoff to keep credits pooled for expansions for the whole run."
+    ),
+    "capacity_policy_banked_credit_rule": (
+        "Decides what happens, from the cutoff year on, to credits banked before it; credits banked from the cutoff "
+        "year on always stay with their company. With reassign they stay with the company that banked them and unowned "
+        "ones are removed; with persist anyone may still spend them and none are swept at the cutoff; with expire none "
+        "of them can be spent any more. It has no effect with No cutoff ticked."
+    ),
+    "capacity_policy_credit_validity_years": (
+        "A credit of vintage V, the year it was banked, can be spent up to year V + N - 1 and leaves the pool when "
+        "year V + N begins; refunded credits keep their vintage, and an opening credit's vintage is the one on the "
+        "opening credits sheet, capped at the start year. A shorter validity keeps the pool smaller, so more "
+        "expansions and new plants are blocked. Blank means credits never expire, and a set validity must be at least "
+        "1 year."
+    ),
+    "capacity_policy_capacity_pool_max_retry_years": (
+        "A considered new plant whose NPV has stayed positive through the consideration time, but which no single "
+        "holder of credits can fund in full, counts one blocked year each time this happens; at this count it is "
+        "discarded. The unowned opening credits count as one holder until they are removed. The count never resets, so "
+        "the blocked years need not be consecutive. Higher values let blocked plants wait longer for credits, and 1 "
+        "discards a plant at its first blocked year."
+    ),
+    "capacity_policy_renovation_counts_as_replace": (
+        "Ticked, a furnace group renovating into its own technology is treated as a replacement: if its route is "
+        "emission-intense it rebuilds only its capacity divided by the replacement ratio and banks the difference, and "
+        "its NPV in the yearly technology choice is taken at that capacity. Unticked, a renovation keeps its full "
+        "capacity and banks nothing. The minimum utilisation gate applies either way."
+    ),
+    "chosen_emissions_boundary_for_carbon_costs": (
+        "Picks which set of emission factors on the master's technology emission factors sheet carbon prices are "
+        "charged on. Only that set's direct emissions are priced, never indirect ones such as grid electricity, and "
+        "that boundary's factors enter production costs, the trade allocation, reductant and investment choices, and "
+        "carbon border charges. Reported emissions are written for every boundary whatever is chosen. The choices are "
+        "the boundaries the data preparation holds."
+    ),
+    "carbon_border_export_rebates": (
+        "In years with an active carbon border mechanism, a shipment leaving a covered region has its cost in the "
+        "trade allocation lowered by the carbon already paid on it, net of what the destination's carbon price would "
+        "charge on its embedded emissions. Importers' material costs fall by the same amount; the exporting plant's "
+        "own carbon cost does not change. Without an active mechanism in the master, ticking it changes nothing."
+    ),
+    "hydrogen_ceiling_percentile": (
+        "Caps the levelised cost of hydrogen in each region of the master's country mapping at this percentile of the "
+        "region's costs: across its countries for operating plants, and across its grid cells for new plant sites. "
+        "Costs above the cap fall to it, so lower values make hydrogen cheaper in a region's dearest places. 100 "
+        "leaves national and grid-cell costs uncapped unless intraregional trade is allowed, which can lower the cap "
+        "to a linked region's cap plus the pipeline transport cost. A sub-national price row is capped at its region's "
+        "ceiling too, which is taken over national costs only, so even at 100 one dearer than its region's dearest "
+        "country falls to that country's cost."
+    ),
+    "geographical_clustering_scope": (
+        "With clustering on, the trade allocation merges furnace groups of one technology and feedstock; this scope "
+        "sets the area within which those trading hot products such as hot metal, liquid iron or DRI are merged and "
+        "may ship them: one country, one owner across borders, or each plant's hot metal radius. Under every scope a "
+        "plant has hot metal access only from an active producer within the hot metal radius, under the country and "
+        "plant group scopes also in the same country or under the same owner, so a coarser scope never widens access; "
+        "without it a BOF cannot renovate as a BOF, and no switch to BOF or BOF expansion happens there. Coarser "
+        "scopes give a smaller allocation problem; other technologies always cluster by country. With clustering off, "
+        "the run uses the individual plant scope."
+    ),
+    "top_n_loctechs_as_business_op": (
+        "Each year, for iron and for steel separately, up to this many site-technology pairs are picked from the "
+        "ranked new-plant NPVs and become considered new plants. With probabilistic agents they are drawn, with odds "
+        "falling by rank, from a pool of the best (pool depth times N) plus each technology's best sites up to the "
+        "pool depth; without, the top N are taken. Higher values create more candidate plants a year, which must still "
+        "pass the consideration time and the announcement and construction draws, and lengthen the run."
+    ),
+    "pick_priority_sites_share": (
+        "Each year, for iron and for steel separately, the cheapest share of feasible grid cells worldwide become "
+        "candidate sites for new plants, ranked by an estimated lifetime cost of power, transport and rail build-out "
+        "plus a construction cost weighted by land cover; in every country the cheapest tenth of that share of its own "
+        "cells is added. A random sample of these sites, sized by the NPV sample fraction, is then valued in full. "
+        "Higher values widen the search and lengthen the run. With probabilistic agents off, the run uses 0.005 "
+        "whatever is entered here."
+    ),
+    "consideration_time": (
+        "A considered new plant has its NPV recalculated every year; once its last N NPVs are all positive it enters "
+        "the announcement draw, and once they are all negative it is dropped, while mixed results keep it under "
+        "consideration. The technologies on offer are those allowed N + 1 years ahead. Higher values slow the uptake "
+        "of new plants and filter out one-off good years."
+    ),
+    "new_capacity_share_from_new_plants": (
+        "Splits each year's iron and steel capacity limits: a new plant starts construction only if it fits within "
+        "this share of the limit, while expansions and technology switches of existing furnace groups share the rest; "
+        "renovations are not limited. A new plant held back stays announced and tries again the next year. At 0 no new "
+        "plant ever starts construction, and at 1 no expansion or switch can happen."
+    ),
+    "opening_balance_multiplier": (
+        "Seeds each plant group's cash balance before the first year with this multiple of the equity share of one "
+        "renovation per operating furnace group. The balance, which then gains each year's profits and losses, pays "
+        "the equity share of renovations, switches and expansions, not of new plants: a renovation it cannot afford "
+        "closes the furnace group, and a switch or expansion it cannot afford does not happen. 0 starts every group "
+        "empty, and higher values mean fewer early closures and more early investment; the seed is paid in once and "
+        "never topped up."
+    ),
+    "steel_price_buffer": (
+        "When steel demand exceeds the market clearing share of total steel capacity on the cost curve, the steel "
+        "price is the cost of the dearest furnace group within that share plus this premium; otherwise the premium "
+        "plays no part. The price, current and projected, drives plant profits and the NPVs of switches, expansions "
+        "and new plants, so a higher premium makes shortage years more profitable and investment more attractive."
+    ),
+    "iron_price_buffer": (
+        "When iron demand exceeds the market clearing share of total iron capacity on the cost curve, the iron price "
+        "is the cost of the dearest furnace group within that share plus this premium; otherwise the premium plays no "
+        "part. The price, current and projected, drives iron plant profits and the NPVs of iron switches, expansions "
+        "and new plants, so a higher premium makes iron shortage years more profitable and iron investment more "
+        "attractive."
+    ),
+    "peg_iron_to_steel_price": (
+        "When ticked, the iron price is never below the iron-to-steel price ratio times the steel price; the peg only "
+        "ever raises the iron price, in iron shortage years too. It lifts the profits of iron furnace groups and the "
+        "NPVs of iron switches, expansions and new plants whenever iron would otherwise be cheaper than that share of "
+        "steel."
+    ),
+}
+
+
 class ModelRunCreateForm(forms.ModelForm):
     """Form for creating a new model run with custom configuration."""
 
@@ -511,7 +670,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     # Capacity policy: the clean() step gathers the capacity_policy_* fields into one stored dictionary
     capacity_policy_enabled = forms.BooleanField(
-        label="Capacity-replacement policy",
+        label="Capacity-replacement policy (China)",
         initial=config_default("capacity_policy.enabled"),
         required=False,
         help_text="Enable China's capacity-replacement policy",
@@ -798,6 +957,9 @@ class ModelRunCreateForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Each form holds its own field copies, so the attached texts never leak between forms
+        for name, text in FIELD_EXPLANATIONS.items():
+            self.fields[name].explanation = text
         # Limit data_preparation choices to only ready preparations
         ready_preparations = DataPreparation.objects.filter(status=DataPreparation.Status.READY).order_by("-created_at")
 

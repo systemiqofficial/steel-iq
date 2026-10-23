@@ -2,6 +2,7 @@
 
 import json
 import logging
+from html.parser import HTMLParser
 from unittest.mock import patch
 
 import pytest
@@ -163,6 +164,32 @@ def held_value(config, name):
     if name in TRANSPORT_ROUTES:
         return config.geo_config.transportation_cost_per_km_per_ton[name]
     return getattr(config, name) if hasattr(config, name) else getattr(config.geo_config, name)
+
+
+def posted_inputs(page):
+    """The inputs a browser would post from a page, by name.
+
+    Args:
+        page: The page's HTML.
+
+    Returns:
+        Each named input's value, a checkbox only when ticked; a ticked checkbox without a value posts "on".
+    """
+    inputs = {}
+    parser = HTMLParser()
+
+    def handle_starttag(tag, attrs):
+        attributes = dict(attrs)
+        if tag != "input" or "name" not in attributes:
+            return
+        if attributes.get("type") == "checkbox" and "checked" not in attributes:
+            return
+        inputs[attributes["name"]] = attributes.get("value", "on")
+
+    parser.handle_starttag = handle_starttag
+    parser.feed(page)
+    parser.close()
+    return inputs
 
 
 @pytest.mark.django_db
@@ -473,3 +500,41 @@ def test_create_form_refuses_a_technology_table_without_the_greenfield_column(
         "Technology table out of date",
     ]
     assert {slug for slug, tech in response.context["technologies"].items() if not tech["greenfield"]} == {"BOF"}
+
+
+@pytest.mark.django_db
+def test_a_post_from_the_rendered_technology_table_stores_the_default_greenfield_exclusion(
+    client,
+    valid_modelrun_form_data,
+    ready_data_preparation,
+):
+    """The table, without its Greenfield column, posts each technology's default, so the run stores BOF's exclusion.
+
+    A post refused for another reason shows the table again with the same inputs, so posting it again stores the
+    same exclusion.
+    """
+    fragment = client.get(
+        reverse("create-modelrun-tech-fragment"),
+        {"data_preparation": ready_data_preparation.id},
+    ).content.decode()
+    table = posted_inputs(fragment)
+    settings = {
+        name: value
+        for name, value in valid_modelrun_form_data.items()
+        if not name.startswith("tech_") and name != "greenfield_column"
+    }
+
+    refused = client.post(reverse("create-modelrun"), data={**settings, **table, "end_year": 2024})
+    table_again = {
+        name: value
+        for name, value in posted_inputs(refused.content.decode()).items()
+        if name.startswith("tech_") or name == "greenfield_column"
+    }
+    response = client.post(reverse("create-modelrun"), data={**settings, **table_again})
+
+    assert "tech-greenfield" not in fragment
+    assert "Greenfield" not in fragment
+    assert refused.status_code == 200
+    assert table_again == table
+    assert response.status_code == 302
+    assert ModelRun.objects.get().config["excluded_greenfield_technologies"] == ["BOF"]
