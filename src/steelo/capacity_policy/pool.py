@@ -87,8 +87,8 @@ class CapacityPool:
     ) -> None:
         """
         Args:
-            inter_company_swap_cutoff_year: First year a company may only spend
-                credits it deposited. None disables the partition.
+            inter_company_swap_cutoff_year: First year an expansion may spend
+                only its own company's credits; None disables the partition.
             banked_credit_rule: Treatment of pre-cutoff credits from the cutoff
                 on: ``"reassign"`` (owner filter applies), ``"persist"``
                 (freely spendable) or ``"expire"`` (unusable). A withdrawal-time
