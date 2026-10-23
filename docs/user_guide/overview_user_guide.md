@@ -24,6 +24,13 @@ Complete guide to running steel model simulations on your local machine. Covers:
 - **Troubleshooting**: Common issues and debugging tips
 - **Output files**: Understanding simulation results and visualizations
 
+### [Scenario Viewer](scenario_viewer.md)
+Browsing and comparing the results of local runs, offline. Covers:
+- **Opening it**: `steelo-viewer` from the command line, or Scenario viewer in the app
+- **Filters and scenarios**: How the viewer groups runs, and how run names are made unique
+- **The panes**: Explore, Compare, Annual costs, View data and Download results
+- **Rebuilding a run's viewer files**: `steelo-viewer regenerate`
+
 ### [CLI Commands](cli_commands.md)
 Reference documentation for all command-line interface tools:
 - **run_simulation**: Main command to run simulations with automatic data preparation and caching
@@ -184,6 +191,7 @@ Common issues and solutions are documented in:
 
 installation_guide
 running_simulations_locally
+scenario_viewer
 configuration
 master_input_reference
 cli_commands
