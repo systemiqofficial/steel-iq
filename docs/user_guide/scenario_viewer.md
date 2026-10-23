@@ -140,6 +140,7 @@ The viewer lists a run only once its folder holds `viewer/run.json`, the file wr
 is missing when:
 
 - it is still running;
+- it stopped with an error before its end;
 - its viewer step failed: the run itself still finishes, its log says "viewer files incomplete for this run", and
   `steelo-viewer regenerate` writes the files again;
 - in the app: it is an app run that has not finished, or a command-line run whose folder is named like an app run's
