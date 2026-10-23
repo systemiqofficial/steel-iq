@@ -26,7 +26,7 @@ const TOUR_STEPS = [
     body: "<p><b>Explore</b> shows one scenario's plots, or two side by side. <b>Compare</b> charts one measure across several "
       + "scenarios. <b>Annual costs</b> stacks the cost of a tonne of iron or crude steel. "
       + "<b>View data</b> lists the inputs the scenarios were run with. <b>Download results</b> hands "
-      + "out one scenario's result tables.</p>",
+      + "out one run's result tables.</p>",
   },
   {
     title: "Filters",
@@ -159,7 +159,7 @@ const TOUR_STEPS = [
     title: "Download results",
     target: "#results-pane",
     before: (h, app) => { h.sidebar(); app.setMode("results"); h.pickOne(); },
-    body: "<p>One scenario's result tables, in the folders its run has among run, data, LCOE, LCOH, trade "
+    body: "<p>One run's result tables, in the folders it has among run, data, LCOE, LCOH, trade "
       + "and policy. Download a table as a gzipped CSV, or all of them as one zip, or view it here page by page. "
       + "With nothing picked, click a run in the table.</p>",
   },
