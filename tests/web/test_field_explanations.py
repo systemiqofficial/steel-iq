@@ -67,7 +67,7 @@ def explanation_icons(page):
     return icons
 
 
-def test_every_d62_setting_and_no_other_field_has_an_explanation():
+def test_every_explained_setting_and_no_other_field_has_an_explanation():
     """The explanations cover exactly the agreed settings, each a field of the run form."""
     assert set(forms.FIELD_EXPLANATIONS) == EXPLAINED_SETTINGS
     assert EXPLAINED_SETTINGS <= set(forms.ModelRunCreateForm.base_fields)
