@@ -32,8 +32,9 @@ writes nothing when one is missing; otherwise it calls `write_viewer_files` on e
 
 `write_viewer_files` reads the last `post_processed_*.csv` in sorted order, `simulation_config.json`,
 `preparation_metadata.json`, the master workbook (the recorded `master_excel`, or the one given) and
-`plots/interactive/*.html`. A plot page the plotter skipped skips the file lifted from it, with a warning;
-`emissions.html` is required.
+`plots/interactive/*.html`. A plot page the plotter skipped skips the file lifted from it, with a warning
+(without `emissions.html`, no `geo.json`; the run is still listed). Only `regenerate` requires `emissions.html`
+(`missing_inputs`).
 
 | File | Content | Source (`extract.py`) |
 |---|---|---|
@@ -56,7 +57,7 @@ All in `catalogue.py`:
 - `EXCLUDED_SETTINGS`: the config keys that never become a filter or a run-details row (paths, unread fields, the
   plot and logging switches, the run name, the seed's copy in `geo_config`).
   `test_excluded_settings_name_only_real_config_fields` in `tests/unit/test_viewer_catalogue.py` fails on an entry
-  that is no config field.
+  that is no config field (older configs' `scrap_generation_scenario` excepted).
 - `SETTING_FORMATS`: each counted setting's label, unit and number format; `setting_format` builds one for a key it
   does not list.
 - `SETTINGS_LAYOUT`: the run details' sections and groups, with each group's switch;
