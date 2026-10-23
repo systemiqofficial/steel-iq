@@ -3,7 +3,9 @@
 The scenario viewer shows the results of local runs in the browser and compares them: each run's interactive plots,
 one measure across several scenarios, the annual cost of a tonne of iron or steel, the input data each run was made
 with, and each run's result tables. It reads what each run leaves in its own folder: the `viewer/` folder every run
-writes at its end, the interactive plot pages and the run's settings. It works offline.
+writes at its end, the interactive plot pages and the run's settings. It works offline. Each file in `viewer/` and
+its source are listed in
+[Outputs and Post-Processing](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#scenario-viewer-files-viewer).
 
 ## Opening It from the Command Line
 

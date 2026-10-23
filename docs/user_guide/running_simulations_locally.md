@@ -535,7 +535,7 @@ Each run writes into its own folder: `$STEELO_HOME/output/sim_<timestamp>/` (or 
   - Capacity pool charts on policy-ON runs (`plots/capacity_pool/`)
 - **Fleet motions**: `data/pam_motions.csv` on every run, plus the `data/policy/` CSVs on policy-ON runs
 - **Run settings**: `simulation_config.json` and `preparation_metadata.json`, written before the run starts
-- **Scenario viewer files**: `viewer/`, written at the end of the run, which the [Scenario Viewer](scenario_viewer.md) reads; `steelo-viewer regenerate <run folder>` writes them again. The files are listed in [Outputs and postprocessing](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md)
+- **Scenario viewer files**: `viewer/`, written at the end of the run, which the [Scenario Viewer](scenario_viewer.md) reads; `steelo-viewer regenerate <run folder>` writes them again. The files are listed in [Outputs and postprocessing](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#scenario-viewer-files-viewer)
 
 ## Troubleshooting
 
