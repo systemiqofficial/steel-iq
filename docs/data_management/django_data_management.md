@@ -23,24 +23,25 @@ The system supports both S3-hosted data packages and locally uploaded archives, 
 
 3. **ModelRun**: Updated to use DataPreparation
    - Can reference a DataPreparation for its data source
-   - Falls back to legacy Repository model if no DataPreparation
 
 ## Usage
 
 ### Quick Start (Recommended)
 
-The simplest approach uses the `prepare_default_data` management command:
+The simplest approach is the app's master Excel page: click **Master Excel** in the navigation bar, open or upload a master workbook, and click **Prepare Data with This Master Excel** on its page. The preparation runs in a background worker, which the app starts itself, with the core-data and geo-data versions the data manifest names.
+
+From the command line, `steelo-data-prepare` prepares the data outside the app; `--geo-version` or `STEELO_GEO_VERSION` picks the geo-data version:
 
 ```bash
 # Standard preparation (uses default geo-data version)
-uv run src/django/manage.py prepare_default_data
+steelo-data-prepare
 
 # Use development geo-data version
-uv run src/django/manage.py prepare_default_data --geo-version 1.1.0-dev
+steelo-data-prepare --geo-version 1.1.0-dev
 
 # Or via environment variable
 export STEELO_GEO_VERSION=1.1.0-dev
-uv run src/django/manage.py prepare_default_data
+steelo-data-prepare
 ```
 
 ### Manual Data Package Management (Advanced)
@@ -79,7 +80,7 @@ python manage.py import_data_packages \
 #### Step 4: Run Simulation
 
 1. Create a new Model Run
-2. Select your Data Preparation
+2. Select your Data Preparation, then its steel demand and scrap availability scenarios; the choices come from the preparation, and the scrap scenario's "Same as demand" follows the steel demand scenario
 3. Configure other parameters as needed
 4. Save and run
 
@@ -98,7 +99,9 @@ media/prepared_data/prep_<id>/
 ├── data/
 │   ├── fixtures/          # JSON repositories and raw files
 │   │   ├── plants.json
-│   │   ├── demand_centers.json
+│   │   ├── scenarios.json                                # each demand and scrap scenario's file
+│   │   ├── demand_scenarios/<scenario>/demand_centers.json
+│   │   ├── scrap_scenarios/<scenario>/suppliers.json
 │   │   ├── cost_of_x.json
 │   │   └── ...
 │   ├── outputs/GEO/      # Geo output files
@@ -118,14 +121,6 @@ MPLBACKEND=Agg            # Non-interactive matplotlib backend
 2. **File not found**: Check that data files exist in the expected locations
 3. **Matplotlib errors**: Set MPLBACKEND=Agg for headless environments
 
-## Test Script
-
-A test script is provided to demonstrate the workflow:
-```bash
-cd src/django
-python test_data_preparation.py
-```
-
 ## Geo-Data Versioning
 
 The system supports multiple versions of geo-data packages for different environments:
@@ -134,13 +129,13 @@ The system supports multiple versions of geo-data packages for different environ
 
 1. **Command Line**: Use `--geo-version` flag
    ```bash
-   uv run src/django/manage.py prepare_default_data --geo-version 1.1.0-dev
+   steelo-data-prepare --geo-version 1.1.0-dev
    ```
 
 2. **Environment Variable**: Set `STEELO_GEO_VERSION`
    ```bash
    export STEELO_GEO_VERSION=1.1.0-dev
-   uv run src/django/manage.py prepare_default_data
+   steelo-data-prepare
    ```
 
 3. **Manifest Tags**: Packages can be tagged in `manifest.json`
@@ -165,7 +160,6 @@ The hybrid data management system successfully addresses the requirements:
 4. **Multi-Version Support**: Different geo-data versions for production/development
 5. **Background Processing**: Data preparation runs asynchronously via django-tasks
 6. **Status Monitoring**: Detailed logs and status tracking for debugging
-7. **Backwards Compatible**: Existing ModelRuns continue to work with the Repository model
 
 ## Future Improvements
 
