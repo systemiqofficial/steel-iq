@@ -713,7 +713,7 @@ class ModelRunCreateForm(forms.ModelForm):
         label="Inter-company swap cutoff year",
         initial=config_default("capacity_policy.inter_company_swap_cutoff_year"),
         required=False,
-        help_text="First year a company may only spend its own credits; blank keeps the default year",
+        help_text="First year an expansion may spend only its own company's credits; blank keeps the default year",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
     )
 

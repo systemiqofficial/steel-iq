@@ -338,7 +338,7 @@ async function init() {
     compare: "One indicator across several scenarios on one chart.",
     "annual-costs": "Cost of a tonne of iron or steel, split into its components, for the picked scenarios.",
     data: "The model inputs behind the scenarios, and where they differ.",
-    results: "Raw result tables (CSV) of one scenario to download.",
+    results: "Raw result tables of one run, as gzipped CSV, to download or view page by page.",
   };
   for (const [m, text] of Object.entries(TAB_HELP)) $("tab-" + m).appendChild(helpIcon(text));
   $("tab-explore").onclick = () => mode === "explore" ? showOverview() : setMode("explore");

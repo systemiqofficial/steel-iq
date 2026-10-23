@@ -26,7 +26,7 @@ const TOUR_STEPS = [
     body: "<p><b>Explore</b> shows one scenario's plots, or two side by side. <b>Compare</b> charts one measure across several "
       + "scenarios. <b>Annual costs</b> stacks the cost of a tonne of iron or crude steel. "
       + "<b>View data</b> lists the inputs the scenarios were run with. <b>Download results</b> hands "
-      + "out one scenario's result tables.</p>",
+      + "out one run's result tables.</p>",
   },
   {
     title: "Filters",
@@ -36,8 +36,9 @@ const TOUR_STEPS = [
       const base = tourDims(app).map(d => dimPrefix(d.label));
       if (!base.length)
         return "<p>No filters yet: they appear once the runs differ in a setting or in their input data.</p>";
-      return "<p>A scenario is one combination of the filters: " + tourList(base) + ". They are the settings "
-        + "that differ between the runs, with the run name added when two runs would otherwise look the same.</p>"
+      return "<p>A scenario is one combination of the filters: " + tourList(base) + ". They are the input data "
+        + "and the settings that differ between the runs, plus <i>Made in</i> in the app, and the run name when two "
+        + "runs would otherwise look the same.</p>"
         + "<p>Click a pill to narrow the list. A greyed pill has no scenario left under the other filters. "
       + "<i>Clear</i> resets them, the chevron folds the card into a row of chips, and the divider "
       + "below it drags.</p>";
@@ -51,8 +52,9 @@ const TOUR_STEPS = [
       + "its name, when it started and the input data it used. A faded row is left out by the filters.</p>"
       + "<p>Click a row to explore that run, or switch the toggle to pick two for the split view. "
       + "<i>details</i> opens the run's settings, shown next.</p>"
-      + "<p>The same table picks in Compare, Annual costs, View data and Download results, and "
-      + "<i>all runs</i> beside the scenario list brings it back.</p>",
+      + "<p>The same table picks in Compare, Annual costs, View data and Download results. Once something is "
+      + "picked, <i>all runs</i> beside the scenario list brings it back; View data hides the list, and clicking "
+      + "<i>View data</i> again brings the table back there.</p>",
   },
   {
     title: "Run details",
@@ -70,8 +72,8 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.pickOne(); },
     body: "<p>Every scenario matching the filters, each with a fixed <b>#n</b> tag. The charts repeat "
       + "the tag, and it never changes with the filters, so #7 on a chart is always #7 here.</p>"
-      + "<p>Click one to explore it. In Compare and Annual costs you tick as many as you like, and "
-      + "<i>select all</i> picks whatever the filters currently show.</p>",
+      + "<p>Click one to explore it. In Compare and Annual costs you tick several, and <i>select all</i> picks "
+      + "whatever the filters currently show; Compare charts the first 20 and says so.</p>",
   },
   {
     title: "Explore: the plot pages",
@@ -80,8 +82,8 @@ const TOUR_STEPS = [
     body: app => {
       const plots = app.set().plots.map(p => p.label);
       const variant = app.set().dimensions.find(d => d.key === app.variantKey);
-      return "<p>Each run comes with " + plots.length + " plot pages written by the model: "
-        + tourList(plots) + ".</p>"
+      return "<p>Between them the runs have " + plots.length + " plot pages written by the model: "
+        + tourList(plots) + ". A tab is disabled for a run that lacks its page.</p>"
         + (variant ? "<p>A <i>" + tourEsc(variant.label) + "</i> row appears above the tabs when a scenario "
                      + "was run several times, differing only in that.</p>" : "");
     },
@@ -92,7 +94,8 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.pickOne(); },
     body: "<p>The plots are the model's own interactive pages: hover for values, click legend entries to "
       + "hide series, and use the controls at the top of each page.</p>"
-      + "<p>The address bar always names the run and plot, so copy it to share exactly this view. "
+      + "<p>In a browser window of its own, the address bar names the run and plot, so copy it to share exactly "
+      + "this view. "
       + "The control bar above drags to resize and folds away with its chevron.</p>",
   },
   {
@@ -103,8 +106,8 @@ const TOUR_STEPS = [
       + "the list then fill <b>A</b> and <b>B</b> in turn; the A / B toggle chooses which side the next "
       + "click sets, <i>⇄ Swap</i> trades the two sides, and <i>clear A</i> or <i>clear B</i> empties a side. "
       + "An empty side shows the run table to pick from, and <i>change</i> beside a side's name empties it.</p>"
-      + "<p>The plot tabs drive both sides at once, and the address bar names both runs, so the link "
-      + "shares the comparison.</p>",
+      + "<p>The plot tabs drive both sides at once, and in a browser window of its own the address bar names "
+      + "both runs, so the link shares the comparison.</p>",
   },
   {
     title: "Compare",
@@ -156,7 +159,7 @@ const TOUR_STEPS = [
     title: "Download results",
     target: "#results-pane",
     before: (h, app) => { h.sidebar(); app.setMode("results"); h.pickOne(); },
-    body: "<p>One scenario's result tables, in the folders its run has among run, data, LCOE, LCOH, trade "
+    body: "<p>One run's result tables, in the folders it has among run, data, LCOE, LCOH, trade "
       + "and policy. Download a table as a gzipped CSV, or all of them as one zip, or view it here page by page. "
       + "With nothing picked, click a run in the table.</p>",
   },

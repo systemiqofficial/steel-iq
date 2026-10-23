@@ -19,9 +19,9 @@ const ANNUAL_COST_GROUPS = [
   { id: "fopex", label: "Fixed opex", color: COMPARE_PALETTE[4], cols: ["fopex"],
     note: "per tonne of production, spread over max(utilisation, 10 %)" },
   { id: "financing", label: "Debt", color: COMPARE_PALETTE[5], cols: ["debt", "debt_legacy"],
-    note: "principal + interest on the 80 % debt-financed capex, straight-line over the 20-year cycle: the current technology's loan plus a previous technology's loan still being repaid after an early switch (split to see them apart)" },
+    note: "principal + interest on the debt-financed share of capex (80 % for the plants the data starts with; 1 - the run's equity share for the new plants and expansions it builds), straight-line over the run's plant lifetime: the current technology's loan plus a previous technology's loan still being repaid after an early switch (split to see them apart)" },
   { id: "carbon", label: "Carbon cost", color: COMPARE_PALETTE[7], cols: ["carbon"],
-    note: "carbon price x rs-inspired direct emissions, net of border adjustments" },
+    note: "the plant country's carbon price x direct emissions in the run's carbon cost emissions boundary" },
 ];
 const ANNUAL_COST_COLUMN_LABELS = {
   coking_coal: "Coking coal", pci: "PCI", bio_pci: "Bio-PCI", hydrogen: "Hydrogen", natural_gas: "Natural gas",

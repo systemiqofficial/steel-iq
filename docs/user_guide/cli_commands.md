@@ -40,18 +40,23 @@ options:
                         Base output directory for simulation results (default:
                         $STEELO_HOME/output)
   --demand-scenario DEMAND_SCENARIO
-                        Scenario name in the 'Demand and scrap availability'
-                        sheet used for steel demand (default: BAU)
+                        Steel demand scenario of the run, named as in the
+                        'Demand and scrap availability' sheet and picked at
+                        run time from the prepared data; a name it lacks stops
+                        the run before it starts (default: BAU)
   --scrap-scenario SCRAP_SCENARIO
-                        Scenario name in the same sheet used for scrap
-                        availability (default: same as --demand-scenario)
+                        Scrap availability scenario of the run, named and
+                        picked the same way (default: same as --demand-
+                        scenario)
   --grid-emissions-scenario GRID_EMISSIONS_SCENARIO
                         Grid emissivity projection applied at run time, named
                         as in the 'Power grid emissivity' sheet without its
                         'projection_' prefix (default: 'Business As Usual';
                         alternative: 'Net Zero')
   --run-name RUN_NAME   Human-readable run name shown in the interactive plot
-                        titles (default: the sim_<timestamp> dir name)
+                        titles (default: the sim_<timestamp> dir name); a name
+                        already in use under the output base gets _2, _3, and
+                        so on
   --hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE
                         Percentile of a region's LCOH used as the regional
                         hydrogen price cap (default: the GeoConfig value, 100,
@@ -96,7 +101,7 @@ options:
                         disabled)
   --iron-to-steel-price-ratio IRON_TO_STEEL_PRICE_RATIO
                         Ratio of steel price for iron floor when pegging is
-                        enabled (default: 0.8 = 80%)
+                        enabled (default: 0.8)
   --random-seed RANDOM_SEED
                         Seed for the run-time RNGs shared by the plant agent,
                         geospatial and trade LP modules (default: 42); data
@@ -115,12 +120,11 @@ options:
                         requires your own Gurobi license and a gurobipy
                         installation reachable from wherever the simulation
                         runs; you must follow the terms of your license.
-                        Install with `uv sync --extra gurobi`.
 ```
 
-Gurobi is commercial software that this project does not license. Selecting `--optimization-solver gurobi` prints a license reminder. You need your own Gurobi license and must use it as its license agreement allows (for example, an academic license is not valid for commercial use).
+Gurobi is commercial software that this project does not license. Selecting `--optimization-solver gurobi` prints a license reminder. You need your own Gurobi license and must use it as its license agreement allows (for example, an academic license is not valid for commercial use). Install `gurobipy` with `uv sync --extra gurobi`.
 
-Every run writes to a fresh `sim_<timestamp>/` directory under `--output-dir` (default `$STEELO_HOME/output`), also linked as `$STEELO_HOME/output_latest`.
+Every run writes to a fresh `sim_<timestamp>/` directory under `--output-dir` (default `$STEELO_HOME/output`), also linked as `latest` in that output directory and as `$STEELO_HOME/output_latest`.
 
 Examples:
 
@@ -159,13 +163,90 @@ run_simulation --hydrogen-ceiling-percentile 20 --intraregional-trade
 run_simulation --optimization-solver gurobi
 ```
 
+A run ends by printing where its results are and how to open them in the [Scenario Viewer](scenario_viewer.md):
+
+```text
+Simulation completed!
+Results in: /Users/me/.steelo/output/sim_20261023_101500
+View it: steelo-viewer /Users/me/.steelo/output/sim_20261023_101500
+Latest symlink: /Users/me/.steelo/output/latest
+```
+
 ### Features:
-- **Automatic Caching**: Caches prepared data based on master Excel content
-- **Fast Reruns**: Reuses cached data when running with same inputs
+- **Automatic Caching**: Caches prepared data keyed on the master Excel's content and the cache version
+- **Fast Reruns**: Reuses cached data when running with the same master Excel; one preparation holds every demand and scrap scenario, so changing the scenario reuses it too
 - **Backward Compatibility**: Creates symlinks at `data/` and `output/`
 - **Cache Management**: Built-in commands to view and manage cache
 - **Iron Price Pegging**: Optionally peg iron prices to steel prices to ensure minimum value ratios (new feature)
 - **Capacity Policy**: Optionally enable China's capacity-replacement policy (`--enable-capacity-policy`), gating Chinese replacements and new builds on a national pool of retirement credits
+
+## steelo-viewer
+
+Serves the [Scenario Viewer](scenario_viewer.md) for local runs on `127.0.0.1`, or rebuilds a run's viewer files.
+
+```shell
+❯ steelo-viewer -h
+usage: steelo-viewer [-h] [--steelo-home STEELO_HOME]
+                     [--output-dir OUTPUT_DIR] [--port PORT] [--no-browser]
+                     [RUN_DIR ...]
+
+Serve the scenario viewer for local runs.
+
+positional arguments:
+  RUN_DIR               run folder to serve (default: every run)
+
+options:
+  -h, --help            show this help message and exit
+  --steelo-home STEELO_HOME
+                        STEELO_HOME directory (default: ~/.steelo or
+                        $STEELO_HOME)
+  --output-dir OUTPUT_DIR
+                        output base holding the run folders (default:
+                        $STEELO_HOME/output)
+  --port PORT           port to serve on (default: a free port)
+  --no-browser          do not open the viewer in the browser
+
+steelo-viewer regenerate RUN_DIR [RUN_DIR ...] rebuilds the viewer files of
+finished runs; see steelo-viewer regenerate --help.
+```
+
+- With no `RUN_DIR`, every run folder directly under `--output-dir` is served; symlinked folders such as `latest` are skipped there. Named `RUN_DIR`s are served alone, by their real paths, and `--output-dir` and `--steelo-home` are not used.
+- A run is listed once its folder holds `viewer/run.json`. The viewer looks for runs again each time the page loads.
+- The command prints the viewer's address and "Runs served: N; press Ctrl-C to stop", opens the default browser unless `--no-browser` is given, and serves until Ctrl-C. It answers only requests addressed to `127.0.0.1` or `localhost`.
+- It exits with code 1 when the output folder does not exist, when no run holds `viewer/run.json`, or when two named run folders share a folder name.
+
+```bash
+# Every run under $STEELO_HOME/output
+steelo-viewer
+
+# The latest run only, on port 8080
+steelo-viewer ~/.steelo/output/latest --port 8080
+```
+
+### steelo-viewer regenerate
+
+```shell
+❯ steelo-viewer regenerate -h
+usage: steelo-viewer regenerate [-h] [--master-excel MASTER_EXCEL]
+                                RUN_DIR [RUN_DIR ...]
+
+Rebuild the viewer files of finished runs.
+
+positional arguments:
+  RUN_DIR               run folder to rebuild
+
+options:
+  -h, --help            show this help message and exit
+  --master-excel MASTER_EXCEL
+                        master workbook to read instead of the one each run
+                        recorded
+```
+
+Rebuilds the `viewer/` folder of finished runs. Each run folder must hold a `post_processed_*.csv`, `simulation_config.json`, `preparation_metadata.json` and `plots/interactive/emissions.html`, and the master workbook the run recorded, or the one `--master-excel` names, must exist. Every run is checked first: when an input is missing, the command names it, writes nothing for any run and exits with code 1. Otherwise each run's `viewer/` folder is deleted and written again, and the plot pages and model outputs are left alone.
+
+```bash
+steelo-viewer regenerate ~/.steelo/output/sim_20261023_101500
+```
 
 ## Data Preparation Commands
 
@@ -220,7 +301,7 @@ The command prepares files from four sources, in this order:
 3. **Derived files**: generated from other data files.
 4. **Geo data files**: extracted from the geo-data package.
 
-**Caching**: when `run_simulation` prepares data, it caches the result in `$STEELO_HOME/preparation_cache/`, keyed on the content of the master workbook. Later runs with the same workbook reuse the cache, typically in under a second. The timing shown is the original preparation time, even when the cache is used.
+**Caching**: when `run_simulation` prepares data, it caches the result in `$STEELO_HOME/preparation_cache/`, keyed on the content of the master workbook and the cache version. One preparation holds every demand and scrap scenario, so no scenario is part of the key. Later runs with the same workbook reuse the cache, whichever scenarios they pick, typically in under a second. The timing shown is the original preparation time, even when the cache is used.
 
 ### steelo-data-recreate
 
@@ -316,12 +397,12 @@ This command line entrypoint downloads the Steel Model standalone binaries (Elec
 
 ```shell
 ❯ download-binaries -h
-usage: download-binaries [-h] [--output-dir OUTPUT_DIR] [--platforms {macos,windows} [{macos,windows} ...]] build_id
+usage: download-binaries [-h] [--output-dir OUTPUT_DIR] [--platforms {macos,windows} [{macos,windows} ...]] identifier
 
 Download Steel Model standalone binaries from S3
 
 positional arguments:
-  build_id              Build identifier (e.g., commit-hash-timestamp format)
+  identifier            Build identifier or commit ID (e.g., '4e979b2' or 'a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029')
 
 options:
   -h, --help            show this help message and exit
@@ -331,17 +412,20 @@ options:
                         Platforms to download (default: all platforms)
 
 Examples:
-  # Download all platforms for a specific build
+  # Download using commit ID (as shown in list-binaries)
+  download-binaries 4e979b2
+
+  # Download using full build ID
   download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029
   
-  # Download only macOS binaries
-  download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029 --platforms macos
+  # Download only macOS binaries using commit ID
+  download-binaries 4e979b2 --platforms macos
   
-  # Download only Windows binaries
-  download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060251 --platforms windows
+  # Download only Windows binaries using commit ID
+  download-binaries 4e979b2 --platforms windows
   
   # Download to a custom directory
-  download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029 --output-dir ./my-downloads
+  download-binaries 4e979b2 --output-dir ./my-downloads
 ```
 
 ## Download Latest Binaries

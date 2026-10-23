@@ -3,7 +3,7 @@
 ```
 Status: Accepted
 Date: 2025-03-06
-Updated: 2025-07-18
+Updated: 2026-10-23
 ```
 
 ## Context
@@ -86,6 +86,8 @@ The data preparation process creates the following JSON repositories from the ma
 - `input_costs.json` - Regional input cost factors
 - `tech_switches_allowed.csv` - Technology transition constraints
 - And several others...
+
+**Note (2026-10-23):** a preparation now writes one `demand_centers.json` per demand scenario, under `demand_scenarios/<scenario slug>/`, and one `suppliers.json` per scrap scenario, under `scrap_scenarios/<scenario slug>/`, holding that scenario's scrap suppliers and the iron ore mines; `scenarios.json` maps each scenario name to its file, and each run picks its demand and scrap scenarios at run time. The list above and the data flow diagram below keep the single files as the record of the decision.
 
 Each JSON file is:
 - Validated using Pydantic models

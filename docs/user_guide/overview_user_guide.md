@@ -24,9 +24,17 @@ Complete guide to running steel model simulations on your local machine. Covers:
 - **Troubleshooting**: Common issues and debugging tips
 - **Output files**: Understanding simulation results and visualizations
 
+### [Scenario Viewer](scenario_viewer.md)
+Browsing and comparing the results of local runs, offline. Covers:
+- **Opening it**: `steelo-viewer` from the command line, or Scenario viewer in the app
+- **Filters and scenarios**: How the viewer groups runs, and how run names are made unique
+- **The panes**: Explore, Compare, Annual costs, View data and Download results
+- **Rebuilding a run's viewer files**: `steelo-viewer regenerate`
+
 ### [CLI Commands](cli_commands.md)
 Reference documentation for all command-line interface tools:
 - **run_simulation**: Main command to run simulations with automatic data preparation and caching
+- **steelo-viewer**: Serve the scenario viewer for local runs, or rebuild a run's viewer files
 - **steelo-data-prepare** and **steelo-data-recreate**: Prepare the data files a simulation needs
 - **generate-geo-options**: List the sub-national geography keys the master workbook can use
 - **list-binaries**: View available Steel Model standalone binaries on S3
@@ -112,7 +120,7 @@ run_simulation --start-year 2025 --end-year 2027 --log-level INFO
 #### Using Custom Data
 ```bash
 # Prepare data with your own master Excel
-steelo-data-prepare --master-excel path/to/your/master_input.xlsx
+steelo-data-prepare --master-excel-file path/to/your/master_input.xlsx
 
 # Run simulation
 run_simulation
@@ -123,14 +131,12 @@ run_simulation
 # Set up Django (first time only)
 cd src/django
 python manage.py migrate
-python manage.py prepare_default_data
 
-# Start services
-python manage.py runserver          # Terminal 1
-python manage.py db_worker          # Terminal 2
+# Start the web server
+python manage.py runserver
 ```
 
-Then open http://localhost:8000 in your browser.
+Then open http://localhost:8000 in your browser. The app starts a background worker itself when the Simulations page first loads, asking for a confirmation only when memory is short. Prepare data under **Master Excel** in the navigation bar, with **Prepare Data with This Master Excel** on a workbook's page.
 
 ## Key Concepts
 
@@ -184,6 +190,7 @@ Common issues and solutions are documented in:
 
 installation_guide
 running_simulations_locally
+scenario_viewer
 configuration
 master_input_reference
 cli_commands

@@ -104,7 +104,7 @@ new_capacity_share_from_new_plants = 0.4  # 40% of new capacity from greenfield
 
 ### China Capacity-Replacement Policy (optional)
 
-In addition to the annual limits, a run started with `--enable-capacity-policy` gates every Chinese expansion, new plant and replacement on a national pool of retirement credits: capacity may only be added against capacity retired earlier, and emission-intense replacements and additions are penalised at 1.5:1. The pool works alongside the annual limits, not instead of them, and applies to Chinese plants only. See [China Capacity-Replacement Policy](capacity_replacement_policy.md).
+In addition to the annual limits, a run started with `--enable-capacity-policy`, or with the app's "Capacity-replacement policy (China)" switch, gates every Chinese expansion, new plant and replacement on a national pool of retirement credits: capacity may only be added against capacity retired earlier, and emission-intense replacements and additions are penalised at 1.5:1. The pool works alongside the annual limits, not instead of them, and applies to Chinese plants only. See [China Capacity-Replacement Policy](capacity_replacement_policy.md).
 
 ## Implementation Details
 

@@ -25,8 +25,8 @@ class CapacityPolicyConfig:
             branch ②; applies to renovations and replacements alike.
         utilization_window_years: Consecutive recorded years at or below the
             floor that make a group ineligible.
-        inter_company_swap_cutoff_year: First year a company may only spend
-            its own credits; None disables the owner partition.
+        inter_company_swap_cutoff_year: First year an expansion may spend
+            only its own company's credits; None disables the owner partition.
         banked_credit_rule: Treatment of pre-cutoff credits from the cutoff
             on: ``"reassign"`` (stay with their depositor, unowned ones swept),
             ``"persist"`` (freely spendable) or ``"expire"`` (unusable).

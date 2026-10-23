@@ -230,7 +230,7 @@ class DataPreparationService:
         Prepare all data files for simulation.
 
         Args:
-            output_dir: Directory to output prepared files (fixtures directory)
+            output_dir: Data root to write the prepared files into; the fixtures go into its ``fixtures`` folder
             master_excel_path: Path to master Excel file (will download if not provided)
             skip_existing: Skip files that already exist
             verbose: Print detailed progress
