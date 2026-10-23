@@ -271,7 +271,7 @@ Key parameters affecting priority location selection:
 | `hydrogen_ceiling_percentile` | 100 | Regional hydrogen cost cap (percentile); 100 = no cap; CLI `--hydrogen-ceiling-percentile` |
 | `intraregional_trade_allowed` | False | Enable hydrogen imports between regions; CLI `--intraregional-trade` |
 | `long_dist_pipeline_transport_cost` | 1.0 | Pipeline transport cost (USD/kg H2) |
-| `excluded_greenfield_technologies` | `["BOF"]` | Technologies never considered for new greenfield plants (see [New Plant Opening](new_plant_opening.md)); brownfield switching is unaffected |
+| `excluded_greenfield_technologies` | `["BOF"]` | Technologies never considered for new greenfield plants (see [New Plant Opening](new_plant_opening.md)); brownfield switching is unaffected. Set by neither the CLI nor the app, which stores the default with each run; only a Python config sets another |
 
 #### `GeoDataPaths` Parameters
 
