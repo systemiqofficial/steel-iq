@@ -511,7 +511,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     # Capacity policy: the clean() step gathers the capacity_policy_* fields into one stored dictionary
     capacity_policy_enabled = forms.BooleanField(
-        label="Capacity-replacement policy",
+        label="Capacity-replacement policy (China)",
         initial=config_default("capacity_policy.enabled"),
         required=False,
         help_text="Enable China's capacity-replacement policy",

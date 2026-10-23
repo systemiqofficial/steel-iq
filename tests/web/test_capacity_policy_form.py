@@ -3,6 +3,7 @@
 import pytest
 from django.urls import reverse
 
+from steeloweb import forms
 from steeloweb.models import ModelRun
 
 CAPACITY_POOL_FIXTURES = (
@@ -131,3 +132,15 @@ def test_create_form_refuses_the_capacity_policy_on_an_empty_provinces_or_techno
     assert response.status_code == 200
     assert response.context["form"].has_error("capacity_policy_enabled")
     assert not ModelRun.objects.exists()
+
+
+@pytest.mark.django_db
+def test_create_page_labels_the_capacity_policy_switch_as_china_s_policy(
+    client,
+    ready_data_preparation,
+):
+    """The switch's label names China, the one country the policy's code applies to, as its help text already does."""
+    page = client.get(reverse("create-modelrun")).content.decode()
+
+    assert forms.ModelRunCreateForm().fields["capacity_policy_enabled"].label == "Capacity-replacement policy (China)"
+    assert "Capacity-replacement policy (China):" in page
