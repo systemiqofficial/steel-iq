@@ -28,7 +28,7 @@ The system supports both S3-hosted data packages and locally uploaded archives, 
 
 ### Quick Start (Recommended)
 
-The simplest approach is the app's master Excel page: click **Master Excel** in the navigation bar, open or upload a master workbook, and click **Prepare Data with This Master Excel** on its page. The preparation runs in a background worker, which the app starts itself, with the core-data and geo-data versions the data manifest names.
+The simplest approach is the app's master Excel page: click **Master Excel** in the navigation bar, open or upload a master workbook, and click **Prepare Data with This Master Excel** on its page. The preparation runs in a background worker, with the core-data and geo-data versions the data manifest names; the app starts a worker when the Simulations page first loads in a browser session, and the master Excel page refuses to prepare without one. The button shows once the workbook has passed validation and while it has no preparation.
 
 From the command line, `steelo-data-prepare` prepares the data outside the app; `--geo-version` or `STEELO_GEO_VERSION` picks the geo-data version:
 
@@ -100,8 +100,8 @@ media/prepared_data/prep_<id>/
 │   ├── fixtures/          # JSON repositories and raw files
 │   │   ├── plants.json
 │   │   ├── scenarios.json                                # each demand and scrap scenario's file
-│   │   ├── demand_scenarios/<scenario>/demand_centers.json
-│   │   ├── scrap_scenarios/<scenario>/suppliers.json
+│   │   ├── demand_scenarios/<scenario slug>/demand_centers.json
+│   │   ├── scrap_scenarios/<scenario slug>/suppliers.json
 │   │   ├── cost_of_x.json
 │   │   └── ...
 │   ├── outputs/GEO/      # Geo output files
