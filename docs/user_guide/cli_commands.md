@@ -412,17 +412,20 @@ options:
                         Platforms to download (default: all platforms)
 
 Examples:
-  # Download all platforms for a specific build
+  # Download using commit ID (as shown in list-binaries)
+  download-binaries 4e979b2
+
+  # Download using full build ID
   download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029
   
-  # Download only macOS binaries
-  download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029 --platforms macos
+  # Download only macOS binaries using commit ID
+  download-binaries 4e979b2 --platforms macos
   
-  # Download only Windows binaries
-  download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060251 --platforms windows
+  # Download only Windows binaries using commit ID
+  download-binaries 4e979b2 --platforms windows
   
   # Download to a custom directory
-  download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029 --output-dir ./my-downloads
+  download-binaries 4e979b2 --output-dir ./my-downloads
 ```
 
 ## Download Latest Binaries
