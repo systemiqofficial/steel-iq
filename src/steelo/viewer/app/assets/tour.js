@@ -94,7 +94,8 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.pickOne(); },
     body: "<p>The plots are the model's own interactive pages: hover for values, click legend entries to "
       + "hide series, and use the controls at the top of each page.</p>"
-      + "<p>The address bar always names the run and plot, so copy it to share exactly this view. "
+      + "<p>In a browser window of its own, the address bar names the run and plot, so copy it to share exactly "
+      + "this view. "
       + "The control bar above drags to resize and folds away with its chevron.</p>",
   },
   {
@@ -105,8 +106,8 @@ const TOUR_STEPS = [
       + "the list then fill <b>A</b> and <b>B</b> in turn; the A / B toggle chooses which side the next "
       + "click sets, <i>⇄ Swap</i> trades the two sides, and <i>clear A</i> or <i>clear B</i> empties a side. "
       + "An empty side shows the run table to pick from, and <i>change</i> beside a side's name empties it.</p>"
-      + "<p>The plot tabs drive both sides at once, and the address bar names both runs, so the link "
-      + "shares the comparison.</p>",
+      + "<p>The plot tabs drive both sides at once, and in a browser window of its own the address bar names "
+      + "both runs, so the link shares the comparison.</p>",
   },
   {
     title: "Compare",
