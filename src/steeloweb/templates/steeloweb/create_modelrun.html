@@ -665,9 +665,9 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// Bootstrap popovers are opt-in; htmx.onLoad runs for the page and again for every fragment swapped in
-htmx.onLoad(function (root) {
-    root.querySelectorAll('[data-bs-toggle="popover"]').forEach(function (el) {
+// htmx loads deferred, so listen for the htmx:load it fires for the page and for every fragment swapped in
+document.body.addEventListener('htmx:load', function (evt) {
+    evt.detail.elt.querySelectorAll('[data-bs-toggle="popover"]').forEach(function (el) {
         bootstrap.Popover.getOrCreateInstance(el);
     });
 });
