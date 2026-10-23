@@ -120,7 +120,7 @@ run_simulation --start-year 2025 --end-year 2027 --log-level INFO
 #### Using Custom Data
 ```bash
 # Prepare data with your own master Excel
-steelo-data-prepare --master-excel path/to/your/master_input.xlsx
+steelo-data-prepare --master-excel-file path/to/your/master_input.xlsx
 
 # Run simulation
 run_simulation
@@ -131,14 +131,12 @@ run_simulation
 # Set up Django (first time only)
 cd src/django
 python manage.py migrate
-python manage.py prepare_default_data
 
-# Start services
-python manage.py runserver          # Terminal 1
-python manage.py db_worker          # Terminal 2
+# Start the web server
+python manage.py runserver
 ```
 
-Then open http://localhost:8000 in your browser.
+Then open http://localhost:8000 in your browser. The app starts a background worker itself when the Simulations page first loads, asking for a confirmation only when memory is short. Prepare data under **Master Excel** in the navigation bar, with **Prepare Data with This Master Excel** on a workbook's page.
 
 ## Key Concepts
 
