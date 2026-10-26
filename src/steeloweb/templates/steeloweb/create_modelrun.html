@@ -39,6 +39,7 @@ function resetField(id) {
     const el = document.getElementById(id);
     if (el && el.dataset.default !== undefined) {
         el.value = el.dataset.default;
+        return true;
     }
 }
 
