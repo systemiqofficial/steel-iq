@@ -19,7 +19,7 @@ from django.utils import timezone
 from django_htmx.http import HttpResponseClientRefresh
 
 from .tasks import run_simulation_task
-from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
+from .models import ModelRun, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
 from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
@@ -78,12 +78,6 @@ class ModelRunDetailView(DetailView):
         from steeloweb.utils import get_log_file_path
 
         context = super().get_context_data(**kwargs)
-
-        # Check if there are result images for this model run
-        try:
-            context["result_images"] = ResultImages.objects.get(modelrun=self.object)
-        except ResultImages.DoesNotExist:
-            context["result_images"] = None
 
         # Get technology switches data
         try:
@@ -1132,141 +1126,6 @@ def get_modelrun_progress(request, pk):
     return render(request, "steeloweb/includes/progress_bar.html", context)
 
 
-def _missing_image_response(request, pk, message):
-    """Render a popup-only message when ?popup=1, else flash + redirect to detail.
-
-    Without this, the redirect lands on the full modelrun-detail page inside the
-    popup window, exposing the whole site UI when only an "X not available"
-    notice is wanted.
-    """
-    if request.GET.get("popup") == "1":
-        return render(request, "steeloweb/popup_message.html", {"popup": True, "message": message})
-    messages.error(request, message)
-    return redirect("modelrun-detail", pk=pk)
-
-
-def view_cost_map(request, pk, map_type):
-    """
-    View for displaying cost maps (LCOE or LCOH)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        if map_type == "lcoe":
-            image = result_images.lcoe_map
-            title = "Levelized Cost of Electricity (LCOE)"
-        elif map_type == "lcoh":
-            image = result_images.lcoh_map
-            title = "Levelized Cost of Hydrogen (LCOH)"
-        else:
-            raise Http404("Invalid map type")
-
-        if not image:
-            return _missing_image_response(
-                request,
-                pk,
-                f"{title} not available for this model run. "
-                f"This may occur if plot generation failed or certain configuration options were selected.",
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": title,
-            "map_type": map_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
-def view_priority_map(request, pk, map_type):
-    """
-    View for displaying priority location maps (iron or steel)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        if map_type == "iron":
-            image = result_images.priority_locations_iron
-            title = "Top 5% Priority Locations for Iron Production"
-        elif map_type == "steel":
-            image = result_images.priority_locations_steel
-            title = "Top 5% Priority Locations for Steel Production"
-        else:
-            raise Http404("Invalid map type")
-
-        if not image:
-            return _missing_image_response(
-                request,
-                pk,
-                f"{title} not available for this model run. "
-                f"This may occur if plot generation failed or certain configuration options were selected.",
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": title,
-            "map_type": map_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
-def view_plant_visualization(request, pk, visualization_type):
-    """
-    View for displaying various plant visualizations (construction maps, status charts)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        # Mapping of visualization types to model fields and titles
-        visualization_mapping = {
-            "iron-construction": {
-                "field": "new_plants_iron_construction",
-                "title": "Iron Plants Operating Map",
-            },
-            "steel-construction": {
-                "field": "new_plants_steel_construction",
-                "title": "Steel Plants Operating Map",
-            },
-            "iron-status": {"field": "new_plants_iron_status", "title": "New Iron Plants by Status"},
-            "steel-status": {"field": "new_plants_steel_status", "title": "New Steel Plants by Status"},
-        }
-
-        if visualization_type not in visualization_mapping:
-            raise Http404("Invalid visualization type")
-
-        viz_info = visualization_mapping[visualization_type]
-        image = getattr(result_images, viz_info["field"])
-
-        if not image:
-            return _missing_image_response(
-                request, pk, f"No {viz_info['title']} visualization available for this model run"
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": viz_info["title"],
-            "visualization_type": visualization_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
 def upload_circularity_data(request, modelrun_id=None):
     """
     Upload circularity data file
@@ -1362,7 +1221,6 @@ class ModelRunDeleteView(DeleteView):
         context = super().get_context_data(**kwargs)
 
         # Count related objects that will be deleted
-        context["result_images_count"] = ResultImages.objects.filter(modelrun=self.object).count()
         context["simulation_plots_count"] = SimulationPlot.objects.filter(modelrun=self.object).count()
         context["has_results"] = bool(self.object.results) or bool(self.object.result_csv)
 

@@ -34,13 +34,6 @@ urlpatterns = [
     path("modelrun/<int:pk>/cancel/", views.cancel_modelrun, name="cancel-modelrun"),
     path("modelrun/<int:pk>/force-stop/", views.force_stop_modelrun, name="force-stop-modelrun"),
     path("modelrun/<int:pk>/progress/", views.get_modelrun_progress, name="modelrun-progress"),
-    path("modelrun/<int:pk>/cost/<str:map_type>/", views.view_cost_map, name="view-cost-map"),
-    path("modelrun/<int:pk>/priority/<str:map_type>/", views.view_priority_map, name="view-priority-map"),
-    path(
-        "modelrun/<int:pk>/plant-viz/<str:visualization_type>/",
-        views.view_plant_visualization,
-        name="view-plant-visualization",
-    ),
     path("modelrun/<int:pk>/plot/<int:plot_id>/", views.view_simulation_plot, name="view-simulation-plot"),
     path("modelrun/<int:pk>/download-csv/", views.download_modelrun_csv, name="download-modelrun-csv"),
     path("modelrun/<int:pk>/delete/", views.ModelRunDeleteView.as_view(), name="modelrun-delete"),

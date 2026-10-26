@@ -52,7 +52,7 @@
                         </tbody>
                     </table>
                     
-                    {% if has_results or result_images_count > 0 or simulation_plots_count > 0 %}
+                    {% if has_results or simulation_plots_count > 0 %}
                     <div class="alert alert-danger">
                         <h6 class="alert-heading">
                             <i class="fas fa-trash"></i> The following data will be permanently deleted:
@@ -60,9 +60,6 @@
                         <ul class="mb-0">
                             {% if has_results %}
                             <li>Simulation results and CSV data</li>
-                            {% endif %}
-                            {% if result_images_count > 0 %}
-                            <li>{{ result_images_count }} result image{{ result_images_count|pluralize }}</li>
                             {% endif %}
                             {% if simulation_plots_count > 0 %}
                             <li>{{ simulation_plots_count }} simulation plot{{ simulation_plots_count|pluralize }}</li>

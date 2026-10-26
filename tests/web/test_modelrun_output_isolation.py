@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from django.conf import settings
 
-from steeloweb.models import ModelRun, ResultImages, SimulationPlot
+from steeloweb.models import ModelRun, SimulationPlot
 
 
 @pytest.mark.django_db
@@ -221,32 +221,6 @@ class TestModelRunOutputIsolation:
         # Should raise ValueError since no output path is available
         with pytest.raises(ValueError, match="ModelRun must have an output path set"):
             model_run.capture_result_csv()
-
-    def test_result_images_uses_isolated_directory(self):
-        """Test that ResultImages.create_from_plots uses isolated directories."""
-        model_run = ModelRun.objects.create()
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with patch.object(settings, "MEDIA_ROOT", temp_dir):
-                model_run.ensure_output_directories()
-                output_path = Path(model_run.output_directory)
-
-                # Create test plot files
-                geo_dir = output_path / "plots" / "GEO"
-                geo_dir.mkdir(parents=True, exist_ok=True)
-
-                # Create a simple test image (1x1 PNG)
-                test_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\x0c\x0c\x00\x00\x00\x00IEND\xaeB`\x82"
-
-                (geo_dir / "lcoe_map.png").write_bytes(test_png)
-
-                # Create result images
-                result_images = ResultImages.create_from_plots(model_run)
-
-                assert result_images
-                assert result_images.modelrun == model_run
-                # At least one image should be found (lcoe_map)
-                assert result_images.lcoe_map
 
     def test_simulation_plot_uses_isolated_directory(self):
         """Test that SimulationPlot.capture_simulation_plots uses isolated directories."""
