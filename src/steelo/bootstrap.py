@@ -13,6 +13,7 @@ from .adapters.repositories import JsonRepository, InMemoryRepository, Repositor
 from .capacity_policy.bootstrap import configure_capacity_policy
 from .data.path_resolver import DataPathResolver, resolve_scenario_fixtures
 from .motions import bind_global_motions
+from .utilities import energy_trace
 
 if TYPE_CHECKING:
     from .simulation import SimulationConfig, SimulationRunner
@@ -289,6 +290,13 @@ def bootstrap_simulation(
         LoggingConfig.configure_from_yaml(str(yaml_path), config.log_level)
     else:
         LoggingConfig.configure_base_loggers()
+    # Once per run, so a second run in the same process keeps nothing of the first
+    energy_trace.configure(
+        LoggingConfig.ENERGY_TRACE,
+        LoggingConfig.ENERGY_TRACE_COUNTRIES,
+        LoggingConfig.ENERGY_TRACE_PLANTS,
+        config.output_dir,
+    )
 
     # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
     random.seed(config.random_seed)

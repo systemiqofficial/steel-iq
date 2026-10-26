@@ -352,5 +352,6 @@ The outgoing cashflow proxy is based on the geospatial indicators we consider th
 ## Related Documentation
 
 - [New Plant Opening Logic](new_plant_opening.md) - How candidate locations are used to create new plants
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - Where the site power and hydrogen prices go after selection
 - [Baseload Power Optimization](baseload_optimization_atlas.md) - Details on renewable LCOE calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

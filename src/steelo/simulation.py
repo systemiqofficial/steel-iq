@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
 import sys
 
 from steelo.simulation_types import TechSettingsMap, get_default_technology_settings
+from steelo.utilities import energy_trace
 from steelo.utilities.memory_profiling import MemoryTracker
 
 from .capacity_policy.config import CapacityPolicyConfig
@@ -1489,6 +1490,14 @@ class SimulationRunner:
                                 fg.output_energy_costs,
                                 fg.energy_costs_no_subsidy,
                             )
+            energy_trace.brownfield(
+                bus.uow.plants,
+                bus.env.year,
+                bus.env.input_costs,
+                capped_hydrogen_cost_dict,
+                bus.env.config.active_statuses,
+            )
+            energy_trace.greenfield_operating(bus.uow.plants, bus.env.year, bus.env.config.active_statuses)
             env_config = bus.env.config
             update_hot_metal_access(
                 bus.uow.plants.list(),
@@ -1499,6 +1508,7 @@ class SimulationRunner:
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()
+            energy_trace.greenfield_summary(bus.env.year)
             with LoggingConfig.simulation_logging("DebugLogging"):
                 data_collector.collect(
                     world_plant_list=bus.uow.plants.list(),

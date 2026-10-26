@@ -6,6 +6,7 @@ from typing import Any, Callable, TypedDict
 
 from steelo.domain.models import Location, Subsidy, compose_geo_key
 from steelo.domain.constants import Year, T_TO_KG
+from steelo.utilities import energy_trace
 
 
 class NewPlantLocation(TypedDict):
@@ -247,6 +248,15 @@ def prepare_cost_data_for_business_opportunity(
                 for carrier in energy_costs_site:
                     if not carrier.startswith("co2"):
                         energy_costs_site[carrier] = abs(energy_costs_site[carrier])
+                energy_trace.greenfield_select(
+                    current_year,
+                    site,
+                    site_geo_key,
+                    energy_costs_site,
+                    year_costs_for_site,
+                    target_year,
+                    construction_time,
+                )
 
             # Get per-technology cost of equity and debt for the country
             cost_of_equity_for_iso3 = cost_of_equity_all_locs.get(site["iso3"], None)

@@ -31,6 +31,7 @@ from steelo.adapters.geospatial.geospatial_calculations import (
 )
 from steelo.adapters.repositories.interface import Repository
 from steelo.domain.models import CountryMappingService, Environment, PlotPaths
+from steelo.utilities import energy_trace
 from steelo.utilities.variable_matching import LULC_LABELS_TO_NUM
 from steelo.utilities.plotting import (
     plot_screenshot,
@@ -630,6 +631,7 @@ def add_power_price(
             end_year=end_year,
         )
         ds["power_price"] = ds["grid_price"] * (1 - baseload_coverage) + ds["lcoe"]
+        energy_trace.site_power(ds, year, baseload_coverage, None)  # None: LCOE per MWh of demand
         title = "Power Price - combination of baseload and grid for full coverage (USD/MWh)"
     else:
         ds["power_price"] = ds["grid_price"]
@@ -711,6 +713,7 @@ def add_capped_hydrogen_price(
     ds = calculate_lcoh_from_power_price(ds, year, hydrogen_efficiency, hydrogen_capex_opex)
     regional_ceiling = calculate_regional_hydrogen_ceiling(ds, country_mappings, geo_config.hydrogen_ceiling_percentile)
     ds = apply_hydrogen_price_cap(ds, regional_ceiling, geo_config)
+    energy_trace.site_hydrogen(ds, year, regional_ceiling)
 
     is_milestone_year = (
         start_year is None or end_year is None or year == start_year or year == end_year or (year - start_year) % 5 == 0

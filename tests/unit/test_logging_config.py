@@ -7,6 +7,7 @@ CLI ceiling behaviour, and simulation_logging context manager.
 
 import logging
 import pytest
+import yaml
 from pathlib import Path
 
 from steelo.logging_config import (
@@ -160,6 +161,58 @@ modules:
     # Reset for other tests
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
     LoggingConfig.DUMP_FAILED_LP = False
+
+
+def test_configure_from_yaml_reads_energy_trace_switch_and_lists(
+    yaml_config_file,
+    clean_logging_state,
+    monkeypatch,
+):
+    """Verify features.energy_trace and the energy_trace block's countries and plants are read."""
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE", False)
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_COUNTRIES", ())
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_PLANTS", ())
+    content = """
+version: 1
+features:
+  energy_trace: true
+energy_trace:
+  countries: [CHN, IND]
+  plants: [P100000120219]
+modules:
+  geo: INFO
+"""
+    LoggingConfig.configure_from_yaml(str(yaml_config_file(content)))
+
+    assert LoggingConfig.ENERGY_TRACE is True
+    assert LoggingConfig.ENERGY_TRACE_COUNTRIES == ("CHN", "IND")
+    assert LoggingConfig.ENERGY_TRACE_PLANTS == ("P100000120219",)
+
+
+def test_configure_from_yaml_leaves_energy_trace_off_and_empty_without_its_keys(
+    basic_yaml_config: Path,
+    clean_logging_state,
+    monkeypatch,
+):
+    """Verify a YAML without the switch or the energy_trace block turns the trace off with empty lists."""
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE", True)
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_COUNTRIES", ("CHN",))
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_PLANTS", ("P1",))
+
+    LoggingConfig.configure_from_yaml(str(basic_yaml_config))
+
+    assert LoggingConfig.ENERGY_TRACE is False
+    assert LoggingConfig.ENERGY_TRACE_COUNTRIES == ()
+    assert LoggingConfig.ENERGY_TRACE_PLANTS == ()
+
+
+def test_committed_logging_config_ships_energy_trace_off():
+    """Verify the repository's logging_config.yaml keeps the trace off and still names what to follow."""
+    config = yaml.safe_load((Path(__file__).parents[2] / "logging_config.yaml").read_text())
+
+    assert config["features"]["energy_trace"] is False
+    assert config["energy_trace"]["countries"]
+    assert config["energy_trace"]["plants"]
 
 
 def test_configure_from_yaml_sets_external_loggers(

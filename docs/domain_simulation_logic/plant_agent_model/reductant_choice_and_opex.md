@@ -181,5 +181,6 @@ The run continues, but the reductant score assumes every reductant shares the sa
 - [Furnace Group Strategy](furnace_group_strategy.md): switch and renovation NPVs
 - [Plant Expansions](plant_expansions.md): expansion NPVs
 - [New Plant Opening](../geospatial_model/new_plant_opening.md): new-plant NPVs
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md): the electricity and hydrogen prices the picks and score series read
 - [Cost Calculation Functions](calculate_costs.md): OPEX, subsidy and NPV functions
 - [Economic Considerations](economic_considerations.md): carbon pricing and subsidies

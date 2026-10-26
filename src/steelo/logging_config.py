@@ -140,6 +140,9 @@ class LoggingConfig:
     # Feature flags (set from YAML)
     FURNACE_GROUP_BREAKDOWN = True
     DUMP_FAILED_LP = False  # Write the trade LP as MPS when it does not solve optimally
+    ENERGY_TRACE = False  # Trace electricity and hydrogen prices (steelo.utilities.energy_trace)
+    ENERGY_TRACE_COUNTRIES: tuple[str, ...] = ()
+    ENERGY_TRACE_PLANTS: tuple[str, ...] = ()
 
     @classmethod
     @contextmanager
@@ -179,6 +182,10 @@ class LoggingConfig:
             features:
               furnace_group_breakdown: true
               dump_failed_lp: false
+              energy_trace: false
+            energy_trace:
+              countries: [CHN, IND]
+              plants: [P100000120219]
             modules:
               geo: DEBUG
               pam: INFO
@@ -209,6 +216,10 @@ class LoggingConfig:
         features = config.get("features", {})
         cls.FURNACE_GROUP_BREAKDOWN = features.get("furnace_group_breakdown", True)
         cls.DUMP_FAILED_LP = features.get("dump_failed_lp", False)
+        cls.ENERGY_TRACE = features.get("energy_trace", False)
+        energy_trace_lists = config.get("energy_trace", {})
+        cls.ENERGY_TRACE_COUNTRIES = tuple(energy_trace_lists.get("countries", []))
+        cls.ENERGY_TRACE_PLANTS = tuple(energy_trace_lists.get("plants", []))
 
         # Create filter and formatter
         context_filter = ContextAwareFilter(module_levels, function_overrides, cli_max_level)
