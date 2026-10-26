@@ -1015,8 +1015,9 @@ class ModelRunCreateForm(forms.ModelForm):
         except (OSError, ValueError, KeyError, TypeError):
             self.demand_scenarios, self.scrap_scenarios = [], []
             self.scenario_index_error = (
-                "This data preparation was made before steel demand and scrap scenarios were picked per run; "
-                "prepare this master again."
+                "This data preparation was made before steel demand and scrap scenarios were picked per run. "
+                "Delete it on its master's page (Delete Existing Data Preparation), then prepare the master again. "
+                "Its runs stay."
             )
         demand_field = self.fields["chosen_demand_scenario"]
         demand_field.choices = [(name, name) for name in self.demand_scenarios]

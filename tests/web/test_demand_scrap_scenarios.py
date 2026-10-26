@@ -107,9 +107,11 @@ def test_run_form_asks_to_prepare_again_for_a_preparation_without_the_scenario_i
     response = client.post(reverse("create-modelrun"), data=valid_modelrun_form_data)
 
     assert page.status_code == 200
-    assert "prepare this master again" in page.content.decode()
+    assert "Delete Existing Data Preparation" in page.content.decode()
+    assert "Its runs stay." in page.content.decode()
     assert response.status_code == 200
-    assert "prepare this master again" in response.context["form"].errors["chosen_demand_scenario"][0]
+    assert "Delete Existing Data Preparation" in response.context["form"].errors["chosen_demand_scenario"][0]
+    assert "Its runs stay." in response.context["form"].errors["chosen_demand_scenario"][0]
     assert not ModelRun.objects.exists()
 
 
