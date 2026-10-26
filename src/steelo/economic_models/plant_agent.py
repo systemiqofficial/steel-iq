@@ -8,10 +8,7 @@ from typing import cast
 
 from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
-from steelo.adapters.geospatial.geospatial_statistics import (
-    export_lcoe_lcoh_statistics_by_country,
-    export_overbuild_factor_statistics_by_country,
-)
+from steelo.adapters.geospatial.geospatial_statistics import export_lcoe_lcoh_statistics_by_country
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.capacity_policy.handlers import (
     expansion_capacity_hook,
@@ -197,18 +194,6 @@ class GeospatialModel:
                 )
             except Exception as e:
                 logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
-
-            # Export overbuild factor statistics for solar, wind, and battery
-            for factor_name in ["solar_factor", "wind_factor", "battery_factor"]:
-                try:
-                    export_overbuild_factor_statistics_by_country(
-                        energy_prices=custom_energy_costs,
-                        year=bus.env.year,
-                        output_dir=bus.env.config.output_dir,
-                        factor_name=factor_name,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to export {factor_name} statistics for year {bus.env.year}: {e}")
 
         # Update dynamic costs for all existing business opportunities yearly
         step_start = time.time()

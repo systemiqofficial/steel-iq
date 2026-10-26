@@ -1,6 +1,6 @@
 # Outputs and Post-Processing
 
-This page describes the artefacts a simulation produces — in-memory traces during the run, plot files written by `SteelPlotter`, the post-processed CSVs assembled at the end, and the scenario viewer's files in `viewer/`. The model also writes geospatial statistics (LCOE / LCOH / overbuild factors) per-year and aggregated.
+This page describes the artefacts a simulation produces — in-memory traces during the run, plot files written by `SteelPlotter`, the post-processed CSVs assembled at the end, and the scenario viewer's files in `viewer/`. The model also writes geospatial statistics (LCOE / LCOH) per-year and aggregated.
 
 For where individual costs and emissions originate, see [Cost Calculation Functions](../plant_agent_model/calculate_costs.md). For how the trade LP feeds these traces, see [Trade Model Overview](../trade_model/overview_trade_model.md) and [TM-PAM Connector](../plant_agent_model/trade_model_connector.md).
 
@@ -310,13 +310,12 @@ A matching matplotlib chart is also produced.
 
 ---
 
-## Geospatial statistics: LCOE, LCOH, overbuild factors
+## Geospatial statistics: LCOE, LCOH
 
 `src/steelo/adapters/geospatial/geospatial_statistics.py` exports per-country statistics every modelled geospatial year (typically every 5 years where the geospatial pipeline runs):
 
 - `output/data/LCOE/lcoe_stats_{year}.csv` — average / min / max / p10 / p20 / p25 / p50 LCOE in **USD/MWh** plus `n_grid_points`. Source LCOE is the `power_price` variable in `energy_prices` (USD/kWh, multiplied ×1000 on export).
 - `output/data/LCOH/lcoh_stats_{year}.csv` — same statistics in **USD/kg** for the `capped_lcoh` variable, plus a `hydrogen_ceiling_pct` column reflecting the configured `GeoConfig` percentile cap.
-- `output/data/{factor}_factors/{factor}_stats_{year}.csv` — overbuild-factor statistics (e.g. `solar_factor`, `wind_factor`, `battery_factor`) at LCOE percentile points (`avg`, `min`, `max`, `p10`, `p20`, `p25`, `p50`). Each value is the mean factor across grid points within ±5 % of the LCOE percentile in that country (with a closest-point fallback when the band is empty).
 
 At end-of-run, `aggregate_lcoe_lcoh_statistics(output_dir, start_year, end_year)` concatenates the per-year files into:
 
