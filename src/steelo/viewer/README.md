@@ -46,7 +46,7 @@ writes nothing when one is missing; otherwise it calls `write_viewer_files` on e
 | `geo.json` | Trade blocs, country and geo-unit names, region budgets | The CONFIG blocks of `emissions.html` and `supply_demand.html` (`extract_geo`) |
 | `inputs.json` | The run's View data rows, undiffed | The master's sheets in `TOPICS`, for the run's demand, scrap and grid scenarios (`extract_inputs`) |
 | `results/` | The Download results tables: folders `RESULT_FOLDERS` names, each table as `<stem>.csv.gz`, pages of 5,000 rows and `index.json` | Globs on the run folder (`extract_results`, `result_tables`) |
-| `run.json`, last | `schema`, `name`, `folder`, `made_in`, `started`, `ended`, `steelo_version`, `input_data`, `pages`, `files` | The config, the metadata and the package version |
+| `run.json`, last | `schema`, `name`, `folder`, `made_in`, `started`, `ended`, `steelo_version`, `input_data`, `pages`, `files` | The config, the metadata, the package version and the master workbook (the SHA-256 of its bytes) |
 
 `SCHEMA_VERSION` (1) is written into `run.json` and `inputs.json`; no reader checks it yet.
 

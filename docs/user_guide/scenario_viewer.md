@@ -74,7 +74,8 @@ with the runs:
   appended. App data preparations of one master made with different data package versions also share one value. A
   run whose viewer files were written before this grouping keeps its older label until `steelo-viewer regenerate`
   rewrites them: a command-line run's master file name, or an app run's master name and data preparation name, each
-  followed by "(default)" or "(custom)". The standalone app has no `regenerate`, so its older runs keep that label.
+  followed by "(default)", "(custom)" or, with no source recorded, "(unknown)". The standalone app has no
+  `regenerate`, so its older runs keep that label.
 - **Settings**: every run setting whose value, as the viewer shows it, differs between the runs. Settings that cannot
   change the results never count: file and folder paths, settings the model does not read, the plot and logging
   switches, the run name, and the copy of the seed inside the geospatial settings.
