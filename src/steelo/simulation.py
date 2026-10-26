@@ -168,7 +168,7 @@ class GeoConfig:
     """
 
     # === Power and Hydrogen ===
-    included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "95% baseload + 5% grid", "Not included", "Grid only"
+    included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "90% baseload + 10% grid", "95% baseload + 5% grid", "Not included", "Grid only"
     hydrogen_ceiling_percentile: float = 100.0  # Percentile of a region's LCOH capping its hydrogen price; 100 = no cap
     intraregional_trade_allowed: bool = False  # Whether linked regions (e.g., Africa and Western Europe) trade hydrogen
     long_dist_pipeline_transport_cost: float = 1.0  # USD/kgH2

@@ -64,5 +64,6 @@ POWER_MIX_TO_COVERAGE_MAP = {
     "Grid only": 0.0,
     "Not included": 0.0,
     "85% baseload + 15% grid": 0.85,
+    "90% baseload + 10% grid": 0.90,
     "95% baseload + 5% grid": 0.95,
 }

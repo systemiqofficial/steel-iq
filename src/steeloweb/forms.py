@@ -289,6 +289,7 @@ class ModelRunCreateForm(forms.ModelForm):
     # Geospatial section choices
     INCLUDED_POWER_MIX_CHOICES = [
         ("85% baseload + 15% grid", "85% baseload + 15% grid"),
+        ("90% baseload + 10% grid", "90% baseload + 10% grid"),
         ("95% baseload + 5% grid", "95% baseload + 5% grid"),
         ("Not included", "Not included"),
         ("Grid only", "Grid only"),

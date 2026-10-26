@@ -199,6 +199,7 @@ def test_included_power_mix_field_type(db):
     assert isinstance(field, ChoiceField)
     expected_choices = [
         ("85% baseload + 15% grid", "85% baseload + 15% grid"),
+        ("90% baseload + 10% grid", "90% baseload + 10% grid"),
         ("95% baseload + 5% grid", "95% baseload + 5% grid"),
         ("Not included", "Not included"),
         ("Grid only", "Grid only"),
@@ -463,7 +464,13 @@ def test_field_boundary_validation_valid_values(db, base_form_data, field_name, 
 
 def test_included_power_mix_choice_validation_valid(db, base_form_data):
     """Test that included_power_mix accepts valid choices."""
-    valid_choices = ["85% baseload + 15% grid", "95% baseload + 5% grid", "Not included", "Grid only"]
+    valid_choices = [
+        "85% baseload + 15% grid",
+        "90% baseload + 10% grid",
+        "95% baseload + 5% grid",
+        "Not included",
+        "Grid only",
+    ]
 
     for choice in valid_choices:
         form_data = base_form_data.copy()

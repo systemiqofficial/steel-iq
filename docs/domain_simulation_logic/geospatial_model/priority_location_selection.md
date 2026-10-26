@@ -42,7 +42,7 @@ Not all locations are suitable for building steel plants. The feasibility mask f
 
 ### Power Prices
 Electricity costs vary by location and depend on the user-configured power mix. Three options are available:
-- **Baseload renewable** (85% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
+- **Baseload renewable** (85%, 90% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
 `power_price = baseload_coverage × lcoe_baseload + (1 - baseload_coverage) × grid_price`
 - **Grid only**: Uses country-level grid electricity prices from input data
 - **Not included**: Sets power price to zero. This is only valid for the selection of best locations. New plant energy costs are set to the grid power price in this case since they cannot be zero.

@@ -24,6 +24,7 @@ if getattr(sys, "frozen", False) or "steelo-electron" in sys.executable or "STEE
 
 from steelo.adapters.geospatial.geospatial_toolbox import create_global_grid_with_iso
 from steelo.adapters.geospatial.geospatial_calculations import (
+    coverage_to_percentile,
     calculate_lcoh_from_power_price,
     calculate_regional_hydrogen_ceiling,
     apply_hydrogen_price_cap,
@@ -406,7 +407,7 @@ def add_baseload_power_price(
         (``boa_lcoe.open_lcoe_file``).
     """
     logger = logging.getLogger(f"{__name__}.add_baseload_power_price")
-    p = int((1 - baseload_coverage) * 100)
+    p = coverage_to_percentile(baseload_coverage)
     lcoe_file = boa_lcoe.pick_lcoe_file(geo_paths.baseload_lcoe_dir, baseload_coverage)
     with boa_lcoe.open_lcoe_file(lcoe_file, baseload_coverage) as lcoe_ds:
         lcoe_basis = lcoe_ds.attrs["lcoe_basis"]
@@ -578,7 +579,7 @@ def add_power_price(
             plot_paths=plot_paths_obj,
         )
     if end_year is None or year == end_year:
-        p = int((1 - baseload_coverage) * 100)
+        p = coverage_to_percentile(baseload_coverage)
         plot_value_histogram(
             ds,
             var_name="power_price",
@@ -653,7 +654,7 @@ def add_capped_hydrogen_price(
             var_type="sequential",
             min_val=1,
             max_val=7,
-            save_name=f"lcoh_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
+            save_name=f"lcoh_{str(year)}_p{str(coverage_to_percentile(baseload_coverage))}",
             plot_paths=plot_paths_obj,
         )
 
