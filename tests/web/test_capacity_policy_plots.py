@@ -59,10 +59,12 @@ def test_run_page_shows_the_capacity_policy_accordion_only_with_its_plots(client
     policy_run, policy_plot = finished_run_with_plot(SimulationPlot.PlotType.CAPACITY_POLICY)
     other_run, _ = finished_run_with_plot(SimulationPlot.PlotType.MARKET_PRICES)
 
-    policy_page = client.get(reverse("modelrun-detail", kwargs={"pk": policy_run.pk})).content.decode()
+    policy_response = client.get(reverse("modelrun-detail", kwargs={"pk": policy_run.pk}))
+    policy_page = policy_response.content.decode()
     other_page = client.get(reverse("modelrun-detail", kwargs={"pk": other_run.pk})).content.decode()
 
     plot_url = reverse("view-simulation-plot", kwargs={"pk": policy_run.pk, "plot_id": policy_plot.pk})
+    assert not policy_response.context["simulation_plots_other"]
     assert 'id="capacityPolicyAccordion"' in policy_page
     assert "Capacity Policy (1)" in policy_page
     assert f'href="{plot_url}?popup=1"' in policy_page
