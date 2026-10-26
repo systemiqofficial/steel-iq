@@ -54,7 +54,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.14"  # Bump to invalidate all caches (every demand and scrap scenario prepared, none keyed)
+    CACHE_VERSION = "1.15"  # Bump to invalidate all caches (preparations extract geo-data 3.0.0's default LCOE files)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

@@ -7,7 +7,7 @@ It is computed in two steps:
 Because a BOA run takes hours per simulation year, steel-iq does not run BOA: it reads precomputed LCOE files. BOA is maintained in its own repository, [systemiqofficial/baseload-optimisation-atlas](https://github.com/systemiqofficial/baseload-optimisation-atlas), which documents how to prepare its input data and run it.
 
 ### LCOE files read by steel-iq
-The default files ship in the `geo-data` package, one file per simulation year and coverage, at `p<p>/GLOBAL/optimal_sol_GLOBAL_<year>_p<p>.nc`. Here `p` is 100 minus the coverage in percent, so 85% coverage reads the `p15` files.
+The default files ship in the `geo-data` package (3.0.0 and later) at `outputs/GEO/baseload_lcoe/`: one promoted BOA file per coverage, for 85%, 90% and 95%, each holding every investment year from 2025 to 2060, for example `optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc`.
 
 To run a simulation on another folder with the same layout, pass the folder explicitly:
 
