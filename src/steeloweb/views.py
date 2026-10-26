@@ -1871,7 +1871,7 @@ class ModelRunOutputFilesView(DetailView):
 
         sections: list[dict] = []
 
-        # Subfolder sections: nest by child folders if present, else list files flat.
+        # Subfolder sections: each folder's child folders, then its own files.
         for sub_dir in ("plots", "data", "TM"):
             section = self._build_section(self._humanise_folder_name(sub_dir), output_path / sub_dir, output_path)
             if section:
@@ -1892,24 +1892,34 @@ class ModelRunOutputFilesView(DetailView):
         return " ".join(p.title() if p.islower() else p for p in parts)
 
     def _build_section(self, name, dir_path, output_path):
+        """List an output folder's own files and each of its subfolders' files.
+
+        Args:
+            name: The section's heading.
+            dir_path: The folder to list.
+            output_path: The run's output folder, which the files' links are relative to.
+
+        Returns:
+            ``{"name", "files", "subsections"}`` with each subsection ``{"name", "files"}``, or None when the folder
+            is missing or holds no listed file.
+
+        Notes:
+            One level of subfolders; a subfolder without listed files is left out.
+        """
         if not (dir_path.exists() and dir_path.is_dir()):
             return None
         subfolders = sorted(
             (p for p in dir_path.iterdir() if p.is_dir() and not p.name.startswith(".")),
             key=lambda p: p.name.lower(),
         )
-        if subfolders:
-            subsections = []
-            for sub in subfolders:
-                files = self._list_files(sub, output_path)
-                if files:
-                    subsections.append({"name": self._humanise_folder_name(sub.name), "files": files})
-            if subsections:
-                return {"name": name, "subsections": subsections}
-            return None
+        subsections = []
+        for sub in subfolders:
+            sub_files = self._list_files(sub, output_path)
+            if sub_files:
+                subsections.append({"name": self._humanise_folder_name(sub.name), "files": sub_files})
         files = self._list_files(dir_path, output_path)
-        if files:
-            return {"name": name, "files": files}
+        if files or subsections:
+            return {"name": name, "files": files, "subsections": subsections}
         return None
 
     def _list_files(self, dir_path, output_path):
