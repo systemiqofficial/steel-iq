@@ -80,7 +80,7 @@ class MessageDismissalTests(TestCase):
 
     def test_other_templates_use_messages_partial(self):
         """Other templates should use the messages partial"""
-        templates = ["create_modelrun.html", "simulation_plot.html", "result_map.html", "upload_circularity.html"]
+        templates = ["create_modelrun.html", "simulation_plot.html", "upload_circularity.html"]
 
         for template_name in templates:
             with open(f"src/steeloweb/templates/steeloweb/{template_name}", "r") as f:

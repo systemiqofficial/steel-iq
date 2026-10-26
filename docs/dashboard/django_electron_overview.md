@@ -42,7 +42,7 @@ The Django application (`src/steeloweb/`) provides:
 - `DataPreparation`: Manages input data preparation
 - `Worker`: Handles parallel task execution
 - `MasterExcelFile`: Stores configuration spreadsheets
-- `ResultImages`: Captures visualization outputs
+- `SimulationPlot`: Holds the run's charts for its run page
 
 #### Views & Templates
 - **HTMX-powered UI**: Real-time updates without page refreshes

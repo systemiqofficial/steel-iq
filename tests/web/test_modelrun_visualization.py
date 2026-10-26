@@ -1,7 +1,7 @@
 import pytest
 from django.core.files.base import ContentFile
 from django.urls import reverse
-from steeloweb.models import ModelRun, ResultImages, SimulationPlot
+from steeloweb.models import ModelRun, SimulationPlot
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def media_root(tmp_path, settings):
 
 @pytest.mark.django_db
 class TestModelRunVisualization:
-    """Test ModelRun CSV capture and ResultImages functionality."""
+    """Test ModelRun CSV capture."""
 
     def test_capture_result_csv_no_output_dir(self, tmp_path):
         """Test CSV capture when output directory doesn't exist."""
@@ -95,182 +95,6 @@ class TestModelRunVisualization:
         result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is False
-
-
-@pytest.mark.django_db
-class TestResultImages:
-    """Test ResultImages creation and plot detection."""
-
-    def test_create_from_plots_with_real_plots(self, tmp_path):
-        """Test creating ResultImages when real plots exist."""
-        modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
-
-        # Create plot directories
-        geo_plots_dir = tmp_path / "GEO"
-        pam_plots_dir = tmp_path / "PAM"
-        geo_plots_dir.mkdir(parents=True)
-        pam_plots_dir.mkdir(parents=True)
-
-        # Create test plot files
-        lcoe_plot = geo_plots_dir / "lcoe_map.png"
-        lcoe_plot.write_bytes(b"fake lcoe image data")
-
-        lcoh_plot = geo_plots_dir / "lcoh_map.png"
-        lcoh_plot.write_bytes(b"fake lcoh image data")
-
-        iron_plot = geo_plots_dir / "top5_priority_locations_iron.png"
-        iron_plot.write_bytes(b"fake iron image data")
-
-        steel_plot = geo_plots_dir / "top5_priority_locations_steel.png"
-        steel_plot.write_bytes(b"fake steel image data")
-
-        # Create ResultImages
-        result_images = ResultImages.create_from_plots(modelrun, plots_dir=tmp_path)
-
-        assert result_images.modelrun == modelrun
-        assert result_images.lcoe_map
-        assert result_images.lcoh_map
-        assert result_images.priority_locations_iron
-        assert result_images.priority_locations_steel
-
-        # Verify the correct files were used
-        assert "lcoe_map.png" in result_images.lcoe_map.name
-        assert "lcoh_map.png" in result_images.lcoh_map.name
-        assert "top5_priority_locations_iron.png" in result_images.priority_locations_iron.name
-        assert "top5_priority_locations_steel.png" in result_images.priority_locations_steel.name
-
-    def test_create_from_plots_no_images_available(self, tmp_path):
-        """Test creating ResultImages when no images are available - fields remain empty."""
-        modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
-
-        # Create empty output directory
-        empty_output = tmp_path / "empty_output"
-        empty_output.mkdir()
-
-        result_images = ResultImages.create_from_plots(modelrun, plots_dir=empty_output)
-
-        assert result_images.modelrun == modelrun
-        # Images should not be set if files don't exist (no demo fallback)
-        assert not result_images.lcoe_map
-        assert not result_images.lcoh_map
-        assert not result_images.priority_locations_iron
-        assert not result_images.priority_locations_steel
-
-    def test_create_from_plots_with_different_priority_percentages(self, tmp_path):
-        """Test creating ResultImages with different priority percentages (e.g., top20 instead of top5)."""
-        modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
-
-        # Create plot directories
-        geo_plots_dir = tmp_path / "GEO"
-        geo_plots_dir.mkdir(parents=True)
-
-        # Create test plot files with 20% priority (top20)
-        lcoe_plot = geo_plots_dir / "optimal_lcoe_2025.png"
-        lcoe_plot.write_bytes(b"fake lcoe image with year")
-
-        lcoh_plot = geo_plots_dir / "optimal_lcoh_2025.png"
-        lcoh_plot.write_bytes(b"fake lcoh image with year")
-
-        iron_plot = geo_plots_dir / "top20_priority_locations_iron_2025.png"
-        iron_plot.write_bytes(b"fake iron 20% image")
-
-        steel_plot = geo_plots_dir / "top20_priority_locations_steel_2025.png"
-        steel_plot.write_bytes(b"fake steel 20% image")
-
-        # Create ResultImages
-        result_images = ResultImages.create_from_plots(modelrun, plots_dir=tmp_path)
-
-        assert result_images.modelrun == modelrun
-        assert result_images.lcoe_map
-        assert result_images.lcoh_map
-        assert result_images.priority_locations_iron
-        assert result_images.priority_locations_steel
-
-        # Verify the glob patterns matched the top20 files
-        assert "optimal_lcoe_2025.png" in result_images.lcoe_map.name
-        assert "optimal_lcoh_2025.png" in result_images.lcoh_map.name
-        assert "top20_priority_locations_iron_2025.png" in result_images.priority_locations_iron.name
-        assert "top20_priority_locations_steel_2025.png" in result_images.priority_locations_steel.name
-
-    def test_create_from_plots_prefers_year_specific_files(self, tmp_path):
-        """Test that year-specific files are preferred over generic ones."""
-        modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
-
-        # Create plot directories
-        geo_plots_dir = tmp_path / "GEO"
-        geo_plots_dir.mkdir(parents=True)
-
-        # Create both year-specific and generic priority location files
-        # Year-specific should be preferred
-        iron_plot_2025 = geo_plots_dir / "top15_priority_locations_iron_2025.png"
-        iron_plot_2025.write_bytes(b"iron 2025 specific")
-
-        iron_plot_generic = geo_plots_dir / "top15_priority_locations_iron.png"
-        iron_plot_generic.write_bytes(b"iron generic")
-
-        steel_plot_2025 = geo_plots_dir / "top15_priority_locations_steel_2025.png"
-        steel_plot_2025.write_bytes(b"steel 2025 specific")
-
-        # Create ResultImages
-        result_images = ResultImages.create_from_plots(modelrun, plots_dir=tmp_path)
-
-        assert result_images.modelrun == modelrun
-        assert result_images.priority_locations_iron
-        assert result_images.priority_locations_steel
-
-        # Verify year-specific files were preferred
-        assert "top15_priority_locations_iron_2025.png" in result_images.priority_locations_iron.name
-        assert "top15_priority_locations_steel_2025.png" in result_images.priority_locations_steel.name
-
-    def test_create_from_plots_sorts_by_year_not_filename(self, tmp_path):
-        """Test that plots are sorted by year, not lexicographically by filename."""
-        modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
-
-        # Create plot directories
-        geo_plots_dir = tmp_path / "GEO"
-        geo_plots_dir.mkdir(parents=True)
-
-        # Create plots with different years and percentages
-        # The key test: top5_2027 should NOT be preferred over top20_2035
-        # even though '5' > '2' lexicographically
-        import time
-
-        iron_plot_old = geo_plots_dir / "top5_priority_locations_iron_2027.png"
-        iron_plot_old.write_bytes(b"old iron 2027 with 5%")
-        time.sleep(0.01)  # Ensure different mtime
-
-        iron_plot_new = geo_plots_dir / "top20_priority_locations_iron_2035.png"
-        iron_plot_new.write_bytes(b"new iron 2035 with 20%")
-
-        steel_plot_old = geo_plots_dir / "top10_priority_locations_steel_2030.png"
-        steel_plot_old.write_bytes(b"old steel 2030")
-        time.sleep(0.01)
-
-        steel_plot_new = geo_plots_dir / "top25_priority_locations_steel_2040.png"
-        steel_plot_new.write_bytes(b"new steel 2040")
-
-        # Also test LCOE/LCOH year sorting
-        lcoe_old = geo_plots_dir / "optimal_lcoe_2025.png"
-        lcoe_old.write_bytes(b"lcoe 2025")
-        time.sleep(0.01)
-
-        lcoe_new = geo_plots_dir / "optimal_lcoe_2035.png"
-        lcoe_new.write_bytes(b"lcoe 2035")
-
-        # Create ResultImages
-        result_images = ResultImages.create_from_plots(modelrun, plots_dir=tmp_path)
-
-        assert result_images.modelrun == modelrun
-
-        # Verify the NEWEST year is selected, regardless of percentage
-        assert "top20_priority_locations_iron_2035.png" in result_images.priority_locations_iron.name
-        assert "top25_priority_locations_steel_2040.png" in result_images.priority_locations_steel.name
-        assert "optimal_lcoe_2035.png" in result_images.lcoe_map.name
-
-        # Verify the content matches the newest plots
-        assert result_images.priority_locations_iron.read() == b"new iron 2035 with 20%"
-        assert result_images.priority_locations_steel.read() == b"new steel 2040"
-        assert result_images.lcoe_map.read() == b"lcoe 2035"
 
 
 @pytest.mark.django_db

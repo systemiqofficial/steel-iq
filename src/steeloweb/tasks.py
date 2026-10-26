@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 from django_tasks import task
 
-from .models import ModelRun, ResultImages, DataPreparation, SimulationPlot
+from .models import ModelRun, DataPreparation, SimulationPlot
 from .services import DataPreparationService
 
 
@@ -130,9 +130,6 @@ def run_simulation_task(modelrun_id: int) -> None:
                         logger.warning(f"No simulation plots found for ModelRun {modelrun_id}")
                 else:
                     logger.warning(f"No CSV results found for ModelRun {modelrun_id}")
-
-                # Create ResultImages after successful model run
-                ResultImages.create_from_plots(modelrun)
 
                 modelrun.state = ModelRun.RunState.FINISHED
             except Exception as e:

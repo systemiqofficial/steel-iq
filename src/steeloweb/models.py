@@ -1104,12 +1104,11 @@ class ModelRun(models.Model):
         """Restore the run to a pristine CREATED state so it can be queued again.
 
         Notes:
-            Also removes the previous attempt's outputs: the output folder, the result CSV and the plot and image
-            rows. ``output_directory`` is cleared so the next run recreates the folder structure.
+            Also removes the previous attempt's outputs: the output folder, the result CSV and the plot rows.
+            ``output_directory`` is cleared so the next run recreates the folder structure.
         """
         self.cleanup_output_directory()
         self.simulation_plots.all().delete()
-        self.result_images.all().delete()
         self.state = self.RunState.CREATED
         self.error_message = ""
         self.results = {}
@@ -1278,209 +1277,13 @@ class ModelRun(models.Model):
 
 
 def result_image_upload_path(instance, filename) -> str:
-    """Generate upload path for result image files"""
+    """Generate upload path for result image files.
+
+    Notes:
+        The model that used it is gone; migrations 0005, 0022 and 0027 still import it, so ``migrate`` on a new
+        database needs it.
+    """
     return f"results/{instance.modelrun.id}/{filename}"
-
-
-class ResultImages(models.Model):
-    """
-    Result Images (maps) for a model run.
-    """
-
-    lcoe_map = models.ImageField(upload_to=result_image_upload_path, verbose_name="LCOE Map", blank=True)
-    lcoh_map = models.ImageField(upload_to=result_image_upload_path, verbose_name="LCOH Map", blank=True)
-    priority_locations_iron = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="Priority Locations for Iron", blank=True
-    )
-    priority_locations_steel = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="Priority Locations for Steel", blank=True
-    )
-    new_plants_iron_construction = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Iron Plants Under Construction", blank=True
-    )
-    new_plants_steel_construction = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Steel Plants Under Construction", blank=True
-    )
-    new_plants_iron_status = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Iron Plants by Status", blank=True
-    )
-    new_plants_steel_status = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Steel Plants by Status", blank=True
-    )
-    modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="result_images")
-
-    class Meta:
-        verbose_name = "Result Images"
-        verbose_name_plural = "Result Images"
-
-    def __str__(self):
-        return f"Result Images for Model Run #{self.modelrun.id}"
-
-    @classmethod
-    def create_from_plots(cls, modelrun, plots_dir: Path | None = None):
-        """
-        Create ResultImages by loading available plots from the simulation output directory.
-
-        Args:
-            modelrun: The ModelRun instance
-            plots_dir: Override the default output directory for testing
-
-        Returns:
-            ResultImages: The created instance with image fields populated for available plots
-        """
-        from django.core.files.base import ContentFile
-        import logging
-        import re
-
-        logger = logging.getLogger(__name__)
-
-        def sort_plots_by_year(paths: list[Path]) -> list[Path]:
-            """
-            Sort plot files by year (descending) extracted from filename.
-            Falls back to modification time if no year is found.
-
-            Examples:
-                optimal_lcoe_2035.png -> year 2035
-                lcoh_2030_p15.png -> year 2030
-                top20_priority_locations_iron_2027.png -> year 2027
-                lcoe_map.png -> use mtime
-
-            Args:
-                paths: List of Path objects to sort
-
-            Returns:
-                List of Path objects sorted by year (newest first)
-            """
-
-            def get_sort_key(path: Path) -> tuple[int, float]:
-                # Try to extract year from filename
-                # Matches patterns like: _2025.png, _2025_p15.png, _2027_p20.png
-                match = re.search(r"_(\d{4})(?:_p\d+)?\.png$", path.name)
-                if match:
-                    year = int(match.group(1))
-                    # Return negative year for descending sort, and mtime as secondary key
-                    mtime = path.stat().st_mtime if path.exists() else 0
-                    return (-year, -mtime)
-                else:
-                    # No year found - sort by mtime only (put these after year-specific files)
-                    mtime = path.stat().st_mtime if path.exists() else 0
-                    return (0, -mtime)  # 0 puts non-year files after year files
-
-            return sorted(paths, key=get_sort_key)
-
-        if plots_dir is None:
-            # Use the model run's isolated directory if available
-            output_path = modelrun.get_output_path()
-            if output_path:
-                plots_dir = output_path / "plots"
-            else:
-                raise ValueError("ModelRun must have an output path set")
-
-        # Directory names for PAM, GEO, and greenfield plots
-        pam_plots_dir = plots_dir / "PAM"
-        geo_plots_dir = plots_dir / "GEO"
-        greenfield_plots_dir = plots_dir / "greenfield"
-
-        # Mapping of field names to potential plot files
-        # Note: Using glob patterns to match files with any priority percentage (e.g., top5, top20, etc.)
-        # and year suffixes, sorted by year (newest first) to prefer recent plots over stale ones
-        plot_mappings = {
-            "lcoe_map": [
-                *sort_plots_by_year(
-                    list(geo_plots_dir.glob("optimal_lcoe_*.png"))
-                ),  # Year-specific files (newest year first)
-                geo_plots_dir / "lcoe_map.png",
-                geo_plots_dir / "optimal_lcoe.png",
-                pam_plots_dir / "lcoe_visualization.png",
-            ],
-            "lcoh_map": [
-                # Match actual filename pattern: lcoh_{year}_p{percentage}.png
-                *sort_plots_by_year(list(geo_plots_dir.glob("lcoh_*_p*.png"))),  # e.g., lcoh_2025_p15.png
-                *sort_plots_by_year(list(geo_plots_dir.glob("optimal_lcoh_*.png"))),  # Keep for backward compatibility
-                geo_plots_dir / "lcoh_map.png",
-                geo_plots_dir / "optimal_lcoh.png",
-                pam_plots_dir / "lcoh_visualization.png",
-            ],
-            "priority_locations_iron": [
-                # Match any percentage (top5, top20, etc.) with year suffix, sorted by year (newest first)
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_iron_*.png"))),
-                # Match any percentage without year suffix, sorted by mtime
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_iron.png"))),
-                pam_plots_dir / "iron_priority_locations.png",
-            ],
-            "priority_locations_steel": [
-                # Match any percentage (top5, top20, etc.) with year suffix, sorted by year (newest first)
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_steel_*.png"))),
-                # Match any percentage without year suffix, sorted by mtime
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_steel.png"))),
-                pam_plots_dir / "steel_priority_locations.png",
-            ],
-            "new_plants_iron_construction": [
-                greenfield_plots_dir / "iron_greenfield_map.png",  # New filename (operating plants)
-                geo_plots_dir / "new_iron_plants_map.png",  # Old filenames for backward compatibility
-                geo_plots_dir / "new_iron_plants_under_construction_map.png",
-                pam_plots_dir / "iron_plants_construction.png",
-            ],
-            "new_plants_steel_construction": [
-                greenfield_plots_dir / "steel_greenfield_map.png",  # New filename (operating plants)
-                geo_plots_dir / "new_steel_plants_map.png",  # Old filenames for backward compatibility
-                geo_plots_dir / "new_steel_plants_under_construction_map.png",
-                pam_plots_dir / "steel_plants_construction.png",
-            ],
-            "new_plants_iron_status": [
-                greenfield_plots_dir / "iron_greenfield_status.png",
-                geo_plots_dir / "new_iron_plants_by_status.png",
-                pam_plots_dir / "iron_plants_status.png",
-            ],
-            "new_plants_steel_status": [
-                greenfield_plots_dir / "steel_greenfield_status.png",
-                geo_plots_dir / "new_steel_plants_by_status.png",
-                pam_plots_dir / "steel_plants_status.png",
-            ],
-        }
-
-        # Create empty ResultImages object
-        result_images = cls(modelrun=modelrun)
-
-        logger.info(f"Creating ResultImages for ModelRun {modelrun.id} from plots directory: {plots_dir}")
-
-        # Load and save each image
-        for field_name, potential_paths in plot_mappings.items():
-            file_content = None
-            file_name = None
-
-            # First, try to find a real plot
-            for plot_path in potential_paths:
-                if plot_path.exists():
-                    with open(plot_path, "rb") as f:
-                        file_content = f.read()
-                    file_name = plot_path.name
-                    break
-
-            # For priority locations, also check for year-specific files
-            if file_content is None and "priority_locations" in field_name:
-                product = "iron" if "iron" in field_name else "steel"
-                # Look for any year-specific file
-                pattern = f"top5_priority_locations_{product}_*.png"
-                for year_file in sorted(geo_plots_dir.glob(pattern)):
-                    with open(year_file, "rb") as f:
-                        file_content = f.read()
-                    file_name = year_file.name
-                    break
-
-            # Log warning if no plot found
-            if file_content is None:
-                logger.warning(f"No plot found for {field_name} - checked paths: {[str(p) for p in potential_paths]}")
-
-            # Save the content to the model field
-            if file_content and file_name:
-                getattr(result_images, field_name).save(file_name, ContentFile(file_content))
-                logger.debug(f"Saved image for {field_name}: {file_name}")
-            else:
-                logger.info(f"No image saved for {field_name} - field will remain empty")
-
-        result_images.save()
-        return result_images
 
 
 def simulation_plot_upload_path(instance, filename) -> str:
@@ -1503,6 +1306,7 @@ class SimulationPlot(models.Model):
         CAPACITY_TECHNOLOGY = "capacity_technology", "Capacity by Technology"
         EMISSIONS = "emissions", "Emissions by Technology"
         MARKET_PRICES = "market_prices", "Market Prices"
+        CAPACITY_POLICY = "capacity_policy", "Capacity Policy"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1520,8 +1324,22 @@ class SimulationPlot(models.Model):
 
     @classmethod
     def capture_simulation_plots(cls, modelrun, pam_plots_dir: Path | None = None):
-        """
-        Find and capture all simulation plots generated from CSV processing.
+        """Find and capture all simulation plots generated from CSV processing.
+
+        Args:
+            modelrun: The run whose plots are captured.
+            pam_plots_dir: The run's ``plots/PAM`` folder; by default the one in the run's output folder.
+
+        Returns:
+            The created ``SimulationPlot`` rows; empty when ``pam_plots_dir`` does not exist.
+
+        Raises:
+            ValueError: No ``pam_plots_dir`` was given and the run has no output folder.
+
+        Notes:
+            Emissions, cost curves and the capacity pool charts are read from folders beside ``pam_plots_dir``. A
+            capacity pool chart takes its title from its file name and its product from an ``iron_`` or ``steel_``
+            prefix; a policy-off run has none.
         """
         if pam_plots_dir is None:
             # Use the model run's isolated directory if available
@@ -1618,13 +1436,17 @@ class SimulationPlot(models.Model):
                 "plot_type": cls.PlotType.MARKET_PRICES,
                 "title": "Market Prices",
             },
+            {
+                "pattern": "capacity_pool/*.png",
+                "plot_type": cls.PlotType.CAPACITY_POLICY,
+            },
         ]
 
         created_plots = []
 
-        # Emissions and cost-curve charts live in sibling folders to PAM
+        # Emissions, cost-curve and capacity pool charts live in sibling folders to PAM
         plots_root = pam_plots_dir.parent
-        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE}
+        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE, cls.PlotType.CAPACITY_POLICY}
 
         for config in plot_configs:
             pattern = config["pattern"]
@@ -1638,6 +1460,9 @@ class SimulationPlot(models.Model):
                         file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
                     elif config["plot_type"] == cls.PlotType.EMISSIONS:
                         file_config["title"] = cls._build_emissions_title(plot_file, config["title"])
+                    elif config["plot_type"] == cls.PlotType.CAPACITY_POLICY:
+                        product = plot_file.stem.split("_", 1)[0]
+                        file_config["product_type"] = product if product in ("iron", "steel") else ""
                     plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)

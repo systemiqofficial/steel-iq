@@ -19,7 +19,7 @@ from django.utils import timezone
 from django_htmx.http import HttpResponseClientRefresh
 
 from .tasks import run_simulation_task
-from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
+from .models import ModelRun, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
 from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
@@ -79,12 +79,6 @@ class ModelRunDetailView(DetailView):
 
         context = super().get_context_data(**kwargs)
 
-        # Check if there are result images for this model run
-        try:
-            context["result_images"] = ResultImages.objects.get(modelrun=self.object)
-        except ResultImages.DoesNotExist:
-            context["result_images"] = None
-
         # Get technology switches data
         try:
             context["technology_switches"] = self.object.get_technology_switches()
@@ -127,13 +121,14 @@ class ModelRunDetailView(DetailView):
             else None
         )
 
-        # Split simulation plots: cost curves, emissions, and the production/capacity
-        # group each go into their own collapsible accordions; anything else falls
-        # through to the flat grid.
+        # Split simulation plots: cost curves, emissions, market prices, capacity policy and
+        # the production/capacity group each go into their own collapsible accordions;
+        # anything else falls through to the flat grid.
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
         market_prices = SimulationPlot.PlotType.MARKET_PRICES
+        capacity_policy = SimulationPlot.PlotType.CAPACITY_POLICY
         production_capacity = (
             SimulationPlot.PlotType.CAPACITY_DEVELOPMENT,
             SimulationPlot.PlotType.PRODUCTION_REGION,
@@ -145,8 +140,9 @@ class ModelRunDetailView(DetailView):
             "plot_type", "-product_type", "title"
         )
         context["market_prices_plots"] = plots_qs.filter(plot_type=market_prices).order_by("title")
+        context["capacity_policy_plots"] = plots_qs.filter(plot_type=capacity_policy).order_by("-product_type", "title")
         context["simulation_plots_other"] = plots_qs.exclude(
-            plot_type__in=[cost_curve, emissions, market_prices, *production_capacity]
+            plot_type__in=[cost_curve, emissions, market_prices, capacity_policy, *production_capacity]
         )
         context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
         context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
@@ -1132,141 +1128,6 @@ def get_modelrun_progress(request, pk):
     return render(request, "steeloweb/includes/progress_bar.html", context)
 
 
-def _missing_image_response(request, pk, message):
-    """Render a popup-only message when ?popup=1, else flash + redirect to detail.
-
-    Without this, the redirect lands on the full modelrun-detail page inside the
-    popup window, exposing the whole site UI when only an "X not available"
-    notice is wanted.
-    """
-    if request.GET.get("popup") == "1":
-        return render(request, "steeloweb/popup_message.html", {"popup": True, "message": message})
-    messages.error(request, message)
-    return redirect("modelrun-detail", pk=pk)
-
-
-def view_cost_map(request, pk, map_type):
-    """
-    View for displaying cost maps (LCOE or LCOH)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        if map_type == "lcoe":
-            image = result_images.lcoe_map
-            title = "Levelized Cost of Electricity (LCOE)"
-        elif map_type == "lcoh":
-            image = result_images.lcoh_map
-            title = "Levelized Cost of Hydrogen (LCOH)"
-        else:
-            raise Http404("Invalid map type")
-
-        if not image:
-            return _missing_image_response(
-                request,
-                pk,
-                f"{title} not available for this model run. "
-                f"This may occur if plot generation failed or certain configuration options were selected.",
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": title,
-            "map_type": map_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
-def view_priority_map(request, pk, map_type):
-    """
-    View for displaying priority location maps (iron or steel)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        if map_type == "iron":
-            image = result_images.priority_locations_iron
-            title = "Top 5% Priority Locations for Iron Production"
-        elif map_type == "steel":
-            image = result_images.priority_locations_steel
-            title = "Top 5% Priority Locations for Steel Production"
-        else:
-            raise Http404("Invalid map type")
-
-        if not image:
-            return _missing_image_response(
-                request,
-                pk,
-                f"{title} not available for this model run. "
-                f"This may occur if plot generation failed or certain configuration options were selected.",
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": title,
-            "map_type": map_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
-def view_plant_visualization(request, pk, visualization_type):
-    """
-    View for displaying various plant visualizations (construction maps, status charts)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        # Mapping of visualization types to model fields and titles
-        visualization_mapping = {
-            "iron-construction": {
-                "field": "new_plants_iron_construction",
-                "title": "Iron Plants Operating Map",
-            },
-            "steel-construction": {
-                "field": "new_plants_steel_construction",
-                "title": "Steel Plants Operating Map",
-            },
-            "iron-status": {"field": "new_plants_iron_status", "title": "New Iron Plants by Status"},
-            "steel-status": {"field": "new_plants_steel_status", "title": "New Steel Plants by Status"},
-        }
-
-        if visualization_type not in visualization_mapping:
-            raise Http404("Invalid visualization type")
-
-        viz_info = visualization_mapping[visualization_type]
-        image = getattr(result_images, viz_info["field"])
-
-        if not image:
-            return _missing_image_response(
-                request, pk, f"No {viz_info['title']} visualization available for this model run"
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": viz_info["title"],
-            "visualization_type": visualization_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
 def upload_circularity_data(request, modelrun_id=None):
     """
     Upload circularity data file
@@ -1362,7 +1223,6 @@ class ModelRunDeleteView(DeleteView):
         context = super().get_context_data(**kwargs)
 
         # Count related objects that will be deleted
-        context["result_images_count"] = ResultImages.objects.filter(modelrun=self.object).count()
         context["simulation_plots_count"] = SimulationPlot.objects.filter(modelrun=self.object).count()
         context["has_results"] = bool(self.object.results) or bool(self.object.result_csv)
 
@@ -2013,7 +1873,7 @@ class ModelRunOutputFilesView(DetailView):
 
         sections: list[dict] = []
 
-        # Subfolder sections: nest by child folders if present, else list files flat.
+        # Subfolder sections: each folder's child folders, then its own files.
         for sub_dir in ("plots", "data", "TM"):
             section = self._build_section(self._humanise_folder_name(sub_dir), output_path / sub_dir, output_path)
             if section:
@@ -2034,24 +1894,34 @@ class ModelRunOutputFilesView(DetailView):
         return " ".join(p.title() if p.islower() else p for p in parts)
 
     def _build_section(self, name, dir_path, output_path):
+        """List an output folder's own files and each of its subfolders' files.
+
+        Args:
+            name: The section's heading.
+            dir_path: The folder to list.
+            output_path: The run's output folder, which the files' links are relative to.
+
+        Returns:
+            ``{"name", "files", "subsections"}`` with each subsection ``{"name", "files"}``, or None when the folder
+            is missing or holds no listed file.
+
+        Notes:
+            One level of subfolders; a subfolder without listed files is left out.
+        """
         if not (dir_path.exists() and dir_path.is_dir()):
             return None
         subfolders = sorted(
             (p for p in dir_path.iterdir() if p.is_dir() and not p.name.startswith(".")),
             key=lambda p: p.name.lower(),
         )
-        if subfolders:
-            subsections = []
-            for sub in subfolders:
-                files = self._list_files(sub, output_path)
-                if files:
-                    subsections.append({"name": self._humanise_folder_name(sub.name), "files": files})
-            if subsections:
-                return {"name": name, "subsections": subsections}
-            return None
+        subsections = []
+        for sub in subfolders:
+            sub_files = self._list_files(sub, output_path)
+            if sub_files:
+                subsections.append({"name": self._humanise_folder_name(sub.name), "files": sub_files})
         files = self._list_files(dir_path, output_path)
-        if files:
-            return {"name": name, "files": files}
+        if files or subsections:
+            return {"name": name, "files": files, "subsections": subsections}
         return None
 
     def _list_files(self, dir_path, output_path):
