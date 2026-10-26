@@ -654,6 +654,40 @@ def input_data_label(run: dict[str, Any]) -> str:
     return f"{data['master']} ({source})"
 
 
+def input_data_labels(runs: list[dict[str, Any]]) -> list[str]:
+    """The input data each run used, as its filter value, one value per master workbook's content.
+
+    Args:
+        runs: The runs' ``viewer/run.json`` files, oldest first.
+
+    Returns:
+        One label per run, in order. The runs recording one ``master_sha256`` share one label: the master file name
+        of the first CLI run among them, otherwise the first app run's master name. Two hashes with one label each
+        get their first eight characters appended. A run without ``master_sha256`` gets :func:`input_data_label`.
+
+    Notes:
+        A grouped label drops "(default)" and "(custom)", since one workbook can be both. App preparations of one
+        master on different data-package versions therefore share one value. Runs written before ``master_sha256``
+        keep the old label until ``steelo-viewer regenerate`` rewrites them; the standalone app has no
+        ``regenerate``, so its older runs keep theirs. A run recording no ``made_in`` counts as a CLI run, as in
+        :func:`input_data_label`.
+    """
+    hashes = [run["input_data"].get("master_sha256") for run in runs]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for run, sha256 in zip(runs, hashes):
+        if sha256 is not None:
+            groups.setdefault(sha256, []).append(run)
+    names = {}
+    for sha256, group in groups.items():
+        cli = [run for run in group if run["made_in"] != "app"]
+        names[sha256] = cli[0]["input_data"]["master"] if cli else group[0]["input_data"]["master_name"]
+    labels = {
+        sha256: f"{name} {sha256[:8]}" if list(names.values()).count(name) > 1 else name
+        for sha256, name in names.items()
+    }
+    return [input_data_label(run) if sha256 is None else labels[sha256] for run, sha256 in zip(runs, hashes)]
+
+
 def plot_label(filename: str) -> str:
     """A plot page's tab label (cost_curves.html -> Cost curves).
 
@@ -760,7 +794,7 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
         {key: format_value(key, settings[key]) if key in settings else "none" for key in setting_keys}
         for _, _, settings, _ in loaded
     ]
-    input_data = [input_data_label(run) for _, run, _, _ in loaded]
+    input_data = input_data_labels([run for _, run, _, _ in loaded])
     columns: list[tuple[str, list[str]]] = []
     if with_made_in:
         columns.append(("made_in", [MADE_IN[run["made_in"]] for _, run, _, _ in loaded]))

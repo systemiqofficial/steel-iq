@@ -1,6 +1,7 @@
 """Catalogue of local runs for the scenario viewer."""
 
 import dataclasses
+import hashlib
 import json
 
 from steelo import simulation
@@ -10,8 +11,22 @@ from steelo.simulation import GeoConfig, SimulationConfig
 from steelo.viewer import catalogue
 
 
-def write_run(run_dir, name, started, master="master_input.xlsx", master_source="default", **overrides):
-    """Write a fake run folder holding simulation_config.json and a hand-written viewer/run.json."""
+def write_run(
+    run_dir,
+    name,
+    started,
+    master="master_input.xlsx",
+    master_source="default",
+    made_in="cli",
+    master_name=None,
+    preparation_name=None,
+    master_sha256=None,
+    **overrides,
+):
+    """
+    Write a fake run folder holding simulation_config.json and a hand-written viewer/run.json; without
+    master_sha256 the key is left out, as in a run written before it.
+    """
     config = SimulationConfig.for_testing(InMemoryRepository(), output_dir=run_dir, run_name=name, **overrides)
     (run_dir / "simulation_config.json").write_text(json.dumps(simulation.config_as_json_dict(config)))
     (run_dir / "viewer").mkdir()
@@ -19,19 +34,21 @@ def write_run(run_dir, name, started, master="master_input.xlsx", master_source=
         "schema": 1,
         "name": name,
         "folder": run_dir.name,
-        "made_in": "cli",
+        "made_in": made_in,
         "started": started,
         "ended": started,
         "steelo_version": "2.0.0",
         "input_data": {
             "master": master,
             "master_source": master_source,
-            "master_name": None,
-            "preparation_name": None,
+            "master_name": master_name,
+            "preparation_name": preparation_name,
         },
         "pages": ["emissions.html"],
         "files": [],
     }
+    if master_sha256 is not None:
+        run["input_data"]["master_sha256"] = master_sha256
     (run_dir / "viewer" / "run.json").write_text(json.dumps(run))
     return run_dir
 
@@ -82,6 +99,52 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
     assert settings["sim_2"][percentile]["default"] == "no cap"
     assert settings["sim_1"][percentile]["changed"] is False
     assert "default" not in settings["sim_1"][percentile]
+
+
+def test_input_data_is_one_value_per_master_content(tmp_path):
+    """
+    Tests that an app run and a CLI run of one master's bytes under different names give one input data value, the
+    CLI run's file name, and no input data filter; that a run without master_sha256 keeps its old label; and that
+    two masters under one file name each get the first eight characters of their hash appended.
+    """
+    one_sha256 = hashlib.sha256(b"one master").hexdigest()
+    other_sha256 = hashlib.sha256(b"another master").hexdigest()
+    one_master = [
+        write_run(
+            tmp_path / "app_1",
+            "app",
+            "2026-10-20T10:00:00",
+            master="master_input_template_master_input.xlsx",
+            made_in="app",
+            master_name="Master Input Template",
+            preparation_name="Initial Setup Data",
+            master_sha256=one_sha256,
+        ),
+        write_run(
+            tmp_path / "sim_1",
+            "cli",
+            "2026-10-20T10:01:00",
+            master="master_input_v3.0.0.xlsx",
+            master_source="custom",
+            master_sha256=one_sha256,
+        ),
+    ]
+    one_file_name = [
+        write_run(tmp_path / "sim_2", "old", "2026-10-20T10:02:00"),
+        write_run(tmp_path / "sim_3", "one", "2026-10-20T10:03:00", master_sha256=one_sha256),
+        write_run(tmp_path / "sim_4", "other", "2026-10-20T10:04:00", master_sha256=other_sha256),
+    ]
+
+    grouped = catalogue.build_manifest(one_master, with_made_in=True)["sets"][0]
+    clashing = catalogue.build_manifest(one_file_name, with_made_in=False)["sets"][0]
+
+    assert [run["input_data"] for run in grouped["runs"]] == ["master_input_v3.0.0.xlsx"] * 2
+    assert "input_data" not in [dimension["key"] for dimension in grouped["dimensions"]]
+    assert {run["dir"]: run["input_data"] for run in clashing["runs"]} == {
+        "sim_2": "master_input.xlsx (default)",
+        "sim_3": f"master_input.xlsx {one_sha256[:8]}",
+        "sim_4": f"master_input.xlsx {other_sha256[:8]}",
+    }
 
 
 def test_run_details_carry_list_items_and_switch_states(tmp_path):

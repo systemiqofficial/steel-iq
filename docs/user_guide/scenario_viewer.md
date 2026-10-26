@@ -68,9 +68,13 @@ The viewer groups the runs it lists into scenarios, using filters it builds from
 with the runs:
 
 - **Made in** (App or CLI): only in the app's viewer, which lists both kinds of run.
-- **Input data**: only when the runs' input data differ. A command-line run is labelled by its master workbook's file
-  name, an app run by the master's name in the app and the data preparation's name, each followed by "(default)" or
-  "(custom)". One master prepared both ways therefore shows as two values.
+- **Input data**: only when the runs' input data differ. Runs made from the same master workbook, byte for byte,
+  share one value: the file name of the first command-line run among them, otherwise the master's name in the app.
+  Two different workbooks that would take the same value each get the first eight characters of their SHA-256 hash
+  appended. App data preparations of one master made with different data package versions also share one value. A
+  run whose viewer files were written before this grouping keeps its older label until `steelo-viewer regenerate`
+  rewrites them: a command-line run's master file name, or an app run's master name and data preparation name, each
+  followed by "(default)" or "(custom)". The standalone app has no `regenerate`, so its older runs keep that label.
 - **Settings**: every run setting whose value, as the viewer shows it, differs between the runs. Settings that cannot
   change the results never count: file and folder paths, settings the model does not read, the plot and logging
   switches, the run name, and the copy of the seed inside the geospatial settings.
