@@ -104,11 +104,13 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
 def test_input_data_is_one_value_per_master_content(tmp_path):
     """
     Tests that an app run and a CLI run of one master's bytes under different names give one input data value, the
-    CLI run's file name, and no input data filter; that a run without master_sha256 keeps its old label; and that
-    two masters under one file name each get the first eight characters of their hash appended.
+    CLI run's file name, and no input data filter; that a run without master_sha256 keeps its old label; that two
+    masters under one file name each get the first eight characters of their hash appended; and that a master only
+    app runs used takes its name in the app, not its file name.
     """
     one_sha256 = hashlib.sha256(b"one master").hexdigest()
     other_sha256 = hashlib.sha256(b"another master").hexdigest()
+    app_sha256 = hashlib.sha256(b"an uploaded master").hexdigest()
     one_master = [
         write_run(
             tmp_path / "app_1",
@@ -133,6 +135,16 @@ def test_input_data_is_one_value_per_master_content(tmp_path):
         write_run(tmp_path / "sim_2", "old", "2026-10-20T10:02:00"),
         write_run(tmp_path / "sim_3", "one", "2026-10-20T10:03:00", master_sha256=one_sha256),
         write_run(tmp_path / "sim_4", "other", "2026-10-20T10:04:00", master_sha256=other_sha256),
+        write_run(
+            tmp_path / "app_2",
+            "check",
+            "2026-10-20T10:05:00",
+            master="check_master_master_input.xlsx",
+            made_in="app",
+            master_name="Check master",
+            preparation_name="Data with check master",
+            master_sha256=app_sha256,
+        ),
     ]
 
     grouped = catalogue.build_manifest(one_master, with_made_in=True)["sets"][0]
@@ -144,6 +156,7 @@ def test_input_data_is_one_value_per_master_content(tmp_path):
         "sim_2": "master_input.xlsx (default)",
         "sim_3": f"master_input.xlsx {one_sha256[:8]}",
         "sim_4": f"master_input.xlsx {other_sha256[:8]}",
+        "app_2": "Check master",
     }
 
 
