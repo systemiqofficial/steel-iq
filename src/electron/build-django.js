@@ -84,6 +84,14 @@ if (fs.existsSync(readmePath)) {
   fs.copyFileSync(readmePath, path.join(buildDir, 'README.md'));
 }
 
+// Pin every uv install below to uv.lock, so the bundle runs the package versions the tests ran
+const lockedRequirementsPath = path.join(buildDir, 'locked-requirements.txt');
+execSync(`uv export --frozen --no-dev --no-emit-project --no-hashes -o "${lockedRequirementsPath}"`, {
+  cwd: projectRoot,
+  stdio: 'inherit'
+});
+process.env.UV_CONSTRAINT = lockedRequirementsPath;
+
 // Create portable Python environment (Windows only for now)
 if (IS_WIN) {
   console.log('Creating portable Python environment for Windows...');
