@@ -101,6 +101,34 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
     assert "default" not in settings["sim_1"][percentile]
 
 
+def test_runs_differing_only_in_the_baseload_lcoe_run_are_told_apart_and_labelled(tmp_path):
+    """
+    Tests that two runs differing only in their BOA run give one filter, labelled as the baseload LCOE run, whose
+    values are the run's name and, for a run that named none, the geo-data default; the run folder adds no filter.
+    """
+    runs = [
+        write_run(tmp_path / "sim_1", "default", "2026-10-20T10:00:00"),
+        write_run(
+            tmp_path / "sim_2",
+            "named",
+            "2026-10-20T10:01:00",
+            boa_run_dir=tmp_path / "boa" / "lcoe-only" / "default_49e8",
+            boa_run="default_49e8",
+        ),
+    ]
+
+    local = catalogue.build_manifest(runs, with_made_in=False)["sets"][0]
+
+    dimensions = {dimension["key"]: dimension for dimension in local["dimensions"]}
+    assert "boa_run_dir" not in dimensions
+    assert dimensions["boa_run"]["label"] == "Baseload LCOE run"
+    assert set(dimensions["boa_run"]["values"]) == {"geo-data default", "default_49e8"}
+    assert {run["dir"]: run["dims"]["boa_run"] for run in local["runs"]} == {
+        "sim_1": "geo-data default",
+        "sim_2": "default_49e8",
+    }
+
+
 def test_input_data_is_one_value_per_master_content(tmp_path):
     """
     Tests that an app run and a CLI run of one master's bytes under different names give one input data value, the

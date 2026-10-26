@@ -173,6 +173,7 @@ SETTING_FORMATS = {
     "geo_config.include_lulc_cost": SettingFormat("Land cover cost"),
     "geo_config.excluded_greenfield_technologies": SettingFormat("Excluded from greenfield"),
     "geo_config.included_power_mix": SettingFormat("Power mix"),
+    "boa_run": SettingFormat("Baseload LCOE", full="Baseload LCOE run", none="geo-data default"),
     "geo_config.hydrogen_ceiling_percentile": SettingFormat("Hydrogen price ceiling"),
     "geo_config.long_dist_pipeline_transport_cost": SettingFormat(
         "Long-distance pipeline", full="Long-distance hydrogen pipeline cost", unit="USD/kg H₂"
