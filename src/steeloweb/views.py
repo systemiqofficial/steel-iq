@@ -121,9 +121,9 @@ class ModelRunDetailView(DetailView):
             else None
         )
 
-        # Split simulation plots: cost curves, emissions, and the production/capacity
-        # group each go into their own collapsible accordions; anything else falls
-        # through to the flat grid.
+        # Split simulation plots: cost curves, emissions, market prices, capacity policy and
+        # the production/capacity group each go into their own collapsible accordions;
+        # anything else falls through to the flat grid.
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
