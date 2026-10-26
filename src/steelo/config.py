@@ -1,8 +1,7 @@
 """
-Base settings.
+The folders the application needs before any run is configured: STEELO_HOME and the project root.
 
-This module now only provides the minimal settings needed to bootstrap the application.
-All configurable parameters should be passed through SimulationConfig.
+All configurable parameters are passed through SimulationConfig.
 """
 
 import os
@@ -47,17 +46,3 @@ def get_project_root_dir() -> Path:
 # Only expose the essential paths
 project_root = get_project_root_dir()
 root = get_steelo_home()  # STEELO_HOME
-
-
-class Settings:
-    """Minimal settings object for allowed exception modules only."""
-
-    def __init__(self):
-        self.project_root = project_root
-        # Required for baseload_power_simulation.py (allowed exception module)
-        self.gravity_distances_pkl_path = self.project_root / "data" / "gravity_distances.pkl"
-        self.regional_energy_prices_excel = self.project_root / "data" / "regional_energy_prices.xlsx"
-
-
-# Only create settings object for backward compatibility with allowed exception modules
-settings = Settings()
