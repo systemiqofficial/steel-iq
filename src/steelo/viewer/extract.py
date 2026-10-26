@@ -77,6 +77,7 @@ paged. run.json, written last, names the run and lists what was written.
 import argparse
 import csv
 import gzip
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -1291,6 +1292,7 @@ def write_viewer_files(run_dir: Path, master_excel: Path | None = None) -> None:
             "master_source": metadata.get("master_source"),
             "master_name": metadata.get("master_name"),
             "preparation_name": metadata.get("preparation_name"),
+            "master_sha256": hashlib.sha256(master.read_bytes()).hexdigest(),
         },
         "pages": sorted(p.name for p in pages_dir.glob("*.html")),
         "files": sorted(p.name for p in viewer_dir.iterdir()),

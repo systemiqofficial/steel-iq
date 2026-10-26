@@ -34,11 +34,12 @@
 
 {% block extra_js %}
 <script>
-// Helper function to reset a field to its data-default value
+// Reset a field to its data-default value; true when it applied one, so the caller's `|| literal` is skipped
 function resetField(id) {
     const el = document.getElementById(id);
     if (el && el.dataset.default !== undefined) {
         el.value = el.dataset.default;
+        return true;
     }
 }
 
