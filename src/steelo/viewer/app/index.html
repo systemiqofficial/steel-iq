@@ -312,6 +312,8 @@ function fromHash() {
   const [setId, dir, ...rest] = raw.split("/");
   const s = manifest.sets.find(x => x.id === setId) || manifest.sets[0];
   const run = s.runs.find(r => r.dir === dir) || s.runs[0];
+  // A set with no run (the app before its first run finishes) opens with nothing picked.
+  if (!run) return { set: s };
   const file = rest.join("/");
   return { set: s, run, plot: run.plots.includes(file) ? file : undefined };
 }
