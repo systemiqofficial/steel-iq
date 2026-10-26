@@ -1306,6 +1306,7 @@ class SimulationPlot(models.Model):
         CAPACITY_TECHNOLOGY = "capacity_technology", "Capacity by Technology"
         EMISSIONS = "emissions", "Emissions by Technology"
         MARKET_PRICES = "market_prices", "Market Prices"
+        CAPACITY_POLICY = "capacity_policy", "Capacity Policy"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1323,8 +1324,22 @@ class SimulationPlot(models.Model):
 
     @classmethod
     def capture_simulation_plots(cls, modelrun, pam_plots_dir: Path | None = None):
-        """
-        Find and capture all simulation plots generated from CSV processing.
+        """Find and capture all simulation plots generated from CSV processing.
+
+        Args:
+            modelrun: The run whose plots are captured.
+            pam_plots_dir: The run's ``plots/PAM`` folder; by default the one in the run's output folder.
+
+        Returns:
+            The created ``SimulationPlot`` rows; empty when ``pam_plots_dir`` does not exist.
+
+        Raises:
+            ValueError: No ``pam_plots_dir`` was given and the run has no output folder.
+
+        Notes:
+            Emissions, cost curves and the capacity pool charts are read from folders beside ``pam_plots_dir``. A
+            capacity pool chart takes its title from its file name and its product from an ``iron_`` or ``steel_``
+            prefix; a policy-off run has none.
         """
         if pam_plots_dir is None:
             # Use the model run's isolated directory if available
@@ -1421,13 +1436,17 @@ class SimulationPlot(models.Model):
                 "plot_type": cls.PlotType.MARKET_PRICES,
                 "title": "Market Prices",
             },
+            {
+                "pattern": "capacity_pool/*.png",
+                "plot_type": cls.PlotType.CAPACITY_POLICY,
+            },
         ]
 
         created_plots = []
 
-        # Emissions and cost-curve charts live in sibling folders to PAM
+        # Emissions, cost-curve and capacity pool charts live in sibling folders to PAM
         plots_root = pam_plots_dir.parent
-        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE}
+        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE, cls.PlotType.CAPACITY_POLICY}
 
         for config in plot_configs:
             pattern = config["pattern"]
@@ -1441,6 +1460,9 @@ class SimulationPlot(models.Model):
                         file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
                     elif config["plot_type"] == cls.PlotType.EMISSIONS:
                         file_config["title"] = cls._build_emissions_title(plot_file, config["title"])
+                    elif config["plot_type"] == cls.PlotType.CAPACITY_POLICY:
+                        product = plot_file.stem.split("_", 1)[0]
+                        file_config["product_type"] = product if product in ("iron", "steel") else ""
                     plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)

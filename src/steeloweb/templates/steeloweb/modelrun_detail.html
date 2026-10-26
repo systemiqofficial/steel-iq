@@ -609,6 +609,40 @@
                             {% endfor %}
                         </div>
                         {% endif %}
+
+                        {% if capacity_policy_plots %}
+                        <div class="accordion mt-3" id="capacityPolicyAccordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="capacityPolicyHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#capacityPolicyCollapse" aria-expanded="false" aria-controls="capacityPolicyCollapse">
+                                        Capacity Policy ({{ capacity_policy_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="capacityPolicyCollapse" class="accordion-collapse collapse" aria-labelledby="capacityPolicyHeading" data-bs-parent="#capacityPolicyAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in capacity_policy_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
                     </div>
                     {% endif %}
                 </div>
