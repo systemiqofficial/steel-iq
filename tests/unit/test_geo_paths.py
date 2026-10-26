@@ -29,7 +29,7 @@ def test_geo_data_paths_creation():
         regional_energy_prices_xlsx=Path("/test/data/energy_prices.xlsx"),
         countries_shapefile_dir=Path("/test/data/ne_110m_admin_0_countries"),
         disputed_areas_shapefile_dir=Path("/test/data/ne_10m_admin_0_disputed_areas"),
-        baseload_power_sim_dir=Path("/test/data/outputs/GEO/baseload_power_simulation"),
+        baseload_lcoe_dir=Path("/test/data/outputs/GEO/baseload_lcoe"),
         static_layers_dir=Path("/test/data/outputs/GEO"),
         landtype_percentage_path=Path("/test/data/landtype_percentage.nc"),
     )

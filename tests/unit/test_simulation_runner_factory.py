@@ -4,7 +4,7 @@ Tests for the simulation runner factory.
 
 from unittest.mock import MagicMock
 
-from steelo.simulation import SimulationConfig
+from steelo.simulation import GeoConfig, SimulationConfig
 from steelo.bootstrap import bootstrap_simulation
 from steelo.domain import Year
 from steelo.simulation_types import get_default_technology_settings
@@ -74,6 +74,7 @@ def test_factory_configures_environment_from_config(tmp_path):
         technology_settings=get_default_technology_settings(),
         data_dir=data_dir,  # Required for environment initialization
         capacity_limit=0.98,  # A non-default value
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # no LCOE files on disk
     )
 
     # Mock the repository to avoid loading real data

@@ -253,8 +253,8 @@ class DataPathResolver:
         return self.get_data_path("LCOH_CAPEX_and_O&M_component.csv")
 
     @property
-    def baseload_power_sim_dir(self) -> Path:
-        return self.get_data_path("baseload_power_simulation", ["outputs", "GEO"])
+    def baseload_lcoe_dir(self) -> Path:
+        return self.get_data_path("baseload_lcoe", ["outputs", "GEO"])
 
     @property
     def feasibility_mask_path(self) -> Path:
@@ -383,7 +383,6 @@ class DataPathResolver:
             "railway_capex_csv_path": self.railway_capex_csv_path,
             "lcoh_capex_csv_path": self.lcoh_capex_csv_path,
             "regional_energy_prices_xlsx": self.regional_energy_prices_excel_path,
-            "baseload_power_sim_dir": self.baseload_power_sim_dir,
             "geo_plots_dir": self.geo_plots_dir,
             "countries_shapefile_dir": self.countries_shapefile_dir,
             "landtype_percentage_nc_path": self.landtype_percentage_nc_path,

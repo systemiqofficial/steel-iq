@@ -42,6 +42,7 @@ EXCLUDED_SETTINGS = frozenset(
         "landtype_percentage_nc_path",
         "baseload_power_sim_dir",
         "feasibility_mask_path",
+        "boa_run_dir",
         "minimum_active_utilisation_rate",
         "minimum_margin",
         "green_steel_emissions_limit",
@@ -340,7 +341,7 @@ SETTINGS_LAYOUT: list[dict[str, Any]] = [
     {
         "title": "Power and hydrogen",
         "groups": [
-            {"title": "Power", "rows": ["geo_config.included_power_mix"]},
+            {"title": "Power", "rows": ["geo_config.included_power_mix", "boa_run"]},
             {
                 "title": "Hydrogen",
                 "rows": ["geo_config.hydrogen_ceiling_percentile", "geo_config.long_dist_pipeline_transport_cost"],

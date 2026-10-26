@@ -454,10 +454,11 @@ class SimulationConfig:
     countries_shapefile_dir: Optional[Path] = None
     disputed_areas_shapefile_dir: Optional[Path] = None
     landtype_percentage_nc_path: Optional[Path] = None
-    baseload_power_sim_dir: Optional[Path] = None
     feasibility_mask_path: Optional[Path] = None
+    boa_run_dir: Optional[Path] = None  # Promoted BOA run pricing baseload power; None reads the prepared data's files
 
     # === Data Settings ===
+    boa_run: Optional[str] = None  # Name of the BOA run in boa_run_dir; None for the prepared data's default files
     use_master_excel: bool = False
     steel_plant_gem_data_year: int = 2025
     production_gem_data_years: list[int] = field(default_factory=lambda: list(range(2019, 2023)))
@@ -668,6 +669,8 @@ class SimulationConfig:
             self.disputed_areas_shapefile_dir = Path(self.disputed_areas_shapefile_dir)
         if self.landtype_percentage_nc_path is not None:
             self.landtype_percentage_nc_path = Path(self.landtype_percentage_nc_path)
+        if self.boa_run_dir is not None:
+            self.boa_run_dir = Path(self.boa_run_dir)
 
     @classmethod
     def from_data_directory(
@@ -747,21 +750,11 @@ class SimulationConfig:
         elif disputed_areas_110m.exists():
             config_data["disputed_areas_shapefile_dir"] = disputed_areas_110m
 
-        # Add baseload power and feasibility mask paths if they exist
-        # Check if baseload_power_sim_dir is provided in kwargs (custom path from CLI)
-        if "baseload_power_sim_dir" in kwargs:
-            # Use the custom path provided via CLI
-            config_data["baseload_power_sim_dir"] = kwargs["baseload_power_sim_dir"]
-        elif path_resolver.baseload_power_sim_dir.exists():
-            # Use the default path from data directory
-            config_data["baseload_power_sim_dir"] = path_resolver.baseload_power_sim_dir
-
         if path_resolver.feasibility_mask_path.exists():
             config_data["feasibility_mask_path"] = path_resolver.feasibility_mask_path
 
-        # Override with any additional kwargs (except baseload_power_sim_dir which we already handled)
-        kwargs_without_baseload = {k: v for k, v in kwargs.items() if k != "baseload_power_sim_dir"}
-        config_data.update(kwargs_without_baseload)
+        # Override with any additional kwargs
+        config_data.update(kwargs)
 
         # Create a properly typed config dictionary
         typed_config: dict[str, Any] = {

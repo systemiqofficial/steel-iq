@@ -224,6 +224,8 @@ def test_stage_functions_touch_no_argument_when_off():
     energy_trace.configure(False, ["CHN"], ["P1"], None)
     u = Untouchable()
 
+    energy_trace.lcoe_source(u, u, u)
+    energy_trace.lcoe_source_medians(u, u)
     energy_trace.site_power(u, u, u, u)
     energy_trace.site_hydrogen(u, u, u)
     energy_trace.country_hydrogen(u, u, u, u, u)
@@ -357,6 +359,43 @@ def test_site_power_aligns_an_lcoe_raster_stored_in_another_dimension_order(tmp_
 
     (all_cells,) = rows_for(read_rows(tmp_path), iso3="ALL", quantity="cells_off_blend")
     assert all_cells["value"] == "0"
+
+
+def test_lcoe_source_writes_the_file_and_its_attributes(tmp_path):
+    """The file that prices the run is traced with its BOA run, version, basis, coverage and schema version."""
+    energy_trace.configure(True, ["CHN"], [], tmp_path)
+    lcoe_ds = xr.Dataset(
+        attrs={
+            "schema_version": 1,
+            "lcoe_basis": "per_mwh_delivered",
+            "coverage_fraction": 0.85,
+            "run": "default_49e8",
+            "boa_version": "1.9.0",
+        },
+    )
+
+    energy_trace.lcoe_source(2025, Path("/lcoe/optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc"), lcoe_ds)
+
+    rows = {row["quantity"]: (row["value"], row["unit"]) for row in read_rows(tmp_path)}
+    assert rows == {
+        "file": ("/lcoe/optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc", ""),
+        "run": ("default_49e8", ""),
+        "boa_version": ("1.9.0", ""),
+        "lcoe_basis": ("per_mwh_delivered", ""),
+        "coverage_fraction": ("0.85", "fraction"),
+        "schema_version": ("1", ""),
+    }
+
+
+def test_lcoe_source_medians_per_listed_country_in_usd_per_mwh(tmp_path):
+    """Each listed country's median LCOE of the year goes out in the file's USD/MWh; no row for ALL."""
+    energy_trace.configure(True, ["CHN", "IND"], [], tmp_path)
+    ds = power_dataset("delivered")
+
+    energy_trace.lcoe_source_medians(ds, 2030)
+
+    rows = {row["iso3"]: (float(row["value"]), row["unit"]) for row in read_rows(tmp_path)}
+    assert rows == {"CHN": (pytest.approx(45.0), "USD/MWh"), "IND": (pytest.approx(25.0), "USD/MWh")}
 
 
 def test_site_power_flags_one_perturbed_cell(tmp_path, trace_log):

@@ -232,6 +232,7 @@ New sites, the plants the model opens (`parent_gem_id` starting with `indi`), ar
 
 | Stage | When | Rows | Check |
 |-------|------|------|-------|
+| `lcoe_source` | At bootstrap, once the baseload LCOE file is accepted, and each year as the LCOE is read | The file, and per listed country | None: a file that breaks the contract is refused before it is read |
 | `site_power` | Each year, once the site power price raster is built | Per listed country and `ALL` | Every priced cell equals `(1 - c) × grid + c × LCOE` for an LCOE file priced per MWh delivered, else `(1 - c) × grid + LCOE`, where c is the baseload coverage |
 | `site_hydrogen` | Each year, once the site hydrogen price is capped | Per listed country and `ALL` | Every priced cell stays within its region's ceiling |
 | `country_hydrogen` | At bootstrap, once per year of the precomputed series | Every geo key | The capped price stays within `min(LCOH, region's ceiling)` |
@@ -263,6 +264,7 @@ The year-end summary lines also give, per listed country, the candidate sites, t
 
 | Stage | Quantities |
 |-------|------------|
+| `lcoe_source` | `file`, `run`, `boa_version` and `lcoe_basis` (text); `coverage_fraction`; `schema_version`; per listed country, `median_lcoe` (USD/MWh) |
 | `site_power` | `coverage` (fraction); `median_grid_price`, `median_lcoe` and `median_power_price` (USD/kWh); `cells_checked`; `cells_off_blend` (checked, expected 0) |
 | `site_hydrogen` | `median_lcoh`, `ceiling` and `median_capped_lcoh` (USD/kg); `share_capped`, the fraction of checked cells priced below their LCOH; `cells_checked`; `cells_above_ceiling` (checked, expected 0); `cells_nan_lcoh_priced`, cells with no LCOH that still carry a price |
 | `country_hydrogen` | `lcoh`, `ceiling` and `capped` (USD/kg, `capped` checked) |

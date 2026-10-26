@@ -26,11 +26,11 @@ A new plant starts as a candidate site, becomes a considered business opportunit
 Each year the geospatial model prices every cell of a global 0.25° grid (`get_candidate_locations_for_opening_new_plants`):
 
 - **Grid price**: the country's input-cost electricity price. Province rows do not reach the grid cells. A feasible cell whose country has no price takes the highest grid price.
-- **Baseload LCOE**: read from the prepared data's per-year files under `outputs/GEO/baseload_power_simulation/`, one folder per coverage. A year between two files is interpolated linearly; a year outside their span reuses the nearest file.
-- **Power price**: `power_price = (1 - c) × grid + LCOE`, where c is the baseload coverage of the power mix (0.85 or 0.95). The per-year files hold the baseload system's cost per MWh of demand, so the LCOE enters in full. With the "Grid only" or "Not included" mix, the power price is the grid price.
+- **Baseload LCOE**: read from one promoted BOA file per coverage, which holds every investment year. The file comes from the folder `run_simulation --boa-run` names, else from the prepared data's `outputs/GEO/baseload_lcoe/`. It is picked by the coverage token in its name (`cov0p85` for 0.85) and must state schema version 1, LCOE per MWh delivered and the coverage priced; bootstrap opens it once, so a missing or refused file stops the run before its first year. A year the file does not hold is interpolated linearly, and a year outside its span reuses the nearest year.
+- **Power price**: `power_price = (1 - c) × grid + c × LCOE`, where c is the baseload coverage of the power mix (0.85 or 0.95). The LCOE is a cost per MWh the baseload system delivers, and that system covers the share c of demand. With the "Grid only" or "Not included" mix, the power price is the grid price and no LCOE file is read.
 - **Hydrogen**: a cell's LCOH is the electrolyser's electricity use times the cell's power price, plus the country's electrolyser capital and operating cost per kg. A region's ceiling is a percentile of its cells' LCOH (`hydrogen_ceiling_percentile`, 100 by default, which leaves prices uncapped). `capped_lcoh` is the lower of the LCOH and the ceiling, and with intraregional trade on, also of the cheapest partner region's ceiling plus pipeline transport. A cell inside a region but without an LCOH takes the region's ceiling.
 
-**Trace:** `site_power` checks every priced cell against the blend its LCOE file's basis implies. `site_hydrogen` checks every priced cell against its region's ceiling, and counts the cells priced without an LCOH.
+**Trace:** `lcoe_source` records the file, its BOA run and version at bootstrap, and each listed country's median LCOE every year. `site_power` checks every priced cell against the blend its LCOE file's basis implies. `site_hydrogen` checks every priced cell against its region's ceiling, and counts the cells priced without an LCOH.
 
 ### 2. The ranking
 

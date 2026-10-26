@@ -359,7 +359,7 @@ class GeoDataPaths:
     disputed_areas_shapefile_dir: Path
 
     # Output paths for different analyses
-    baseload_power_sim_dir: Path
+    baseload_lcoe_dir: Path  # Folder of the promoted BOA LCOE files: the named run's, else the prepared data's
     static_layers_dir: (
         Path  # Directory for static geospatial layers (feasibility_mask.nc, rail_cost.nc, global_grid_with_iso3.nc)
     )

@@ -6,7 +6,7 @@ from pathlib import Path
 from steelo.simulation_types import get_default_technology_settings
 
 from steelo.devdata import get_plant, get_furnace_group, get_test_suppliers, get_test_demand_centers
-from steelo.simulation import SimulationConfig
+from steelo.simulation import GeoConfig, SimulationConfig
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.bootstrap import bootstrap_simulation
 from steelo.domain.models import PlantGroup, Year
@@ -94,6 +94,7 @@ def synthetic_config(monkeypatch):
         master_excel_path=fixtures_dir / "master.xlsx",  # Required parameter
         data_dir=fixtures_dir.parent,  # Set data_dir for fixtures
         technology_settings=get_default_technology_settings(),
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # no LCOE files on disk
     )
 
 

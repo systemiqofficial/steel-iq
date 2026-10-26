@@ -24,6 +24,7 @@ from ..domain.constants import END_YEAR_DEFAULT, RANDOM_SEED_DEFAULT, START_YEAR
 from ..simulation import SimulationConfig, config_as_json_dict, config_default, run_names_in_use, unique_run_name
 from ..bootstrap import bootstrap_simulation
 from ..data.path_resolver import resolve_scenario_fixtures
+from ..adapters.geospatial.boa_lcoe import resolve_boa_run
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
 GUROBI_LICENSE_NOTICE = (
@@ -144,10 +145,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-stats", action="store_true", help="Show cache statistics and exit")
     parser.add_argument("--clear-cache", action="store_true", help="Clear preparation cache and exit")
     parser.add_argument(
-        "--baseload-power-sim-dir",
+        "--boa-run",
         type=str,
         default=None,
-        help="Path to BOA-generated baseload power simulation output directory (overrides default)",
+        help=(
+            "Promoted BOA run that prices baseload power: a folder, or a run name under $BOA_DATA_ROOT "
+            "(else ~/.boa)/lcoe-only/ (default: the LCOE files geo-data ships in the prepared data)"
+        ),
     )
     parser.add_argument(
         "--clustering",
@@ -274,6 +278,17 @@ def run_full_simulation() -> None:
         if args.credit_validity_years is not None and not args.enable_capacity_policy:
             parser.error("--credit-validity-years requires --enable-capacity-policy")
 
+        # Before the home, the cache and the run folder exist, so a wrong name costs nothing
+        boa_run_dir = None
+        if args.boa_run is not None:
+            try:
+                boa_run_dir = resolve_boa_run(args.boa_run)
+            except FileNotFoundError as error:
+                console.print(f"[red]{escape(str(error))}[/red]")
+                sys.exit(1)
+            console.print(f"[blue]Baseload LCOE run:[/blue] {escape(str(boa_run_dir))}")
+        boa_run = boa_run_dir.name if boa_run_dir is not None else None
+
         # Setup directories
         steelo_home = Path(args.steelo_home)
         steelo_home.mkdir(parents=True, exist_ok=True)
@@ -395,16 +410,9 @@ def run_full_simulation() -> None:
                 "random_seed": args.random_seed,
                 "plot_tm": args.plot_tm,
                 "plot_geo": args.plot_geo,
+                "boa_run_dir": boa_run_dir,
+                "boa_run": boa_run,
             }
-
-            # Add custom baseload_power_sim_dir if provided
-            if args.baseload_power_sim_dir:
-                baseload_dir = Path(args.baseload_power_sim_dir)
-                if not baseload_dir.exists():
-                    console.print(f"[red]Error: Baseload power simulation directory not found: {baseload_dir}[/red]")
-                    sys.exit(1)
-                config_kwargs["baseload_power_sim_dir"] = baseload_dir
-                console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
 
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
@@ -508,18 +516,9 @@ def run_full_simulation() -> None:
                     "random_seed": args.random_seed,
                     "plot_tm": args.plot_tm,
                     "plot_geo": args.plot_geo,
+                    "boa_run_dir": boa_run_dir,
+                    "boa_run": boa_run,
                 }
-
-                # Add custom baseload_power_sim_dir if provided
-                if args.baseload_power_sim_dir:
-                    baseload_dir = Path(args.baseload_power_sim_dir)
-                    if not baseload_dir.exists():
-                        console.print(
-                            f"[red]Error: Baseload power simulation directory not found: {baseload_dir}[/red]"
-                        )
-                        sys.exit(1)
-                    config_kwargs["baseload_power_sim_dir"] = baseload_dir
-                    console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
 
                 config = SimulationConfig.from_data_directory(**config_kwargs)
 

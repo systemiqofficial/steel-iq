@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from steelo.domain.constants import T_TO_KG, Year
+from steelo.domain.constants import PERkWh_TO_PERMWh, T_TO_KG, Year
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -67,6 +67,15 @@ FURNACE_GROUP_UNITS = {
     "hydrogen_paid": "USD/t",
 }
 UNITS: dict[str, dict[str, str]] = {
+    "lcoe_source": {
+        "file": "",
+        "run": "",
+        "boa_version": "",
+        "lcoe_basis": "",
+        "coverage_fraction": "fraction",
+        "schema_version": "",
+        "median_lcoe": "USD/MWh",
+    },
     "site_power": {
         "coverage": "fraction",
         "median_grid_price": "USD/kWh",
@@ -305,6 +314,62 @@ def check(
         return ok
     _emit(stage, year, identity, {}, {quantity: _Check(actual, expected, ok)}, record=record, log=record)
     return ok
+
+
+def lcoe_source(year: int, lcoe_file: Path, lcoe_ds: "xr.Dataset") -> None:
+    """
+    Trace which promoted LCOE file prices the run.
+
+    Args:
+        year: The run's start year.
+        lcoe_file: The file bootstrap picked.
+        lcoe_ds: The file, open and accepted.
+
+    Returns:
+        None.
+
+    Notes:
+        Rows for the file, its BOA run and version, basis, coverage and schema version. No check: a file
+        that breaks the contract is refused before it gets here.
+    """
+    if not _state.enabled:
+        return
+    attrs = lcoe_ds.attrs
+    values = {
+        "file": str(lcoe_file),
+        "run": attrs["run"] if "run" in attrs else "",
+        "boa_version": attrs["boa_version"] if "boa_version" in attrs else "",
+        "lcoe_basis": attrs["lcoe_basis"],
+        "coverage_fraction": attrs["coverage_fraction"],
+        "schema_version": attrs["schema_version"],
+    }
+    _emit("lcoe_source", year, {}, values, {}, record=True, log=True)
+
+
+def lcoe_source_medians(ds: "xr.Dataset", year: int) -> None:
+    """
+    Trace each listed country's median baseload LCOE of the year.
+
+    Args:
+        ds: The global dataset with ``iso3`` and the year's ``lcoe`` (USD/kWh).
+        year: Simulation year.
+
+    Returns:
+        None.
+
+    Notes:
+        Medians over the country's cells with an LCOE, in the file's USD/MWh.
+    """
+    if not _state.enabled:
+        return
+    dims = ds["lcoe"].dims
+    lcoe, iso3 = (_raster(ds, name, dims) for name in ("lcoe", "iso3"))
+    has_lcoe = np.isfinite(lcoe)
+    for country, mask in _country_masks(iso3):
+        if country == ALL_CELLS:
+            continue
+        median = _median(lcoe[mask & has_lcoe]) * PERkWh_TO_PERMWh
+        _emit("lcoe_source", year, {"iso3": country}, {"median_lcoe": median}, {}, record=True, log=True)
 
 
 def site_power(ds: "xr.Dataset", year: int, coverage: float, lcoe_basis: str | None) -> None:
