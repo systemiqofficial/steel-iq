@@ -380,7 +380,7 @@ Outputs go to a fresh `sim_<timestamp>/` directory under `--output-dir` (default
 - `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
 
 **Data Files (usually handled automatically via caching):**
-- `--baseload-power-sim-dir`: BOA-generated baseload power simulation output directory
+- `--boa-run`: Promoted BOA run that prices baseload power: a folder, or a run name under `$BOA_DATA_ROOT` (else `~/.boa`) `/lcoe-only/`. An unknown name stops the run before any data preparation and lists the runs there. Without the flag, the run reads the default LCOE files that geo-data ships in the prepared data. See [Baseload Optimisation Atlas](../domain_simulation_logic/geospatial_model/baseload_optimization_atlas.md#lcoe-files-read-by-steel-iq)
 
 **Caching Options:**
 - `--cache-stats`: Show cache statistics and exit
