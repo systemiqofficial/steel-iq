@@ -70,6 +70,10 @@ class TestPolicySettingsFields(TestCase):
         (data_directory / "data" / "fixtures" / "scenarios.json").write_text(
             '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
         )
+        # The default power mix needs the default LCOE files a geo-data 3.0.0 preparation holds
+        lcoe_dir = data_directory / "data" / "outputs" / "GEO" / "baseload_lcoe"
+        lcoe_dir.mkdir(parents=True)
+        (lcoe_dir / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc").write_bytes(b"")
         data_prep = DataPreparation.objects.create(
             name="Test Data Preparation",
             status=DataPreparation.Status.READY,

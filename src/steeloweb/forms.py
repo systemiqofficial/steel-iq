@@ -8,6 +8,7 @@ from steelo.capacity_policy.config import CapacityPolicyConfig
 from steelo.capacity_policy.pool import BANKED_CREDIT_RULES
 from steelo.domain.constants import END_YEAR_DEFAULT, MT_TO_T, START_YEAR_DEFAULT
 from steelo.simulation import config_default
+from steelo.utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 
 from .models import ModelRun, DataPreparation, MasterExcelFile
 
@@ -1143,7 +1144,8 @@ class ModelRunCreateForm(forms.ModelForm):
         Notes:
             A lever set that ``CapacityPolicyConfig`` refuses, the switch on a preparation without the capacity pool
             fixtures, a credit validity without the switch, a preparation whose emission factors cannot be read,
-            one without the scenario index and a scenario pair its index lacks are form errors. A blank steel demand
+            one without the scenario index, a scenario pair its index lacks and a baseload power mix (a blank one
+            reads as the class default) on a preparation without the default LCOE files are form errors. A blank steel demand
             scenario takes the field's initial (the class default when the preparation holds it, else its first),
             and a blank scrap scenario ("Same as demand") the steel demand one.
         """
@@ -1167,6 +1169,19 @@ class ModelRunCreateForm(forms.ModelForm):
                         f"This data preparation has no {self.fields[name].label.lower()} named "
                         f"{cleaned_data[name]!r}; pick one it holds.",
                     )
+        # Bootstrap stops a baseload mix without its LCOE files, so the form says so before the run starts
+        if "data_preparation" in cleaned_data and "included_power_mix" in cleaned_data:
+            power_mix = cleaned_data["included_power_mix"] or self.fields["included_power_mix"].initial
+            if (
+                POWER_MIX_TO_COVERAGE_MAP[power_mix] > 0
+                and not cleaned_data["data_preparation"].has_default_baseload_lcoe_files()
+            ):
+                self.add_error(
+                    "included_power_mix",
+                    "This data preparation was made before geo-data 3.0.0, which ships the baseload LCOE files a "
+                    "baseload power mix reads. Pick Grid only, or upload the master again under a new name and "
+                    "prepare it; this preparation and its runs stay.",
+                )
         start_year = cleaned_data.get("start_year")
         end_year = cleaned_data.get("end_year")
 

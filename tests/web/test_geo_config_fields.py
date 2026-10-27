@@ -1,5 +1,8 @@
 """Test that Django form GeoConfig fields correctly map to GeoConfig parameters."""
 
+import shutil
+from pathlib import Path
+
 import pytest
 from django.forms import DecimalField, BooleanField, ChoiceField, IntegerField
 from steeloweb.models import DataPreparation, DataPackage
@@ -506,6 +509,32 @@ def test_hydrogen_ceiling_percentile_propagation(db, base_form_data):
     modelrun.save()
 
     assert modelrun.config["hydrogen_ceiling_percentile"] == 35.5
+
+
+@pytest.mark.parametrize(
+    ("power_mix", "accepted"),
+    [("85% baseload + 15% grid", False), ("", False), ("Grid only", True), ("Not included", True)],
+)
+def test_run_form_refuses_a_baseload_mix_on_a_preparation_without_the_default_lcoe_files(
+    db,
+    base_form_data,
+    data_preparation,
+    power_mix,
+    accepted,
+):
+    """
+    Test that a preparation made before geo-data 3.0.0 refuses a baseload mix, a blank one meaning the class default,
+    with what to do in the app, and accepts a mix with no baseload share.
+    """
+    shutil.rmtree(Path(data_preparation.data_directory) / "data" / "outputs" / "GEO" / "baseload_lcoe")
+    form = ModelRunCreateForm(data={**base_form_data, "included_power_mix": power_mix})
+
+    assert form.is_valid() is accepted
+    if not accepted:
+        error = form.errors["included_power_mix"][0]
+        assert "made before geo-data 3.0.0" in error
+        assert "Pick Grid only, or upload the master again under a new name and prepare it" in error
+        assert "--boa-run" not in error
 
 
 def test_included_power_mix_propagation(db, base_form_data):

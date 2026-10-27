@@ -559,6 +559,18 @@ class DataPreparation(models.Model):
             for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json")
         )
 
+    def has_default_baseload_lcoe_files(self) -> bool:
+        """Whether the prepared data holds the default baseload LCOE files a baseload power mix reads.
+
+        Returns:
+            True when ``data/outputs/GEO/baseload_lcoe/`` holds at least one ``.nc`` file.
+
+        Notes:
+            Geo-data ships these files from 3.0.0 on, so a preparation made on an earlier package has none and its
+            runs stop at bootstrap unless the mix has no baseload share.
+        """
+        return any((Path(self.data_directory) / "data" / "outputs" / "GEO" / "baseload_lcoe").glob("*.nc"))
+
 
 @dataclass
 class Progress:
