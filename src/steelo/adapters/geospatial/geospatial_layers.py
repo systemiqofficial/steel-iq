@@ -582,11 +582,13 @@ def site_hydrogen_ceilings(
         Year to TIAM-UCL region to effective ceiling (USD/kg).
 
     Raises:
-        ValueError: As ``calculate_lcoh_from_power_price``, for a year without electrolyser data.
+        ValueError: As ``calculate_lcoh_from_power_price``, for a year without electrolyser data; or if a baseload
+            share has no LCOE grid.
 
     Notes:
         Prices the cells as the yearly step does (the grid price, the baseload LCOE blended at the coverage,
-        then the LCOH), takes each region's percentile and lowers it by the trade option. Only the pure parts
+        then the LCOH), takes each region's percentile and lowers it by the trade option. A year past the LCOE
+        file's last year holds that year's LCOE, as ``boa_lcoe.lcoe_for_year`` does for the raster. Only the pure parts
         run: no plot, map or trace stage. Logs its wall time at INFO.
     """
     logger = logging.getLogger(f"{__name__}.site_hydrogen_ceilings")
@@ -597,7 +599,8 @@ def site_hydrogen_ceilings(
         prices, _ = _grid_prices(ds, input_costs, year)
         ds["grid_price"] = (("lat", "lon"), prices)
         if baseload_coverage > 0:
-            assert baseload_lcoe_grid is not None, "a baseload share needs the LCOE grid"
+            if baseload_lcoe_grid is None:
+                raise ValueError("A power mix with a baseload share needs the baseload LCOE grid loaded at bootstrap")
             lcoe = boa_lcoe.lcoe_for_year(baseload_lcoe_grid.to_dataset(), year) * PERMWh_TO_PERkWh
             ds = xr.merge([ds, lcoe])
             ds["power_price"] = (1 - baseload_coverage) * ds["grid_price"] + baseload_coverage * ds["lcoe"]

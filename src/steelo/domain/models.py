@@ -9086,19 +9086,18 @@ class Environment:
         The lock years for which new sites' hydrogen ceilings are precomputed.
 
         Returns:
-            The current year through the last year every input of the site rasters covers (the electrolyser's
-            electricity use, its cost for every geo key, the input costs of every geo key and, with a baseload
-            share, the LCOE grid), and no further than ``end_year + max(consideration_time, 2)``, the last year a
-            lock can reach.
+            The current year through the last year the electrolyser's electricity use, its cost for every geo key
+            and the input costs of every geo key all cover, and no further than
+            ``end_year + max(consideration_time, 2)``, the last year a lock can reach.
 
         Raises:
             ValueError: If there is no config, or an input is empty.
 
         Notes:
-            Called in the first geospatial step, so the current year is the first year a site is priced.
+            Called in the first geospatial step, so the current year is the first year a site is priced. The LCOE
+            file does not limit the range: past its last year the yearly raster, the precompute and every lock
+            hold that year's LCOE.
         """
-        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
-
         if self.config is None:
             raise ValueError("SimulationConfig is required to precompute site hydrogen ceilings")
         if not self.hydrogen_efficiency or not self.hydrogen_capex_opex or not self.input_costs:
@@ -9109,10 +9108,6 @@ class Environment:
             min(max(by_year) for by_year in self.input_costs.values()),
             self.config.end_year + max(self.config.consideration_time, 2),
         ]
-        if get_baseload_coverage(self.config.geo_config.included_power_mix) > 0:
-            if self.baseload_lcoe_grid is None:
-                raise ValueError("The baseload LCOE grid must be loaded before precomputing site hydrogen ceilings")
-            last_years.append(int(self.baseload_lcoe_grid["year"].max()))
         return range(int(self.year), int(min(last_years)) + 1)
 
     def initiate_site_hydrogen_ceilings(

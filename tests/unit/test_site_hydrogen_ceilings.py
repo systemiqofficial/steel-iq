@@ -104,7 +104,7 @@ def write_lcoe_file(folder: Path) -> Path:
     return path
 
 
-def yearly_step_ceilings(year: int, folder: Path) -> dict[str, float]:
+def yearly_step_ceilings(year: int, folder: Path, last_year: int = 2027) -> dict[str, float]:
     """
     The ceilings the yearly step computed from a year's raster before the precompute: its power layers, LCOH and
     regional percentile, then the trade option as ``apply_hydrogen_price_cap`` applied it.
@@ -112,11 +112,12 @@ def yearly_step_ceilings(year: int, folder: Path) -> dict[str, float]:
     Args:
         year: The year.
         folder: The folder holding the promoted LCOE file.
+        last_year: Last year of the input costs and the electrolyser data.
 
     Returns:
         Region to effective ceiling (USD/kg).
     """
-    efficiency, capex_opex = electrolyser()
+    efficiency, capex_opex = electrolyser(last_year=last_year)
     ds = base_layers()
     ds["feasibility_mask"] = (("lat", "lon"), np.ones((2, 3)))
     geo_paths = SimpleNamespace(baseload_lcoe_dir=folder, geo_plots_dir=None)
@@ -124,7 +125,7 @@ def yearly_step_ceilings(year: int, folder: Path) -> dict[str, float]:
         patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
         patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
     ):
-        ds = geospatial_layers.add_power_price(ds, year, input_costs(), COVERAGE, geo_paths)
+        ds = geospatial_layers.add_power_price(ds, year, input_costs(last_year=last_year), COVERAGE, geo_paths)
     ds = geospatial_calculations.calculate_lcoh_from_power_price(ds, year, efficiency, capex_opex)
     raw = geospatial_calculations.calculate_regional_hydrogen_ceiling(
         ds, mappings(), GEO_CONFIG.hydrogen_ceiling_percentile
@@ -135,13 +136,14 @@ def yearly_step_ceilings(year: int, folder: Path) -> dict[str, float]:
     }
 
 
-def environment(tmp_path: Path, *, efficiency_last_year: int) -> Environment:
+def environment(tmp_path: Path, *, efficiency_last_year: int, power_mix: str = "Grid only") -> Environment:
     """
-    A grid-only environment for a run from 2025 to 2030, whose electrolyser efficiency ends in a given year.
+    An environment for a run from 2025 to 2030, whose electrolyser efficiency ends in a given year.
 
     Args:
         tmp_path: Run folder.
         efficiency_last_year: Last year of the electrolyser efficiency series; the other inputs run to 2035.
+        power_mix: The run's power mix.
 
     Returns:
         The environment in its first year.
@@ -152,7 +154,7 @@ def environment(tmp_path: Path, *, efficiency_last_year: int) -> Environment:
         master_excel_path=Path("test.xlsx"),
         output_dir=tmp_path,
         geo_config=GeoConfig(
-            included_power_mix="Grid only",
+            included_power_mix=power_mix,
             hydrogen_ceiling_percentile=50.0,
             intraregional_trade_matrix={"North": None, "South": None},
         ),
@@ -240,6 +242,43 @@ def test_precompute_years_stop_at_the_last_lock_year_when_the_data_run_further(t
     env = environment(tmp_path, efficiency_last_year=2035)
 
     assert env.site_hydrogen_ceiling_years() == range(2025, 2034)
+
+
+def test_precompute_runs_past_the_lcoe_files_last_year_holding_its_lcoe(tmp_path):
+    """
+    With an LCOE file ending in 2027 and every other input running to 2035, the ceilings run to 2033, the last lock
+    year, and 2030's equal the ones its yearly raster gives with the LCOE held at 2027.
+    """
+    path = write_lcoe_file(tmp_path)
+    env = environment(tmp_path, efficiency_last_year=2035, power_mix="85% baseload + 15% grid")
+    env.initiate_baseload_lcoe_grid(boa_lcoe.load_lcoe_grid(path, COVERAGE))
+    years = env.site_hydrogen_ceiling_years()
+
+    ceilings = geospatial_layers.site_hydrogen_ceilings(
+        base_layers(),
+        years,
+        env.input_costs,
+        COVERAGE,
+        env.baseload_lcoe_grid,
+        env.hydrogen_efficiency,
+        env.hydrogen_capex_opex,
+        mappings(),
+        GEO_CONFIG,
+    )
+
+    assert years == range(2025, 2034)
+    assert ceilings[Year(2030)] == yearly_step_ceilings(2030, tmp_path, last_year=2035)
+    assert ceilings[Year(2030)] != ceilings[Year(2027)]
+
+
+def test_precompute_with_a_baseload_share_raises_without_the_lcoe_grid():
+    """A power mix with a baseload share cannot price its cells without the LCOE grid."""
+    efficiency, capex_opex = electrolyser()
+
+    with pytest.raises(ValueError, match="needs the baseload LCOE grid"):
+        geospatial_layers.site_hydrogen_ceilings(
+            base_layers(), YEARS, input_costs(), COVERAGE, None, efficiency, capex_opex, mappings(), GEO_CONFIG
+        )
 
 
 def test_yearly_raster_caps_at_the_stored_ceilings_and_adds_the_region_layer():
