@@ -129,6 +129,33 @@ def test_runs_differing_only_in_the_baseload_lcoe_run_are_told_apart_and_labelle
     }
 
 
+def test_runs_differing_only_in_the_geo_data_version_are_told_apart_and_labelled(tmp_path):
+    """
+    Tests that a run on geo-data 3.0.0 and a run written before runs recorded the version give one filter, labelled as
+    the geo-data version, whose values are the version and, for the older run, none; a recorded version is never
+    flagged as changed from a default.
+    """
+    runs = [
+        write_run(tmp_path / "sim_1", "older", "2026-10-20T10:00:00"),
+        write_run(tmp_path / "sim_2", "recorded", "2026-10-20T10:01:00", geo_data_version="3.0.0"),
+    ]
+    config_path = tmp_path / "sim_1" / "simulation_config.json"
+    config = json.loads(config_path.read_text())
+    del config["geo_data_version"]
+    config_path.write_text(json.dumps(config))
+
+    local = catalogue.build_manifest(runs, with_made_in=False)["sets"][0]
+
+    dimensions = {dimension["key"]: dimension for dimension in local["dimensions"]}
+    assert dimensions["geo_data_version"]["label"] == "Geo-data version"
+    assert {run["dir"]: run["dims"]["geo_data_version"] for run in local["runs"]} == {
+        "sim_1": "none",
+        "sim_2": "3.0.0",
+    }
+    recorded = {s["key"]: s for s in next(run for run in local["runs"] if run["dir"] == "sim_2")["settings"]}
+    assert recorded["geo_data_version"]["changed"] is None
+
+
 def test_input_data_is_one_value_per_master_content(tmp_path):
     """
     Tests that an app run and a CLI run of one master's bytes under different names give one input data value, the

@@ -459,6 +459,7 @@ class SimulationConfig:
 
     # === Data Settings ===
     boa_run: Optional[str] = None  # Name of the BOA run in boa_run_dir; None for the prepared data's default files
+    geo_data_version: Optional[str] = None  # Geo-data package the prepared data came from; None when not recorded
     use_master_excel: bool = False
     steel_plant_gem_data_year: int = 2025
     production_gem_data_years: list[int] = field(default_factory=lambda: list(range(2019, 2023)))
@@ -689,7 +690,8 @@ class SimulationConfig:
 
         This method automatically detects and sets up all geo data paths if the files exist,
         making it easy to use from CLI, notebooks, and Django without having to specify
-        all individual file paths.
+        all individual file paths. It also reads the geo-data version the preparation wrote to
+        ``geo_data_version.txt`` into ``geo_data_version``.
 
         Args:
             start_year: First year of simulation
@@ -752,6 +754,9 @@ class SimulationConfig:
 
         if path_resolver.feasibility_mask_path.exists():
             config_data["feasibility_mask_path"] = path_resolver.feasibility_mask_path
+
+        if path_resolver.geo_data_version_path.exists():
+            config_data["geo_data_version"] = path_resolver.geo_data_version_path.read_text().strip()
 
         # Override with any additional kwargs
         config_data.update(kwargs)

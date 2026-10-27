@@ -37,7 +37,10 @@ def test_geo_extractor_puts_the_default_lcoe_files_in_baseload_lcoe_and_leaves_t
     for name in shipped:
         (package_dir / name).parent.mkdir(parents=True, exist_ok=True)
         (package_dir / name).write_bytes(b"x")
-    data_manager = Mock(get_package_path=Mock(return_value=package_dir))
+    data_manager = Mock(
+        get_package_path=Mock(return_value=package_dir),
+        manifest=Mock(get_package=Mock(return_value=Mock(version="3.0.0"))),
+    )
     target = tmp_path / "prepared"
 
     extracted = geo_extractor.GeoDataExtractor(data_manager).extract_geo_data(target_dir=target)
@@ -47,3 +50,20 @@ def test_geo_extractor_puts_the_default_lcoe_files_in_baseload_lcoe_and_leaves_t
     assert extracted[f"outputs/GEO/baseload_lcoe/{DEFAULT_LCOE_FILES[0]}"] == lcoe_dir / DEFAULT_LCOE_FILES[0]
     assert not (target / "ne_50m_admin_0_map_subunits").exists()
     assert not (target / "outputs" / "GEO" / "baseload_power_simulation").exists()
+
+
+def test_geo_extractor_records_the_package_version_in_the_prepared_data(tmp_path):
+    """The extraction writes the version of the geo-data package it used to geo_data_version.txt."""
+    package_dir = tmp_path / "geo-data-v3.0.0"
+    package_dir.mkdir()
+    (package_dir / "terrain_025_deg.nc").write_bytes(b"x")
+    data_manager = Mock(
+        get_package_path=Mock(return_value=package_dir),
+        manifest=Mock(get_package=Mock(return_value=Mock(version="3.0.0"))),
+    )
+    target = tmp_path / "prepared"
+
+    geo_extractor.GeoDataExtractor(data_manager).extract_geo_data(target_dir=target)
+
+    assert (target / "geo_data_version.txt").read_text() == "3.0.0"
+    data_manager.manifest.get_package.assert_called_once_with("geo-data", None)

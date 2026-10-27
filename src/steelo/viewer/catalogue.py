@@ -174,6 +174,7 @@ SETTING_FORMATS = {
     "geo_config.excluded_greenfield_technologies": SettingFormat("Excluded from greenfield"),
     "geo_config.included_power_mix": SettingFormat("Power mix"),
     "boa_run": SettingFormat("Baseload LCOE", full="Baseload LCOE run", none="geo-data default"),
+    "geo_data_version": SettingFormat("Geo-data", full="Geo-data version"),
     "geo_config.hydrogen_ceiling_percentile": SettingFormat("Hydrogen price ceiling"),
     "geo_config.long_dist_pipeline_transport_cost": SettingFormat(
         "Long-distance pipeline", full="Long-distance hydrogen pipeline cost", unit="USD/kg H₂"
@@ -342,7 +343,7 @@ SETTINGS_LAYOUT: list[dict[str, Any]] = [
     {
         "title": "Power and hydrogen",
         "groups": [
-            {"title": "Power", "rows": ["geo_config.included_power_mix", "boa_run"]},
+            {"title": "Power", "rows": ["geo_config.included_power_mix", "boa_run", "geo_data_version"]},
             {
                 "title": "Hydrogen",
                 "rows": ["geo_config.hydrogen_ceiling_percentile", "geo_config.long_dist_pipeline_transport_cost"],
@@ -615,8 +616,9 @@ def default_settings(config: dict[str, Any]) -> dict[str, Any]:
         both entry points start from, when that file exists.
 
     Notes:
-        A field without a default and, without the technologies file, every technology setting are left out, so
-        their changed-from-default flag is unknown rather than compared with another default.
+        A field without a default, ``geo_data_version`` (a record of the prepared data, not a choice) and, without the
+        technologies file, every technology setting are left out, so their changed-from-default flag is unknown rather
+        than compared with another default.
     """
     defaults: dict[str, Any] = {}
     for config_field in fields(SimulationConfig):
@@ -630,6 +632,7 @@ def default_settings(config: dict[str, Any]) -> dict[str, Any]:
     defaults["capacity_policy"] = asdict(CapacityPolicyConfig())
     defaults["disposal_cost_outputs"] = sorted(defaults["disposal_cost_outputs"])
     del defaults["technology_settings"]
+    del defaults["geo_data_version"]
     technologies = Path(config["data_dir"]) / "fixtures" / "technologies.json" if config["data_dir"] else None
     if technologies is not None and technologies.is_file():
         defaults["technology_settings"] = {

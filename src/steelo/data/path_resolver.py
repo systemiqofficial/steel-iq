@@ -15,6 +15,8 @@ from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
+GEO_DATA_VERSION_FILE = "geo_data_version.txt"
+
 
 def resolve_scenario_fixtures(fixtures_dir: Path, demand_scenario: str, scrap_scenario: str) -> tuple[Path, Path]:
     """
@@ -255,6 +257,10 @@ class DataPathResolver:
     @property
     def baseload_lcoe_dir(self) -> Path:
         return self.get_data_path("baseload_lcoe", ["outputs", "GEO"])
+
+    @property
+    def geo_data_version_path(self) -> Path:
+        return self.get_data_path(GEO_DATA_VERSION_FILE)
 
     @property
     def feasibility_mask_path(self) -> Path:

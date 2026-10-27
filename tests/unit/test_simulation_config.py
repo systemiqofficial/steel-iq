@@ -116,6 +116,23 @@ def test_config_factory_from_data_directory(prepared_data_dir):
 
     # Check that geo paths were set if they exist in the data directory
     assert config.feasibility_mask_path == prepared_data_dir / "outputs" / "GEO" / "feasibility_mask.nc"
+    assert config.geo_data_version is None
+
+
+def test_config_factory_records_the_geo_data_version_the_preparation_wrote(prepared_data_dir):
+    """
+    Tests that from_data_directory reads geo_data_version.txt from the prepared data into geo_data_version.
+    """
+    (prepared_data_dir / "geo_data_version.txt").write_text("3.0.0\n")
+
+    config = SimulationConfig.from_data_directory(
+        data_dir=prepared_data_dir,
+        output_dir=Path("/tmp/sim_output"),
+        start_year=Year(2025),
+        end_year=Year(2030),
+    )
+
+    assert config.geo_data_version == "3.0.0"
 
 
 def test_deterministic_agents_force_announcement_and_construction_probabilities_to_one():

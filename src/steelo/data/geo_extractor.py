@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from .manager import DataManager
+from .path_resolver import GEO_DATA_VERSION_FILE
 import logging
 
 
@@ -28,6 +29,10 @@ class GeoDataExtractor:
 
         Returns:
             Dictionary mapping file descriptions to their extracted paths
+
+        Notes:
+            Also writes the package's version to ``geo_data_version.txt`` in ``target_dir``, which each run records
+            as ``geo_data_version``.
         """
         # Get the geo-data package path, downloading if necessary
         try:
@@ -138,5 +143,9 @@ class GeoDataExtractor:
                 logging.info(f"Extracted {source_name} to {target_path}")
             else:
                 logging.warning(f"Warning: {source_name} not found in geo-data package")
+
+        package = self.data_manager.manifest.get_package("geo-data", version)
+        assert package is not None  # get_package_path found it above
+        (target_dir / GEO_DATA_VERSION_FILE).write_text(package.version)
 
         return extracted_files
