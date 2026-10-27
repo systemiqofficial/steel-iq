@@ -8871,14 +8871,24 @@ class Environment:
             config.start_year through the last year present in input_costs.
 
         Raises:
-            ValueError: If there is no config or the input costs are empty.
+            ValueError: If there is no config, the input costs are empty, or they end before the start year.
+
+        Notes:
+            An empty range would leave existing plants without a hydrogen price in any year, so it stops the
+            run here, naming both years, rather than later.
         """
         if self.config is None:
             raise ValueError("SimulationConfig is required to precompute hydrogen prices")
         data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
         if not data_years:
             raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
-        return range(int(self.config.start_year), int(max(data_years)) + 1)
+        start_year, last_year = int(self.config.start_year), int(max(data_years))
+        if last_year < start_year:
+            raise ValueError(
+                f"The input costs end in {last_year}, before the start year {start_year}; "
+                "hydrogen prices cannot be precomputed"
+            )
+        return range(start_year, last_year + 1)
 
     def initiate_baseload_lcoe_by_geo_key(self, series: dict[Year, dict[str, float]]) -> None:
         """

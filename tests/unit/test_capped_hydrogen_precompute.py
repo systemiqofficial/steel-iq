@@ -96,3 +96,12 @@ def test_lookup_before_covered_range_raises(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError):
         env.capped_hydrogen_costs_for_year(Year(2020))
+
+
+def test_input_costs_ending_before_the_start_year_raise(tmp_path: Path) -> None:
+    """A start year after the last input-cost year stops the precompute, naming both years."""
+    env = _make_env(tmp_path)
+    env.config.start_year = Year(2028)
+
+    with pytest.raises(ValueError, match="input costs end in 2027, before the start year 2028"):
+        env.initiate_capped_hydrogen_costs_by_year()
