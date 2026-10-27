@@ -383,7 +383,8 @@ def test_price_inputs_record_coverage_grid_lcoe_electricity_and_both_lcohs(tmp_p
     assert row["lcoh"] == pytest.approx(50 * row["electricity"] + 1.0)
     assert row["capped_lcoh"] == env.capped_hydrogen_costs_by_year[Year(2025)]["AAA"]
     inputs = env.hydrogen_price_inputs_by_year[Year(2025)]
-    assert row["ceiling"] == pytest.approx(max(inputs[key]["lcoh"] for key in ("AAA", "BBB")))  # 100th percentile
+    # At the 100th percentile the ceiling is the dearest LCOH of the region's geo keys, provinces included
+    assert row["ceiling"] == pytest.approx(max(inputs[key]["lcoh"] for key in inputs))
 
 
 def test_existing_plant_file_lists_every_price_and_its_inputs(tmp_path):
@@ -422,6 +423,26 @@ def test_existing_plant_file_leaves_the_lcoe_empty_without_baseload(tmp_path):
     aaa = next(line for line in out.read_text().splitlines() if line.startswith("country,AAA,,2025")).split(",")
     assert aaa[4:6] == ["0.0000", "100.0000"]
     assert aaa[9:12] == ["50.0000", "", "50.0000"]
+
+
+def test_a_province_above_every_country_is_uncapped_at_the_100th_percentile_only(tmp_path):
+    """
+    At the 100th percentile a province priced above every country of its region keeps its own LCOH; below it the
+    ceiling is still a percentile of the countries' prices, which caps the province.
+    """
+    env = make_env(tmp_path, "Grid only")  # no baseload series needed for this check
+    env.input_costs["AAA:AA-1"][Year(2025)]["electricity"] = 0.2  # LCOH 11 USD/kg, above AAA's 3.5 and BBB's 6
+
+    uncapped = env.calculate_capped_hydrogen_costs_per_country(year=Year(2025))
+
+    row = env.hydrogen_price_inputs_by_year[Year(2025)]["AAA:AA-1"]
+    assert uncapped["AAA:AA-1"] == pytest.approx(11.0)
+    assert row["ceiling"] >= row["lcoh"]
+
+    env.config.geo_config.hydrogen_ceiling_percentile = 50.0
+    capped = env.calculate_capped_hydrogen_costs_per_country(year=Year(2025))
+
+    assert capped["AAA:AA-1"] == pytest.approx((3.5 + 6.0) / 2)  # the median of AAA's and BBB's LCOH
 
 
 def test_existing_plant_ceiling_is_the_cap_applied_and_a_province_inherits_it(tmp_path):

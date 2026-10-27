@@ -405,7 +405,7 @@ A cell whose geo unit and country both lack an electrolyser CAPEX/OPEX row has n
 | `electrolyser_kwh_per_kg` | Electrolyser energy use in the year (master `Hydrogen efficiency` × 1000; the same everywhere) |
 | `capex_opex_usd_per_kg` | Electrolyser CAPEX/OPEX (USD/kg) for the geo unit where the master has a row, otherwise for the country |
 | `uncapped_usd_per_kg` | `electrolyser_kwh_per_kg × grid_mix + capex_opex` (USD/kg) |
-| `ceiling_usd_per_kg` | Effective ceiling (USD/kg), trade-adjusted when allowed. For existing plants the percentile is taken across the region's country-level prices, not cells, and a geo unit inherits its country's ceiling |
+| `ceiling_usd_per_kg` | Effective ceiling (USD/kg), trade-adjusted when allowed. For existing plants the percentile is taken across the region's country-level prices, not cells, and a geo unit inherits its country's ceiling; at the 100th percentile it is the highest price over the region's countries and geo units, so it caps nothing in its own region |
 | `capped_usd_per_kg` | `min(uncapped, ceiling)` (USD/kg): what existing plants pay for hydrogen |
 
 The file stops at the last year of the input costs when the run ends later.

@@ -8752,6 +8752,10 @@ class Environment:
             - Requires self.hydrogen_efficiency and self.hydrogen_capex_opex data for LCOH calculation
             - Requires self.baseload_lcoe_by_geo_key whenever the power mix has a baseload share; the baseload share
               is priced at the LCOE even where the grid is cheaper
+            - A region's ceiling is the ceiling percentile of its countries' LCOH, which a province inherits. At the
+              100th percentile it is raised to the highest LCOH of all the region's geo keys, provinces included, so
+              no price is capped by its own region; a partner region's ceiling under intraregional trade counts its
+              provinces too
         """
         logger = logging.getLogger(f"{__name__}.Environment.calculate_capped_hydrogen_costs_per_country")
         from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
@@ -8811,13 +8815,20 @@ class Environment:
             year=target_year,
         )
 
-        # Step 2: ceilings from country-level LCOH only; a province inherits its country's ceiling
+        # Step 2: ceilings from country-level LCOH; a province inherits its country's region and ceiling. At the
+        # 100th percentile, which promises no cap, the ceiling also counts the region's provinces, so none is capped
         lcoh_by_country = {k: v for k, v in lcoh_by_geo_key.items() if ":" not in k}
         regional_ceilings, country_to_region = calculate_regional_hydrogen_ceiling_country_level(
             lcoh_by_country=lcoh_by_country,
             country_mappings=self.country_mappings,
             hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
         )
+        if geo_config.hydrogen_ceiling_percentile >= 100:
+            for geo_key, lcoh in lcoh_by_geo_key.items():
+                iso3 = geo_key.split(":", 1)[0]
+                if iso3 in country_to_region:  # an unmapped country stops the run in the cap below
+                    region = country_to_region[iso3]
+                    regional_ceilings[region] = max(regional_ceilings[region], lcoh)
 
         # Step 3: Apply hydrogen price caps
         # Filter out None values from intraregional_trade_matrix

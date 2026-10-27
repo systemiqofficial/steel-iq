@@ -31,7 +31,7 @@ Geo-keyed inputs use the same form in the master workbook: a bare country code f
 | Carbon price | National only |
 | Cost of capital | National only |
 | Fixed OPEX | National only |
-| Hydrogen price ceiling | Built from country-level LCOH only; a province inherits its country's regional ceiling |
+| Hydrogen price ceiling | Built from country-level LCOH; a province inherits its country's regional ceiling. At the 100th percentile the ceiling also counts the region's provinces, so no province is capped by it |
 
 `Location.resolve()` logs at INFO when a province has no value and the country value is used, and at DEBUG when the province value is used.
 
