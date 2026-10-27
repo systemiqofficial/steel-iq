@@ -4204,6 +4204,24 @@ class Plant:
             )
         )
 
+    def investment_captive_energy(
+        self, captive_energy_at: Callable[[Location, Year], CaptiveEnergy], year: Year
+    ) -> CaptiveEnergy | None:
+        """
+        The stack a new investment at this plant locks: a switch, a renovation or an expansion.
+
+        Args:
+            captive_energy_at: ``Environment.captive_energy_at``.
+            year: The investment's start year.
+
+        Returns:
+            The stack of ``year`` at the plant's site for a new site (``parent_gem_id`` starting with ``indi``),
+            None for an existing plant, which pays market prices.
+        """
+        if self.parent_gem_id.lower().startswith("indi"):
+            return captive_energy_at(self.location, year)
+        return None
+
     def evaluate_furnace_group_strategy(
         self,
         furnace_group_id: str,
@@ -4388,9 +4406,7 @@ class Plant:
 
         # Bind the score-series provider to this plant's location; a GEO ("indi") site invests now,
         # so every candidate is priced from the stack it would lock this year
-        captive = (
-            captive_energy_at(self.location, current_year) if self.parent_gem_id.lower().startswith("indi") else None
-        )
+        captive = self.investment_captive_energy(captive_energy_at, current_year)
 
         def score_series_for_tech(
             tech_name: str, output_shares: dict[str, float], start: Year, end: Year
@@ -5744,6 +5760,7 @@ class PlantGroup:
         allowed_techs: dict[Year, list[str]],
         active_statuses: list[str],
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -5792,6 +5809,10 @@ class PlantGroup:
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
             active_statuses (list[str]): Status strings whose furnace groups vote in the
                 group's most-common-reductant aggregation
+            reductant_score_series (Callable): ``Environment.reductant_score_series``
+            captive_energy_at (Callable): ``Environment.captive_energy_at``. Each new site builds one stack for
+                the current year, the expansion's start, and every candidate at it, the CO2 gate included, is
+                priced from it; an existing plant builds none.
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
@@ -5868,14 +5889,8 @@ class PlantGroup:
             base_energy_costs = plant.furnace_groups[-1].energy_costs_no_subsidy
             operating_start_year = Year(current_year + construction_time)
             operating_end_year = Year(current_year + construction_time + plant_lifetime)
-            # GEO ("indi") sites keep their own power/hydrogen prices, trajectory-scaled
-            site_overrides: dict[str, float] | None = None
-            if plant.parent_gem_id.lower().startswith("indi"):
-                site_overrides = {
-                    carrier: base_energy_costs[carrier]
-                    for carrier in ("electricity", "hydrogen")
-                    if carrier in base_energy_costs
-                }
+            # A GEO ("indi") site's expansion is priced from the stack it would lock this year
+            captive = plant.investment_captive_energy(captive_energy_at, current_year)
             reductant_by_tech: dict[str, str] = {}
             npv_capacity_by_tech: dict[str, Volumes] = {}
 
@@ -5930,8 +5945,7 @@ class PlantGroup:
                             {},
                             operating_start_year,
                             Year(operating_start_year + 1),
-                            overrides=site_overrides,
-                            override_reference_year=current_year if site_overrides else None,
+                            captive=captive,
                         )
                         gate_pick = gate_series.picks[0] if gate_series.picks else ""
                         need = get_co2_need_by_name(tech, float(capacity), gate_pick)
@@ -5982,8 +5996,7 @@ class PlantGroup:
                     output_shares,
                     operating_start_year,
                     operating_end_year,
-                    overrides=site_overrides,
-                    override_reference_year=current_year if site_overrides else None,
+                    captive=captive,
                 )
                 committed_reductant = score_series.picks[0] if score_series.picks else ""
                 if committed_reductant != reductant:
@@ -6162,6 +6175,7 @@ class PlantGroup:
         cost_of_equity_dict: dict[str, dict[str, float]],
         get_bom_from_avg_boms: Callable,
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capacity_limit_steel: Volumes,
         capacity_limit_iron: Volumes,
         installed_capacity_in_year: Callable[[str], Volumes],
@@ -6221,6 +6235,9 @@ class PlantGroup:
             cost_of_debt_dict (dict[str, dict[str, float]]): Cost of debt by ISO3 country code and technology
             cost_of_equity_dict (dict[str, dict[str, float]]): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable): Function to retrieve bill of materials for a technology
+            reductant_score_series (Callable): ``Environment.reductant_score_series``
+            captive_energy_at (Callable): ``Environment.captive_energy_at``; the chosen new site's stack for the
+                current year goes on the command, so the new group locks it
             capacity_limit_steel (Volumes): Maximum allowed steel capacity from expansions/switches (PAM share)
             capacity_limit_iron (Volumes): Maximum allowed iron capacity from expansions/switches (PAM share)
             installed_capacity_in_year (Callable[[str], Volumes]): Function to get total installed capacity for product
@@ -6278,6 +6295,7 @@ class PlantGroup:
             allowed_techs=allowed_techs,
             active_statuses=active_statuses,
             reductant_score_series=reductant_score_series,
+            captive_energy_at=captive_energy_at,
             capex_subsidies=capex_subsidies,
             opex_subsidies=opex_subsidies,
             debt_subsidies=debt_subsidies,
@@ -6553,6 +6571,8 @@ class PlantGroup:
             cost_of_debt_no_subsidy=cost_of_debt_original,
             capex_subsidies=selected_capex_subsidies,
             debt_subsidies=selected_debt_subsidies,
+            # The stack its options were priced with: the same site and year
+            captive_energy=plant.investment_captive_energy(captive_energy_at, current_year),
         )
 
     # ------------------------------------------------------------- New plant opening logic ------------------------------------------------------------- #
@@ -8748,8 +8768,8 @@ class Environment:
                - These plants own their power system and electrolyser (``FurnaceGroup.captive_energy``)
                - Past construction start, each furnace group's electricity and hydrogen without subsidy come
                  from its stack and the year's grid price at the plant's geo key
-               - A considered or announced opportunity, and a furnace group without a stack, keep their stored
-                 electricity and hydrogen without subsidy
+               - A considered or announced opportunity keeps its stored electricity and hydrogen without subsidy,
+                 which the next re-valuation replaces; any other furnace group without a stack raises
                - Each furnace group starts from its own copy of the input costs
 
                **Existing Plants (all others):**
@@ -8771,6 +8791,9 @@ class Environment:
 
         Side Effects:
             - Updates fg.energy_costs dictionary via set_energy_costs() for each furnace group
+
+        Raises:
+            ValueError: If a new site's furnace group past construction start holds no stack.
 
         Notes:
             - Plants with missing ISO3 codes in input_costs (e.g., Kosovo/XKX) are skipped with a warning
@@ -8807,14 +8830,16 @@ class Environment:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     fg_costs = input_costs.copy()
-                    if fg.captive_energy is None:
-                        # An expansion's group, seeded from the plant's prices, holds no stack of its own yet
-                        self._keep_stored_site_prices(fg, fg_costs)
-                    elif fg.status in ("considered", "announced"):
+                    if fg.status in ("considered", "announced"):
                         # The year's re-valuation writes an opportunity's prices from the year's rasters
                         self._keep_stored_site_prices(fg, fg_costs)
                     else:
-                        grid = self._grid_electricity_for_year(plant.location, self.year)
+                        if fg.captive_energy is None:
+                            raise ValueError(
+                                f"New-site furnace group {fg.furnace_group_id} of plant {plant.plant_id} holds no "
+                                "captive energy stack: every build, switch, renovation and expansion locks one"
+                            )
+                        grid = self.grid_electricity_for_year(plant.location, self.year)
                         fg_costs["electricity"] = fg.captive_energy.electricity(grid)
                         fg_costs["hydrogen"] = fg.captive_energy.hydrogen(grid)
                     fg.set_energy_costs(**fg_costs)
@@ -9175,12 +9200,12 @@ class Environment:
             hydrogen_contract=None,
         )
         ceiling = self.site_hydrogen_ceilings_for_year(year)[self.site_hydrogen_region_by_iso3[location.iso3]]
-        own_hydrogen = stack.hydrogen(self._grid_electricity_for_year(location, year))
+        own_hydrogen = stack.hydrogen(self.grid_electricity_for_year(location, year))
         if own_hydrogen > ceiling * T_TO_KG:
             return dataclasses.replace(stack, hydrogen_contract=ceiling)
         return stack
 
-    def _grid_electricity_for_year(self, location: "Location", year: Year) -> float:
+    def grid_electricity_for_year(self, location: "Location", year: Year) -> float:
         """
         The grid price at a location for a year, before any subsidy.
 
@@ -9382,53 +9407,26 @@ class Environment:
         self,
         location: "Location",
         year: Year,
-        overrides: dict[str, float] | None = None,
-        override_reference_year: Year | None = None,
         captive: CaptiveEnergy | None = None,
     ) -> dict[str, float]:
         """
-        Exogenous per-carrier prices at a location for a year, before any subsidy, with a site's own prices.
+        Exogenous per-carrier prices at a location for a year, before any subsidy, with a new site's own prices.
 
         Args:
             location: Plant/site location (geo_key resolution, finest available).
             year: The year to price.
-            overrides: Site-specific current prices per carrier (e.g. a GEO site's
-                own power price). Each override replaces the country level but keeps
-                the country trajectory: price_t = override x country_t / country_ref,
-                both sides unsubsidised.
-            override_reference_year: Year the override prices belong to; required
-                when overrides are given.
             captive: A new site's locked stack. Electricity and hydrogen of ``year``
-                come from it and the year's grid price at the location.
+                come from it and the year's grid price at the location; None prices
+                every carrier from the input costs and the capped hydrogen series.
 
         Returns:
             Normalised carrier -> price for that year.
-
-        Raises:
-            ValueError: If both ``overrides`` and ``captive`` are given, or overrides lack a reference
-                year or meet a zero reference price.
         """
-        if overrides and captive is not None:
-            raise ValueError("A site is priced either from overrides or from its captive stack, not both")
         base = self._unsubsidised_energy_costs_for_year(location, year)
-
         if captive is not None:
             grid = base["electricity"]
             base["electricity"] = captive.electricity(grid)
             base["hydrogen"] = captive.hydrogen(grid)
-        elif overrides:
-            if override_reference_year is None:
-                raise ValueError("override_reference_year is required when overrides are given")
-            reference = self._unsubsidised_energy_costs_for_year(location, override_reference_year)
-            for carrier, site_price in overrides.items():
-                normalized_carrier = normalize_name(carrier)
-                reference_price = reference[normalized_carrier]
-                if reference_price == 0.0:
-                    raise ValueError(
-                        f"Cannot trajectory-scale '{normalized_carrier}' for {location.geo_key}: "
-                        f"reference price in {override_reference_year} is zero"
-                    )
-                base[normalized_carrier] = site_price * base[normalized_carrier] / reference_price
         return base
 
     def candidate_energy_costs_for_year(
@@ -9436,8 +9434,6 @@ class Environment:
         location: "Location",
         technology_name: str,
         year: Year,
-        overrides: dict[str, float] | None = None,
-        override_reference_year: Year | None = None,
         captive: CaptiveEnergy | None = None,
     ) -> tuple[dict[str, float], dict[str, float]]:
         """
@@ -9453,8 +9449,8 @@ class Environment:
             location: Plant/site location (geo_key resolution, finest available).
             technology_name: Candidate technology whose energy subsidies apply.
             year: The year to price.
-            overrides / override_reference_year / captive: A site's own prices, see
-                site_energy_costs_for_year; year-t subsidies apply after them.
+            captive: A new site's own prices, see site_energy_costs_for_year; year-t
+                subsidies apply after them.
 
         Returns:
             (input_costs, output_costs) per normalised carrier for that year.
@@ -9462,7 +9458,7 @@ class Environment:
         Notes:
             Years missing inside the input-cost trajectory raise (no silent gaps).
         """
-        base = self.site_energy_costs_for_year(location, year, overrides, override_reference_year, captive)
+        base = self.site_energy_costs_for_year(location, year, captive)
 
         active_subsidies: dict[str, list[Subsidy]] = {}
         for carrier, subsidies_by_geo in self.energy_subsidies.items():
@@ -9482,8 +9478,6 @@ class Environment:
         output_shares: dict[str, float],
         start_year: Year,
         end_year: Year,
-        overrides: dict[str, float] | None = None,
-        override_reference_year: Year | None = None,
         captive: CaptiveEnergy | None = None,
     ) -> "ReductantScoreSeries":
         """
@@ -9504,8 +9498,7 @@ class Environment:
                 BOM build; reductant-invariant).
             start_year: First operating year (inclusive).
             end_year: Last operating year (exclusive).
-            overrides / override_reference_year / captive: A site's own prices, see
-                site_energy_costs_for_year.
+            captive: A new site's own prices, see site_energy_costs_for_year.
 
         Returns:
             ReductantScoreSeries with one score and one pick per operating year.
@@ -9523,15 +9516,9 @@ class Environment:
             raise ValueError("SimulationConfig is required for reductant score series")
         self._validate_reductant_score_cache()
         cache = self._reductant_score_cache
-        # The year's pick and scores depend on the site only through its geo key and its own prices,
+        # The year's pick and scores depend on the site only through its geo key and its stack,
         # and not on output_shares (those only weight the picked scores).
-        site_key = (
-            location.geo_key,
-            technology_name,
-            tuple(sorted(overrides.items())) if overrides else None,
-            override_reference_year if overrides else None,
-            captive,
-        )
+        site_key = (location.geo_key, technology_name, captive)
         scores: list[float] = []
         picks: list[str] = []
         for year in range(int(start_year), int(end_year)):
@@ -9543,8 +9530,6 @@ class Environment:
                     technology_name,
                     dynamic_business_case,
                     Year(year),
-                    overrides,
-                    override_reference_year,
                     captive,
                 )
                 if len(cache) >= self._REDUCTANT_CACHE_MAX_ENTRIES:
@@ -9624,8 +9609,6 @@ class Environment:
         technology_name: str,
         dynamic_business_case: list["PrimaryFeedstock"],
         year: Year,
-        overrides: dict[str, float] | None,
-        override_reference_year: Year | None,
         captive: CaptiveEnergy | None,
     ) -> tuple[str | None, dict[str, dict[str, float]]]:
         """Reductant pick and per-(charge, reductant) scores of a candidate technology in one year.
@@ -9637,8 +9620,7 @@ class Environment:
             technology_name: Candidate technology.
             dynamic_business_case: The technology's business cases.
             year: The year to score.
-            overrides / override_reference_year / captive: A site's own prices, see
-                site_energy_costs_for_year.
+            captive: A new site's own prices, see site_energy_costs_for_year.
 
         Returns:
             (pick, score_by_input); the pick is None when no charge has a scored reductant.
@@ -9648,8 +9630,6 @@ class Environment:
             location,
             technology_name,
             year,
-            overrides=overrides,
-            override_reference_year=override_reference_year,
             captive=captive,
         )
         carbon_price = self.carbon_price_for_year(location.iso3, year)

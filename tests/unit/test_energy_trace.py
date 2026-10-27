@@ -1182,6 +1182,30 @@ def test_greenfield_relock_records_a_group_without_a_stack_and_skips_existing_pl
     assert warnings_logged(trace_log) == []
 
 
+def test_greenfield_relock_at_an_expansion_gives_the_new_group_its_reference(tmp_path, trace_log):
+    """An expansion's new group gets the new stack as its reference: its stack's prices pass and its sibling's fail."""
+    energy_trace.configure(True, [], [], tmp_path)
+    energy_trace.attach_environment(captive_environment())
+    new_fg = make_furnace_group("indi_8_2", electricity=0.0, hydrogen=0.0, status="construction")
+    plant = make_plant("indi_8", "CHN", [new_fg], parent_gem_id="indi_8")
+    stack = site_stack(lock_year=Year(2030), lcoe=0.048)
+
+    energy_trace.greenfield_relock("expansion", plant, new_fg, 2030, None, stack, 2030)
+    new_fg.status = "operating"
+    electricity = 0.85 * 0.048 + 0.15 * 0.08
+    new_fg.energy_costs_no_subsidy = {"electricity": electricity, "hydrogen": (50 * electricity + 1.0) * 1000}
+    energy_trace.greenfield_operating(make_repository(plant), Year(2034), ACTIVE)
+    new_fg.energy_costs_no_subsidy = {"electricity": 0.0596, "hydrogen": 3980.0}
+    energy_trace.greenfield_operating(make_repository(plant), Year(2035), ACTIVE)
+
+    relock = {row["quantity"]: row for row in rows_for(read_rows(tmp_path), stage="greenfield_relock")}
+    assert relock["event"]["value"] == "expansion"
+    assert relock["old_stack"]["value"] == "none"
+    assert all(row["check_failed"] == "0" for row in relock.values())
+    operating = rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="electricity")
+    assert [(row["year"], row["check_failed"]) for row in operating] == [("2034", "0"), ("2035", "1")]
+
+
 def test_greenfield_build_without_reference_writes_a_missing_row(tmp_path, trace_log):
     """A furnace group without a stack is built with a reference row reading missing."""
     energy_trace.configure(True, [], [], tmp_path)

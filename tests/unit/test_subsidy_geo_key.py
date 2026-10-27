@@ -405,7 +405,7 @@ def test_candidate_bom_priced_at_province_energy_costs():
     # (no dedicated row -> logged fallback to the country)
     assert hebei["no_subsidy_prices"]["natural_gas"] == pytest.approx(0.01)
     assert anhui["no_subsidy_prices"]["natural_gas"] == pytest.approx(0.03)
-    # Pixel overrides still win for electricity and hydrogen at both sites
+    # The site's raster prices still win for electricity and hydrogen at both sites
     assert hebei["no_subsidy_prices"]["electricity"] == pytest.approx(0.05)
     assert anhui["no_subsidy_prices"]["electricity"] == pytest.approx(0.05)
     # The BOM pick itself was priced with the resolved carriers

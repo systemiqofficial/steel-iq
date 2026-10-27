@@ -206,30 +206,11 @@ def test_scores_clamp_beyond_the_data_horizon(tmp_path: Path) -> None:
     assert series.picks[1] == series.picks[-1]
 
 
-def test_site_overrides_follow_the_country_trajectory(tmp_path: Path) -> None:
-    """A site electricity override is scaled by the country trajectory ratio."""
-    env = _make_env(tmp_path, carbon_by_year={y: 0.0 for y in range(2025, 2031)})
-    # Site pays half the country electricity price in 2025.
-    site_electricity = 0.05
-    input_2027, _ = env.candidate_energy_costs_for_year(
-        LOCATION,
-        "DRI",
-        Year(2027),
-        overrides={"electricity": site_electricity},
-        override_reference_year=Year(2025),
-    )
-    country_2025 = env.input_costs["AAA"][Year(2025)]["electricity"]
-    country_2027 = env.input_costs["AAA"][Year(2027)]["electricity"]
+def test_captive_prices_take_only_their_own_years_energy_subsidies(tmp_path: Path) -> None:
+    """A subsidy live in the lock year reaches neither the stack nor a later year's price; it applies in its own year.
 
-    assert input_2027["electricity"] == pytest.approx(site_electricity * country_2027 / country_2025)
-
-
-def test_override_reference_ignores_reference_year_subsidies(tmp_path: Path) -> None:
-    """A subsidy active in the reference year must not leak into the override scaling ratio.
-
-    The trajectory ratio country_t / country_ref is defined on unsubsidised prices;
-    a candidate electricity subsidy live in the reference year previously deflated
-    the denominator and inflated every scaled year.
+    The stack is built from unsubsidised inputs, and each year's subsidies apply on top of that year's captive price,
+    so a subsidy active only in 2025 halves the 2025 electricity price and leaves 2027's at the stack's own.
     """
     env = _make_env(tmp_path, carbon_by_year={y: 0.0 for y in range(2025, 2031)})
     env.initiate_energy_subsidies(
@@ -246,24 +227,18 @@ def test_override_reference_ignores_reference_year_subsidies(tmp_path: Path) -> 
             )
         ]
     )
-    site_electricity = 0.05
-    input_2027, _ = env.candidate_energy_costs_for_year(
-        LOCATION,
-        "DRI",
-        Year(2027),
-        overrides={"electricity": site_electricity},
-        override_reference_year=Year(2025),
-    )
-    country_2025 = env.input_costs["AAA"][Year(2025)]["electricity"]
-    country_2027 = env.input_costs["AAA"][Year(2027)]["electricity"]
+    captive = CaptiveEnergy(Year(2025), 0.85, 0.04, 0.05, 1.0, None)
 
-    # Subsidy expired by 2027: the scaled price is exactly the unsubsidised ratio.
-    assert input_2027["electricity"] == pytest.approx(site_electricity * country_2027 / country_2025)
+    input_2025, _ = env.candidate_energy_costs_for_year(LOCATION, "DRI", Year(2025), captive=captive)
+    input_2027, _ = env.candidate_energy_costs_for_year(LOCATION, "DRI", Year(2027), captive=captive)
+
+    grid_2025 = env.input_costs["AAA"][Year(2025)]["electricity"]
+    grid_2027 = env.input_costs["AAA"][Year(2027)]["electricity"]
+    assert input_2025["electricity"] == pytest.approx(0.5 * captive.electricity(grid_2025))
+    assert input_2027["electricity"] == pytest.approx(captive.electricity(grid_2027))
 
 
-def _reference_series(
-    env, location, technology_name, shares, start, end, overrides=None, reference_year=None, captive=None
-):
+def _reference_series(env, location, technology_name, shares, start, end, captive=None):
     """The series as computed without the memo: score each year from scratch."""
     business_case = env.dynamic_feedstocks[technology_name.lower()]
     ef_by_key = build_direct_ghg_lookup(
@@ -272,12 +247,7 @@ def _reference_series(
     scores, picks = [], []
     for year in range(int(start), int(end)):
         input_costs, output_costs = env.candidate_energy_costs_for_year(
-            location,
-            technology_name,
-            Year(year),
-            overrides=overrides,
-            override_reference_year=reference_year,
-            captive=captive,
+            location, technology_name, Year(year), captive=captive
         )
         year_scores = score_reductants_for_business_cases(
             business_case,
@@ -300,42 +270,23 @@ def _reference_series(
     return scores, picks
 
 
-def test_memoised_series_equals_fresh_computation_across_windows_shares_and_overrides(tmp_path: Path) -> None:
+def test_memoised_series_equals_fresh_computation_across_windows_shares_and_stacks(tmp_path: Path) -> None:
     env = _make_env(tmp_path, carbon_by_year={y: 100.0 for y in range(2025, 2031)})
     windows = [(2025, 2031), (2026, 2031), (2025, 2028), (2027, 2034), (2025, 2031)]  # overlapping and repeated
     cheap = CaptiveEnergy(Year(2026), 0.85, 0.02, 0.05, 1.0, None)
     cases = [
-        ({"IO_low": 1.0}, None, None, None),
-        ({"IO_low": 0.4}, None, None, None),  # shares only weight the picked scores
-        ({"IO_low": 1.0}, {"electricity": 0.08}, Year(2025), None),
-        ({"IO_low": 1.0}, {"electricity": 0.02}, Year(2025), None),  # a different override is a different entry
-        ({"IO_low": 1.0}, None, None, cheap),
-        ({"IO_low": 1.0}, None, None, CaptiveEnergy(Year(2026), 0.85, 0.09, 0.05, 1.0, None)),  # another stack
-        ({"IO_low": 1.0}, None, None, CaptiveEnergy(Year(2026), 0.85, 0.02, 0.05, 1.0, 9.0)),  # same, on contract
+        ({"IO_low": 1.0}, None),
+        ({"IO_low": 0.4}, None),  # shares only weight the picked scores
+        ({"IO_low": 1.0}, cheap),
+        ({"IO_low": 0.4}, cheap),
+        ({"IO_low": 1.0}, CaptiveEnergy(Year(2026), 0.85, 0.09, 0.05, 1.0, None)),  # another stack
+        ({"IO_low": 1.0}, CaptiveEnergy(Year(2027), 0.85, 0.02, 0.05, 1.0, None)),  # same fields, another lock year
+        ({"IO_low": 1.0}, CaptiveEnergy(Year(2026), 0.85, 0.02, 0.05, 1.0, 9.0)),  # same, on contract
     ]
     for start, end in windows:
-        for shares, overrides, reference_year, captive in cases:
-            series = env.reductant_score_series(
-                LOCATION,
-                "DRI",
-                shares,
-                Year(start),
-                Year(end),
-                overrides=overrides,
-                override_reference_year=reference_year,
-                captive=captive,
-            )
-            scores, picks = _reference_series(
-                env,
-                LOCATION,
-                "DRI",
-                shares,
-                start,
-                end,
-                overrides=overrides,
-                reference_year=reference_year,
-                captive=captive,
-            )
+        for shares, captive in cases:
+            series = env.reductant_score_series(LOCATION, "DRI", shares, Year(start), Year(end), captive=captive)
+            scores, picks = _reference_series(env, LOCATION, "DRI", shares, start, end, captive=captive)
             assert series.scores == scores
             assert series.picks == picks
 
@@ -474,8 +425,8 @@ def test_captive_site_electricity_moves_by_the_grid_share_of_a_rising_grid(tmp_p
     )
 
 
-def test_captive_score_series_differs_from_the_site_price_scaled_from_the_selection_year(tmp_path: Path) -> None:
-    """The NPV's score series priced from the stack equals the scores of the stack's prices, not of today's price."""
+def test_captive_score_series_differs_from_a_stack_locked_at_the_selection_year(tmp_path: Path) -> None:
+    """The NPV's score series priced from the stack of 2028 equals its prices' scores, not those of a 2025 stack."""
     env = _make_captive_env(tmp_path, {y: 0.08 for y in range(2025, 2041)}, site_ceiling=10.0)
     env.initiate_dynamic_feedstocks(
         [_feedstock("natural_gas", {"natural_gas": 10.0}), _feedstock("hydrogen", {"hydrogen": 0.055})]
@@ -488,17 +439,10 @@ def test_captive_score_series_differs_from_the_site_price_scaled_from_the_select
 
     assert series.picks == ["hydrogen"] * 8
     assert series.scores == _reference_series(env, LOCATION, "DRI", SHARES, 2032, 2040, captive=captive)[0]
-    selection_price = 0.85 * 0.060 + 0.15 * 0.08
-    scaled = env.reductant_score_series(
-        LOCATION,
-        "DRI",
-        SHARES,
-        Year(2032),
-        Year(2040),
-        overrides={"electricity": selection_price, "hydrogen": (0.05 * 1000 * selection_price + 1.0) * 1000},
-        override_reference_year=Year(2025),
+    at_selection = env.reductant_score_series(
+        LOCATION, "DRI", SHARES, Year(2032), Year(2040), captive=env.captive_energy_at(LOCATION, Year(2025))
     )
-    assert series.scores != pytest.approx(scaled.scores)
+    assert series.scores != pytest.approx(at_selection.scores)
 
 
 def test_captive_stack_raises_for_a_cell_without_a_finite_lcoe(tmp_path: Path) -> None:

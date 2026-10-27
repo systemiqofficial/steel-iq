@@ -9,6 +9,11 @@ from steelo.domain import PointInTime, Year, TimeFrame, Volumes, Subsidy
 from steelo.domain.models import PlantGroup, CountryMapping, CountryMappingService
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
+
+
 def _stub_score_series(location, tech, output_shares, start, end, **kwargs):
     n = int(end) - int(start)
     return ReductantScoreSeries(scores=[0.0] * n, picks=[""] * n)
@@ -151,6 +156,7 @@ def test_evaluate_expansion_without_subsidies(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -236,6 +242,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -323,6 +330,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -430,6 +438,7 @@ def test_evaluate_expansion_with_combined_subsidies(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -512,6 +521,7 @@ def test_prefilter_affordability_uses_subsidised_capex(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -592,6 +602,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -630,6 +641,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),

@@ -92,7 +92,7 @@ electricity = c × L + (1 − c) × g
 hydrogen    = (e × electricity + k) × 1,000, or the contract × 1,000
 ```
 
-The grid share follows the grid every year; the LCOE, the electrolyser and the contract stay those of the lock year: the construction-start year, or the start of the latest renovation or switch. Every other carrier comes from the input costs. A considered or announced opportunity keeps its stored electricity and hydrogen, which the next re-valuation replaces, and so does a new site's furnace group without a stack, which an expansion of a new site adds. The year-start hydrogen refresh skips new sites.
+The grid share follows the grid every year; the LCOE, the electrolyser and the contract stay those of the lock year: the construction-start year, or the start of the latest renovation, switch or expansion. Every other carrier comes from the input costs. A considered or announced opportunity keeps its stored electricity and hydrogen, which the next re-valuation replaces. Any other new-site furnace group without a stack stops the run, since every build, switch, renovation and expansion locks one. The year-start hydrogen refresh skips new sites.
 
 **Trace:** no stage.
 
@@ -108,16 +108,15 @@ At bootstrap and at the start of each year's trade model setup, every furnace gr
 
 **Trace:** no stage of its own; the pick reads the prices `brownfield` and `greenfield_operating` check just before it.
 
-### 10. A switch or renovation
+### 10. A switch, renovation or expansion
 
 `Plant.evaluate_furnace_group_strategy` prices every candidate, the incumbent's renovation and each switch, with the score series, plus the candidate's own energy subsidies. For a new site it first locks one stack for the current year s, the start of the new investment (`Environment.captive_energy_at`), and every candidate, the CO2 storage gate and the capacity-policy pick are priced from it as in step 3. For an existing plant, the series follows the country prices and no stack is built.
 
 - **Renovation:** it runs at once in year s. The `RenovateFurnaceGroup` command carries the stack, and `Plant.renovate_furnace_group` installs it, so from the next year-end refresh the site pays the LCOE, electrolyser and contract of s.
 - **Switch:** decided in s, it executes in s + `construction_time`. The `ChangeFurnaceGroupTechnology` command carries the stack of s; the old technology keeps its old stack while the new one is built, and `execute_scheduled_technology_switch` installs the new stack with the new technology.
+- **Expansion:** `PlantGroup.evaluate_expansion_options` prices each new site's expansion candidates, the CO2 storage gate included, from the stack the plant would lock in the current year. `evaluate_expansion` puts that stack on the `AddFurnaceGroup` command, and `add_furnace_group_to_plant` gives the new furnace group the stack, its electricity and hydrogen without subsidy from the stack and the year's grid price, and every other carrier at its sibling's price without subsidy. No subsidy enters the new group's base prices, so the year-start loop applies each subsidy once. An existing plant's new group still starts from the plant's prices, which the year-end refresh re-bases on the input costs.
 
-Expansion candidates at a new site's plant still take the plant's last furnace group's electricity and hydrogen without subsidy as site prices, scaled along the country trajectory from the decision year.
-
-**Trace:** `greenfield_relock` records the old and new stacks at a renovation, a switch decision and a switch execution of a new site. It checks the new stack's lock year against the investment's start year, and its LCOE and electrolyser use and cost against the LCOE grid and the electrolyser inputs of that year. At a renovation and a switch's execution, the new stack becomes the reference `greenfield_operating` checks against.
+**Trace:** `greenfield_relock` records the old and new stacks at a renovation, a switch decision, a switch execution and an expansion of a new site; an expansion's new group has no old stack. It checks the new stack's lock year against the investment's start year, and its LCOE and electrolyser use and cost against the LCOE grid and the electrolyser inputs of that year. At a renovation, a switch's execution and an expansion, the new stack becomes the furnace group's reference `greenfield_operating` checks against.
 
 ## Related Documentation
 

@@ -273,25 +273,31 @@ def test_year_end_refresh_moves_a_new_sites_prices_with_the_grid_share():
     assert after["FG_OWN"]["natural_gas"] == 0.03
 
 
-def test_year_end_refresh_keeps_an_opportunitys_and_a_stackless_groups_stored_prices():
-    """A considered opportunity keeps its cell prices for the re-valuation, and a group without a stack its own."""
+def test_year_end_refresh_keeps_an_opportunitys_stored_prices():
+    """A considered opportunity keeps its cell prices, which the year's re-valuation replaces."""
     opportunity = make_site_furnace_group("FG_OPP", "considered", LOCKED)
-    stackless = make_site_furnace_group("FG_EXP", "operating", None)
-    plant = make_new_site(opportunity, stackless)
+    plant = make_new_site(opportunity)
     env = year_end_environment({2033: 0.110})
 
     refresh(env, plant, 2033)
 
-    for fg in plant.furnace_groups:
-        assert fg.energy_costs_no_subsidy["electricity"] == 0.08
-        assert fg.energy_costs_no_subsidy["hydrogen"] == 4500.0
-        assert fg.energy_costs_no_subsidy["natural_gas"] == 0.03
+    assert opportunity.energy_costs_no_subsidy["electricity"] == 0.08
+    assert opportunity.energy_costs_no_subsidy["hydrogen"] == 4500.0
+    assert opportunity.energy_costs_no_subsidy["natural_gas"] == 0.03
+
+
+def test_year_end_refresh_raises_for_a_new_site_group_without_a_stack():
+    """A new site's group past construction start without a stack has nothing to be priced from and stops the run."""
+    plant = make_new_site(make_site_furnace_group("FG_NONE", "operating", None))
+
+    with pytest.raises(ValueError, match="holds no captive energy stack"):
+        refresh(year_end_environment({2033: 0.110}), plant, 2033)
 
 
 def test_year_end_refresh_gives_each_furnace_group_its_own_input_costs():
-    """A group without a hydrogen price takes the input costs' hydrogen, not its sibling's locked price."""
+    """An opportunity without a hydrogen price takes the input costs' hydrogen, not its sibling's locked price."""
     locked = make_site_furnace_group("FG_LOCKED", "operating", LOCKED)
-    sibling = make_site_furnace_group("FG_SIBLING", "operating", None)
+    sibling = make_site_furnace_group("FG_SIBLING", "considered", LOCKED)
     sibling.energy_costs = {"electricity": 0.06}
     sibling.energy_costs_no_subsidy = {"electricity": 0.06}
     plant = make_new_site(locked, sibling)

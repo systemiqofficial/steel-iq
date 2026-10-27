@@ -211,7 +211,9 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             dynamic_feedstocks data, and bill of materials information.
 
     Side Effects:
-        - Creates a new furnace group in construction status with zero utilization.
+        - Creates a new furnace group in construction status with zero utilization. At a new site the group
+          holds the command's stack and its electricity and hydrogen without subsidy come from it and the
+          year's grid price; the expansion is traced as ``greenfield_relock``.
         - Sets applied_subsidies["capex"] to the capex_subsidies list from the command.
         - Sets applied_subsidies["debt"] to the debt_subsidies list from the command.
         - Adds the furnace group to the plant.
@@ -238,6 +240,15 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             cmd.capacity,
             cmd.chosen_reductant,
         )
+        # A new site's group pays its own stack's prices on the year's grid, every other carrier at its sibling's
+        # prices without subsidy, so the year-start loop applies each subsidy once; an existing plant's group
+        # takes the plant's prices, which the year-end refresh re-bases on the input costs
+        site_prices: dict[str, float] | None = None
+        if cmd.captive_energy is not None:
+            site_prices = dict(plant.furnace_groups[-1].energy_costs_no_subsidy)
+            grid = env.grid_electricity_for_year(plant.location, env.year)
+            site_prices["electricity"] = cmd.captive_energy.electricity(grid)
+            site_prices["hydrogen"] = cmd.captive_energy.hydrogen(grid)
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
             product=cmd.product,
@@ -259,11 +270,14 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             bill_of_materials=avg_bom_result[0],
             chosen_reductant=cmd.chosen_reductant,
             disposal_cost_outputs=env.config.disposal_cost_outputs,
+            energy_costs=site_prices,
         )
+        new_furnace.captive_energy = cmd.captive_energy
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
         new_furnace.applied_subsidies["debt"] = cmd.debt_subsidies
         plant.add_furnace_group(new_furnace)
+        energy_trace.greenfield_relock("expansion", plant, new_furnace, env.year, None, cmd.captive_energy, env.year)
         plant.added_capacity = Volumes(plant.added_capacity + cmd.capacity)
 
         # Debit the group treasury AFTER the furnace has been attached — factory exceptions

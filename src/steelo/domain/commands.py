@@ -82,7 +82,11 @@ class ChangeFurnaceGroupStatusToSwitchingTechnology(Command):
 
 @dataclass
 class AddFurnaceGroup(Command):
-    """Add a furnace group to a plant."""
+    """Add a furnace group to a plant.
+
+    ``captive_energy`` is the stack a new site's new group locks in the expansion year, None for an existing
+    plant.
+    """
 
     furnace_group_id: str
     plant_id: str
@@ -99,6 +103,7 @@ class AddFurnaceGroup(Command):
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    captive_energy: "CaptiveEnergy | None"
 
 
 @dataclass

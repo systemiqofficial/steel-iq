@@ -85,13 +85,7 @@ hydrogen in year t    = e(b) × electricity in year t + k(b), or the contract pr
 
 The grid share follows the grid; nothing else moves after b. Candidate subsidies for year t apply after these prices. The memo keys a site's entries on its stack, so two stacks never share one.
 
-Switch, renovation and expansion candidates at a new site's plant still pass the furnace group's stored electricity and hydrogen as site prices that keep the site price level but follow the country trajectory:
-
-```
-site price in year t = site price today × country price in year t / country price today
-```
-
-Both country prices on the right are unsubsidised, so a candidate subsidy active today does not distort the ratio.
+A switch, renovation or expansion at a new site's plant is a new investment, so its candidates are priced the same way from the stack the site would lock in the investment's start year, the current year. See [Energy Prices](../overarching_elements/energy_prices.md#10-a-switch-renovation-or-expansion). Candidates at an existing plant follow the country prices.
 
 ### How the NPVs use the series
 

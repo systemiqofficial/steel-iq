@@ -11,7 +11,7 @@ from steelo.domain.calculate_costs import (
     score_compiled_reductant_business_cases,
     score_reductants_for_business_cases,
 )
-from steelo.domain.models import PrimaryFeedstock
+from steelo.domain.models import CaptiveEnergy, PrimaryFeedstock
 from test_reductant_score_series import LOCATION, SHARES, Year, _ef, _feedstock, _make_env
 
 CARRIERS = ["electricity", "natural_gas", "hydrogen", "coke", "bio_pci", "steam"]
@@ -118,8 +118,7 @@ def test_environment_compiles_once_per_list_and_recompiles_when_the_list_changes
         SHARES,
         Year(2026),
         Year(2030),
-        overrides={"electricity": 0.05},
-        override_reference_year=Year(2025),
+        captive=CaptiveEnergy(Year(2026), 0.85, 0.05, 0.05, 1.0, None),
     )
     assert env._compiled_reductant_cases["DRI"][1] is first  # new prices, same compiled cases
 

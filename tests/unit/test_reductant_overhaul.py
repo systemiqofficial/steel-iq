@@ -6,6 +6,7 @@ from datetime import date
 import pytest
 
 from steelo.domain.models import (
+    CaptiveEnergy,
     Environment,
     FurnaceGroup,
     Location,
@@ -20,6 +21,11 @@ from steelo.domain.models import (
 from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain.constants import Volumes
 from steelo.utilities import utils
+
+
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
 
 
 def _stub_score_series(tech, output_shares, start, end):
@@ -272,6 +278,7 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
         cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
         get_bom_from_avg_boms=mock_get_bom,
         reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
+        captive_energy_at=_no_stack,
         dynamic_feedstocks={},
         fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
         iso3_to_region_map={"NZL": "Region"},
@@ -294,6 +301,59 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
     # EAF candidate has no energy subsidy: pure unsubsidised prices.
     assert captured["EAF"]["coke"] == 300.0
     assert captured["EAF"]["hydrogen"] == 5000.0
+
+
+def test_expansion_at_a_new_site_prices_every_candidate_from_the_stack_of_the_expansion_year():
+    """A new site's expansion options lock one stack for the current year and price every candidate's series from it."""
+    fg = _make_fg("fg1", "BF", "coke")
+    fg.set_energy_costs(coke=300.0, hydrogen=5000.0, electricity=0.05)
+    plant = _make_dri_plant(fg)
+    plant.parent_gem_id = "indi_NZL"
+    pg = PlantGroup(plant_group_id="indi_NZL", plants=[plant])
+    pg.balance = 1e12
+    stack = CaptiveEnergy(Year(2025), 0.85, 0.04, 0.05, 1.0, None)
+    stacks_asked: list[tuple] = []
+    series_kwargs: list[dict] = []
+
+    def stack_at(location, year):
+        stacks_asked.append((location, year))
+        return stack
+
+    def series(*args, **kwargs):
+        series_kwargs.append(kwargs)
+        return ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20)
+
+    pg.evaluate_expansion_options(
+        price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
+        capacity=Volumes(1000.0),
+        region_capex={"Region": {"DRI": 500.0, "EAF": 400.0}},
+        cost_of_debt_dict={"NZL": {"DRI": 0.05, "EAF": 0.05}},
+        cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
+        get_bom_from_avg_boms=lambda *a: (
+            {"materials": {"iron_ore": {"unit_cost": 100.0, "demand": 1.0}}, "energy": {}},
+            0.9,
+            "hydrogen",
+            {"iron_ore": 1.0},
+        ),
+        reductant_score_series=series,
+        captive_energy_at=stack_at,
+        dynamic_feedstocks={},
+        fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
+        iso3_to_region_map={"NZL": "Region"},
+        chosen_emissions_boundary_for_carbon_costs="Scope 1",
+        technology_emission_factors=[],
+        global_risk_free_rate=0.02,
+        equity_share=0.3,
+        tech_to_product={"DRI": "iron", "EAF": "steel"},
+        plant_lifetime=20,
+        construction_time=2,
+        current_year=Year(2025),
+        allowed_techs={Year(2025): ["DRI", "EAF"]},
+        active_statuses=["operating"],
+    )
+
+    assert stacks_asked == [(plant.location, Year(2025))]
+    assert series_kwargs == [{"captive": stack}, {"captive": stack}]
 
 
 # ── B3 commit paths: a failed BOM rebuild must raise, not silently keep ──────
@@ -371,6 +431,7 @@ def test_expansion_rebuild_returning_no_bom_raises():
             cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
             get_bom_from_avg_boms=_none_on_committed_rebuild("hydrogen"),
             reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
+            captive_energy_at=_no_stack,
             dynamic_feedstocks={},
             fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
             iso3_to_region_map={"NZL": "Region"},

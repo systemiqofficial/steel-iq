@@ -1111,14 +1111,14 @@ def greenfield_relock(
     Trace a new site re-locking its stack for a new investment, and check the new stack.
 
     Args:
-        event: ``renovation``, ``switch_decision`` or ``switch_execution``.
+        event: ``renovation``, ``switch_decision``, ``switch_execution`` or ``expansion``.
         plant: The plant.
         fg: The furnace group investing.
         year: Simulation year.
         old: The stack the furnace group held before the event; None for a group without one.
         new: The stack locked for the investment; None for an existing plant.
-        lock_year: The investment's start year, the lock year the new stack must hold: the renovation or
-            decision year, or for a switch's execution the year it was decided.
+        lock_year: The investment's start year, the lock year the new stack must hold: the renovation,
+            decision or expansion year, or for a switch's execution the year it was decided.
 
     Returns:
         None.
@@ -1127,9 +1127,10 @@ def greenfield_relock(
         Existing plants are not traced. Old and new stacks are recorded as ``old_<field>`` and ``new_<field>``.
         ``new_lock_year`` must equal ``lock_year``; ``new_lcoe``, ``new_electrolyser_use`` and
         ``new_electrolyser_cost`` must equal the LCOE grid at the cell and the electrolyser inputs at the geo
-        key, else the country, of that year, read here. A renovation and a switch's execution replace the
-        furnace group's frozen reference with the new stack, so ``greenfield_operating`` expects the latest
-        lock; at a switch decision the old technology keeps the old stack until the switch executes.
+        key, else the country, of that year, read here. A renovation, a switch's execution and an expansion's
+        new group replace (or create) the furnace group's frozen reference with the new stack, so
+        ``greenfield_operating`` expects the latest lock; at a switch decision the old technology keeps the old
+        stack until the switch executes.
     """
     if not _state.enabled or not is_new_site(plant) or new is None:
         return
@@ -1153,7 +1154,7 @@ def greenfield_relock(
             new.electrolyser_cost, expected_cost, _matches(new.electrolyser_cost, expected_cost)
         ),
     }
-    if event in ("renovation", "switch_execution"):
+    if event in ("renovation", "switch_execution", "expansion"):
         _state.references[fg.furnace_group_id] = _reference_of(new)
     tally = _state.greenfield
     tally.relocked += 1
