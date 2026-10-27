@@ -32,7 +32,6 @@ from .adapters.dataprocessing.postprocessing.post_process_datacollection import 
     extract_and_process_stored_dataCollection,
 )
 from .adapters.dataprocessing.postprocessing.generate_post_run_plots import generate_post_run_cap_prod_plots
-from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .viewer.extract import write_viewer_files
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T, INITIAL_SCRAP_PRODUCTION_COST
@@ -1826,9 +1825,6 @@ class SimulationRunner:
                 if fixtures_dir and self.config.capacity_policy.enabled
                 else None,
             )
-
-        # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
-        aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)
 
         write_viewer_files_after_run(self.config.output_dir)
 

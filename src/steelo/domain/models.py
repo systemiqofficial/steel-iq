@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 import copy
+import csv
 import math
 import logging
 import random
@@ -56,6 +57,8 @@ from steelo.domain.constants import (
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
     CLOSELY_ALLOCATED_PRODUCTS,
+    MWH_TO_KWH,
+    PERkWh_TO_PERMWh,
 )
 
 if TYPE_CHECKING:
@@ -349,6 +352,7 @@ class HydrogenPriceInputs(TypedDict):
     lcoe: float | None  # None when the power mix has no baseload share
     electricity: float
     lcoh: float
+    ceiling: float  # the effective ceiling the LCOH is capped against, trade-adjusted when trade is allowed
     capped_lcoh: float
 
 
@@ -8820,7 +8824,7 @@ class Environment:
         intraregional_trade_matrix_clean = {
             k: v for k, v in geo_config.intraregional_trade_matrix.items() if v is not None
         }
-        capped_hydrogen_prices = apply_hydrogen_price_cap_country_level(
+        capped_hydrogen_prices, ceilings = apply_hydrogen_price_cap_country_level(
             lcoh_by_country=lcoh_by_geo_key,
             regional_ceilings=regional_ceilings,
             country_to_region=country_to_region,
@@ -8836,6 +8840,7 @@ class Environment:
                 lcoe=lcoe_by_geo_key[geo_key],
                 electricity=electricity_by_geo_key[geo_key],
                 lcoh=lcoh_by_geo_key[geo_key],
+                ceiling=ceilings[geo_key],
                 capped_lcoh=capped,
             )
             for geo_key, capped in capped_hydrogen_prices.items()
@@ -8927,6 +8932,83 @@ class Environment:
             logger.info(
                 "[H2 PRICE] Existing plants' hydrogen priced at grid electricity ('%s')", geo_config.included_power_mix
             )
+
+    def export_lcoh_existing_plants(self, path: Path) -> None:
+        """
+        Write existing plants' hydrogen price and its inputs per country and geo unit, start year to end year.
+
+        Args:
+            path: Output CSV, ``<output_dir>/data/LCOH/lcoh_existing_plants.csv``.
+
+        Returns:
+            None. One row per priced geo key per year; power prices in USD/MWh, hydrogen in USD/kg.
+
+        Notes:
+            Reads ``hydrogen_price_inputs_by_year``, which the precompute fills to the last input-cost year;
+            the file keeps only the simulated years. A geo unit's CAPEX/OPEX is its own row where the master
+            has one, else its country's. Numbers are written with four decimals, like the cell-based files.
+            Logs one INFO line naming the file.
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.export_lcoh_existing_plants")
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to export existing plants' hydrogen prices")
+        geo_config = self.config.geo_config
+        start_year, end_year = int(self.config.start_year), int(self.config.end_year)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "level",
+                    "country",
+                    "subregion",
+                    "year",
+                    "baseload_coverage_pct",
+                    "grid_share_pct",
+                    "hydrogen_ceiling_pct",
+                    "intraregional_trade_allowed",
+                    "hydrogen_lcoe_percentile",
+                    "grid_usd_per_mwh",
+                    "pure_lcoe_usd_per_mwh",
+                    "grid_mix_usd_per_mwh",
+                    "electrolyser_kwh_per_kg",
+                    "capex_opex_usd_per_kg",
+                    "uncapped_usd_per_kg",
+                    "ceiling_usd_per_kg",
+                    "capped_usd_per_kg",
+                ]
+            )
+            for year in sorted(y for y in self.hydrogen_price_inputs_by_year if start_year <= int(y) <= end_year):
+                for geo_key, row in sorted(self.hydrogen_price_inputs_by_year[year].items()):
+                    iso3, _, code = geo_key.partition(":")
+                    lcoe = row["lcoe"]
+                    capex_opex = self.hydrogen_capex_opex[geo_key if geo_key in self.hydrogen_capex_opex else iso3]
+                    writer.writerow(
+                        [
+                            "geo_unit" if code else "country",
+                            iso3,
+                            code,
+                            int(year),
+                            *(f"{value:.4f}" for value in (row["coverage"] * 100, 100 - row["coverage"] * 100)),
+                            f"{geo_config.hydrogen_ceiling_percentile:.4f}",
+                            geo_config.intraregional_trade_allowed,
+                            f"{geo_config.hydrogen_lcoe_percentile:.4f}",
+                            f"{row['grid'] * PERkWh_TO_PERMWh:.4f}",
+                            "" if lcoe is None else f"{lcoe * PERkWh_TO_PERMWh:.4f}",
+                            *(
+                                f"{value:.4f}"
+                                for value in (
+                                    row["electricity"] * PERkWh_TO_PERMWh,
+                                    self.hydrogen_efficiency[year] * MWH_TO_KWH,
+                                    capex_opex[year],
+                                    row["lcoh"],
+                                    row["ceiling"],
+                                    row["capped_lcoh"],
+                                )
+                            ),
+                        ]
+                    )
+        logger.info(f"Wrote existing plants' hydrogen prices, {start_year} to {end_year}, to {path}")
 
     def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
         """

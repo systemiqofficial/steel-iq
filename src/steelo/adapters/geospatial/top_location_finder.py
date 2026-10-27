@@ -81,7 +81,9 @@ def get_candidate_locations_for_opening_new_plants(
     Returns:
         top_locations: Dictionary with the top X% locations for steel and iron production, their (lat,lon) coordinates
             and the corresponding railway cost, LCOE, and LCOH (required to calculate the NPV).
-        energy_prices: Dataset with the power price and LCOH for the given year for all locations.
+        energy_prices: Dataset with the power price and LCOH for the given year for all locations, and what the
+            LCOE and LCOH output files need: geo_key, grid price, baseload LCOE (with a baseload mix), uncapped
+            LCOH, the effective hydrogen ceiling and the hydrogen trade region.
 
     Note:
         Even if the power price and railway cost are not selected for the priority location KPI, they are still
@@ -179,10 +181,22 @@ def get_candidate_locations_for_opening_new_plants(
             end_year=int(env.config.end_year),
         )
 
-    # Extract energy prices for all locations; needed for NPV calculation later on
-    # Include iso3 codes for country-level aggregation
+    # Extract energy prices for all locations; needed for NPV calculation later on, and the area keys,
+    # price components and ceilings the LCOE and LCOH output files read
     with time_step("extract_energy_prices", geo_timer_logger):
-        energy_prices = global_ds[["iso3", "power_price", "capped_lcoh"]]
+        fields_to_extract = [
+            "iso3",
+            "geo_key",
+            "grid_price",
+            "power_price",
+            "lcoh",
+            "capped_lcoh",
+            "hydrogen_ceiling",
+            "tiam_ucl_region",
+        ]
+        if baseload_coverage > 0:
+            fields_to_extract.append("lcoe")
+        energy_prices = global_ds[fields_to_extract]
 
     # Show time taken
     end = time.time()

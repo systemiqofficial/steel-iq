@@ -360,6 +360,78 @@ def test_price_inputs_record_coverage_grid_lcoe_electricity_and_both_lcohs(tmp_p
     assert row["electricity"] == pytest.approx(0.15 * 0.05 + 0.85 * 0.03)
     assert row["lcoh"] == pytest.approx(50 * row["electricity"] + 1.0)
     assert row["capped_lcoh"] == env.capped_hydrogen_costs_by_year[Year(2025)]["AAA"]
+    inputs = env.hydrogen_price_inputs_by_year[Year(2025)]
+    assert row["ceiling"] == pytest.approx(max(inputs[key]["lcoh"] for key in ("AAA", "BBB")))  # 100th percentile
+
+
+def test_existing_plant_file_lists_every_price_and_its_inputs(tmp_path):
+    """lcoh_existing_plants.csv has one row per geo key and year, power in USD/MWh and four decimals."""
+    env = make_env(tmp_path, BASELOAD_MIX)
+    env.initiate_baseload_lcoe_by_geo_key({Year(2025): {"AAA": 0.03, "AAA:AA-1": 0.02, "BBB": 0.12}})
+    env.initiate_capped_hydrogen_costs_by_year()
+    row = env.hydrogen_price_inputs_by_year[Year(2025)]["AAA"]
+    out = tmp_path / "data" / "LCOH" / "lcoh_existing_plants.csv"
+
+    env.export_lcoh_existing_plants(out)
+
+    lines = out.read_text().splitlines()
+    assert lines[0] == (
+        "level,country,subregion,year,baseload_coverage_pct,grid_share_pct,hydrogen_ceiling_pct,"
+        "intraregional_trade_allowed,hydrogen_lcoe_percentile,grid_usd_per_mwh,pure_lcoe_usd_per_mwh,"
+        "grid_mix_usd_per_mwh,electrolyser_kwh_per_kg,capex_opex_usd_per_kg,uncapped_usd_per_kg,"
+        "ceiling_usd_per_kg,capped_usd_per_kg"
+    )
+    aaa = next(line for line in lines if line.startswith("country,AAA,,2025")).split(",")
+    assert aaa[4:9] == ["85.0000", "15.0000", "100.0000", "False", "50.0000"]
+    assert [float(v) for v in aaa[9:14]] == pytest.approx([50.0, 30.0, 0.15 * 50 + 0.85 * 30, 50.0, 1.0])
+    assert float(aaa[14]) == pytest.approx(row["lcoh"]) and float(aaa[16]) == pytest.approx(row["capped_lcoh"])
+    province = next(line for line in lines if line.startswith("geo_unit,AAA,AA-1,2025")).split(",")
+    assert float(province[13]) == 1.0  # no sub-national CAPEX/OPEX row: the country's applies
+
+
+def test_existing_plant_file_leaves_the_lcoe_empty_without_baseload(tmp_path):
+    """Without a baseload share the file prices power at the grid and leaves the pure LCOE empty."""
+    env = make_env(tmp_path, "Grid only")
+    env.initiate_capped_hydrogen_costs_by_year()
+    out = tmp_path / "lcoh_existing_plants.csv"
+
+    env.export_lcoh_existing_plants(out)
+
+    aaa = next(line for line in out.read_text().splitlines() if line.startswith("country,AAA,,2025")).split(",")
+    assert aaa[4:6] == ["0.0000", "100.0000"]
+    assert aaa[9:12] == ["50.0000", "", "50.0000"]
+
+
+def test_existing_plant_ceiling_is_the_cap_applied_and_a_province_inherits_it(tmp_path):
+    """HydrogenPriceInputs.ceiling is the value each price was capped against, inherited by a province."""
+    env = make_env(tmp_path, "Grid only")
+    env.config.geo_config.hydrogen_ceiling_percentile = 0.0
+
+    env.initiate_capped_hydrogen_costs_by_year()
+
+    inputs = env.hydrogen_price_inputs_by_year[Year(2025)]
+    ceiling = min(inputs[key]["lcoh"] for key in ("AAA", "BBB"))  # 0th percentile of the region's countries
+    for row in inputs.values():
+        assert row["ceiling"] == pytest.approx(ceiling)
+        assert row["capped_lcoh"] == pytest.approx(min(row["lcoh"], ceiling))
+
+
+def test_existing_plant_file_keeps_only_the_simulated_years(tmp_path):
+    """The precompute runs to the last input-cost year; the file stops at the end year."""
+    env = make_env(tmp_path, "Grid only")
+    for year_costs in env.input_costs.values():
+        year_costs[Year(2026)] = year_costs[Year(2025)]
+    env.hydrogen_efficiency[Year(2026)] = 0.05
+    env.hydrogen_capex_opex = {
+        key: {**values, Year(2026): values[Year(2025)]} for key, values in env.hydrogen_capex_opex.items()
+    }
+    env.initiate_capped_hydrogen_costs_by_year()
+    assert Year(2026) in env.hydrogen_price_inputs_by_year
+    out = tmp_path / "lcoh_existing_plants.csv"
+
+    env.export_lcoh_existing_plants(out)
+
+    assert {line.split(",")[3] for line in out.read_text().splitlines()[1:]} == {"2025"}
 
 
 def test_baseload_mix_without_the_lcoe_series_raises(tmp_path):

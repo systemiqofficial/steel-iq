@@ -1850,7 +1850,7 @@ def apply_hydrogen_price_cap_country_level(
     intraregional_trade_allowed: bool,
     intraregional_trade_matrix: dict[str, list[str]],
     long_dist_pipeline_transport_cost: float,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, float]]:
     """
     Apply hydrogen price capping for all countries based on regional ceilings and trade options.
 
@@ -1870,12 +1870,18 @@ def apply_hydrogen_price_cap_country_level(
         long_dist_pipeline_transport_cost: Transport cost for long-distance pipeline (USD/kg)
 
     Returns:
-        Mapping from geo_key (iso3 or iso3:code) to capped hydrogen prices
+        Tuple of:
+        - Mapping from geo_key (iso3 or iso3:code) to capped hydrogen prices
+        - Mapping from geo_key to the effective ceiling it was capped against (trade-adjusted when trade is allowed)
 
     Raises:
         ValueError: If required data is missing
+
+    Notes:
+        A sub-national geo_key inherits its country's region and therefore its ceiling.
     """
     capped_hydrogen_prices = {}
+    ceilings = {}
 
     for geo_key, lcoh in lcoh_by_country.items():
         iso3 = geo_key.split(":", 1)[0]  # sub-national rows inherit their country's region/ceiling
@@ -1890,6 +1896,7 @@ def apply_hydrogen_price_cap_country_level(
 
         # Option a: No intraregional trade allowed -> apply the cap: minimum of LCOH and ceiling
         if not intraregional_trade_allowed:
+            ceilings[geo_key] = ceiling_value
             capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
         # Option b: Intraregional trade allowed -> consider trade options and choose the minimum among
@@ -1907,9 +1914,10 @@ def apply_hydrogen_price_cap_country_level(
                 ## Take minimum of regional ceiling and trade option
                 ceiling_value = min(ceiling_value, best_trade_value)
             ## Apply the cap: minimum of LCOH and ceiling
+            ceilings[geo_key] = ceiling_value
             capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
-    return capped_hydrogen_prices
+    return capped_hydrogen_prices, ceilings
 
 
 # ----------------------------------------------------------------------------------------------------------

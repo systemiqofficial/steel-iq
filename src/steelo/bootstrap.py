@@ -557,6 +557,9 @@ def bootstrap_simulation(
                 )
             )
         env.initiate_capped_hydrogen_costs_by_year()
+        from .adapters.geospatial.geospatial_statistics import LCOH_EXISTING_PLANTS_FILE
+
+        env.export_lcoh_existing_plants(config.output_dir / "data" / "LCOH" / LCOH_EXISTING_PLANTS_FILE)
         env.initiate_technology_emission_factors(repository_json.technology_emission_factors.list())
 
         # Load secondary feedstock constraints from biomass availability data

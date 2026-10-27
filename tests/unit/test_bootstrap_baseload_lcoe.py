@@ -210,6 +210,11 @@ def test_bootstrap_reads_the_lcoe_folder_the_run_names_else_the_prepared_data(tm
     assert env.baseload_lcoe_by_geo_key[Year(2025)] == {"DEU": pytest.approx(0.06)}
     inputs = env.hydrogen_price_inputs_by_year[Year(2025)]["DEU"]
     assert inputs["electricity"] == pytest.approx(0.15 * 0.05 + 0.85 * 0.06)
+    existing_plants = (config.output_dir / "data" / "LCOH" / "lcoh_existing_plants.csv").read_text().splitlines()
+    assert [line.split(",")[:4] for line in existing_plants[1:]] == [
+        ["country", "DEU", "", "2025"],
+        ["country", "DEU", "", "2026"],
+    ]
 
 
 def test_bootstrap_on_grid_only_builds_no_lcoe_series(tmp_path):

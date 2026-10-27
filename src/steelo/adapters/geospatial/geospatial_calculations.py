@@ -224,9 +224,15 @@ def apply_hydrogen_price_cap(
         geo_config: Configuration object containing trade settings and transport costs
 
     Returns:
-        Dataset with added 'capped_lcoh' variable
+        Dataset with added 'capped_lcoh' variable and 'hydrogen_ceiling', the effective ceiling (USD/kg) each
+        cell is capped against
+
+    Notes:
+        The effective ceiling is the region's ceiling, lowered to the best trade partner's ceiling plus the
+        pipeline cost when intraregional trade is allowed. Cells outside every region keep NaN in both.
     """
     ds["capped_lcoh"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
+    ds["hydrogen_ceiling"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
 
     for region in regional_ceiling.keys():
         mask = ds["tiam_ucl_region"] == region
@@ -240,6 +246,7 @@ def apply_hydrogen_price_cap(
         else:
             ceiling_value = regional_ceiling[region]
 
+        ds["hydrogen_ceiling"].values[mask] = ceiling_value
         ds["capped_lcoh"].values[mask] = np.where(
             ds["lcoh"].values[mask] < ceiling_value,
             ds["lcoh"].values[mask],

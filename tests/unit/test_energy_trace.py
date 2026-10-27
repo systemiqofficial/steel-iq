@@ -262,6 +262,7 @@ def country_hydrogen_arguments(power_mix: str) -> dict[str, object]:
             "lcoe": lcoe[key] if coverage else None,
             "electricity": electricity[key],
             "lcoh": lcoh[key],
+            "ceiling": ceilings[regions[key.split(":")[0]]],
             "capped_lcoh": capped[key],
         }
         for key in grid

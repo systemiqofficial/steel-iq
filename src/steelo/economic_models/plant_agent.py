@@ -8,7 +8,7 @@ from typing import cast
 
 from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
-from steelo.adapters.geospatial.geospatial_statistics import export_lcoe_lcoh_statistics_by_country
+from steelo.adapters.geospatial.geospatial_statistics import export_lcoe_lcoh_outputs, load_ne_region_by_geo_key
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.capacity_policy.handlers import (
     expansion_capacity_hook,
@@ -182,18 +182,21 @@ class GeospatialModel:
             if not top_locations.get(product):
                 logger.warning(f"[GEO] No {product} locations found! This will cause NPV error.")
 
-        # Export LCOE/LCOH statistics every 5 years (matching cost curve export frequency)
-        years_since_start = bus.env.year - bus.env.config.start_year
-        if years_since_start % 5 == 0:
-            try:
-                export_lcoe_lcoh_statistics_by_country(
-                    energy_prices=custom_energy_costs,
-                    year=bus.env.year,
-                    output_dir=bus.env.config.output_dir,
-                    hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
+        # Append this year's rows to the all-years LCOE and LCOH files; a failure to write them stops the run
+        step_start = time.time()
+        export_lcoe_lcoh_outputs(
+            energy_prices=custom_energy_costs,
+            year=bus.env.year,
+            start_year=bus.env.config.start_year,
+            output_dir=bus.env.config.output_dir,
+            geo_config=geo_config,
+            irena_region_by_iso3=bus.env.country_mappings.code_to_irena_region_map,
+            ne_region_by_geo_key=load_ne_region_by_geo_key(
+                bus.env.geo_paths.data_dir / "fixtures" / "geo_hierarchy.json"
+            ),
+            existing_plant_lcoh=bus.env.capped_hydrogen_costs_for_year(bus.env.year),
+        )
+        logger.info(f"operation=lcoe_lcoh_outputs year={bus.env.year} duration_s={time.time() - step_start:.3f}")
 
         # Update dynamic costs for all existing business opportunities yearly
         step_start = time.time()
