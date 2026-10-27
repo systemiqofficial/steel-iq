@@ -2,6 +2,8 @@ import hashlib
 import datetime
 import logging
 import os
+from dataclasses import fields
+from decimal import Decimal
 from pathlib import Path
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
@@ -11,17 +13,28 @@ from django.urls import reverse_lazy, reverse
 from django.http import Http404, HttpResponse, FileResponse, HttpResponseNotModified
 from django.core.files.base import ContentFile
 from django.views.decorators.http import require_http_methods, require_POST
+from django.template.loader import get_template
 from django.utils import timezone
 
 from django_htmx.http import HttpResponseClientRefresh
 
 from .tasks import run_simulation_task
-from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
+from .models import ModelRun, MasterExcelFile, DataPackage, DataPreparation, SimulationPlot, Worker
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
+from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
-from steelo.validation import SimulationConfigError, validate_technology_settings
+from steelo.validation import SimulationConfigError, ValidationError, validate_technology_settings
 from steelo.simulation_types import TechnologySettings
 from steelo.data.manager import DataManager
+from steelo.domain.constants import MT_TO_T
+from steelo.simulation import SimulationConfig, config_default
+from steelo.viewer.extract import RUN_NAME, VIEWER_DIR
+
+
+# Posted by the technology table, so a table without its Greenfield column is told apart from one with every box
+# unticked
+GREENFIELD_COLUMN_MARKER = "greenfield_column"
+TECHNOLOGY_TABLE_TEMPLATE = "steeloweb/partials/_technology_table.html"
 
 
 class ModelRunListView(ListView):
@@ -66,12 +79,6 @@ class ModelRunDetailView(DetailView):
 
         context = super().get_context_data(**kwargs)
 
-        # Check if there are result images for this model run
-        try:
-            context["result_images"] = ResultImages.objects.get(modelrun=self.object)
-        except ResultImages.DoesNotExist:
-            context["result_images"] = None
-
         # Get technology switches data
         try:
             context["technology_switches"] = self.object.get_technology_switches()
@@ -104,13 +111,24 @@ class ModelRunDetailView(DetailView):
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
 
-        # Split simulation plots: cost curves, emissions, and the production/capacity
-        # group each go into their own collapsible accordions; anything else falls
-        # through to the flat grid.
+        # The viewer lists a finished run once the run's end has written its viewer files
+        output_dir = Path(self.object.output_directory)
+        context["viewer_run"] = (
+            output_dir.name
+            if self.object.state == ModelRun.RunState.FINISHED
+            and self.object.output_directory
+            and (output_dir / VIEWER_DIR / RUN_NAME).is_file()
+            else None
+        )
+
+        # Split simulation plots: cost curves, emissions, market prices, capacity policy and
+        # the production/capacity group each go into their own collapsible accordions;
+        # anything else falls through to the flat grid.
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
         market_prices = SimulationPlot.PlotType.MARKET_PRICES
+        capacity_policy = SimulationPlot.PlotType.CAPACITY_POLICY
         production_capacity = (
             SimulationPlot.PlotType.CAPACITY_DEVELOPMENT,
             SimulationPlot.PlotType.PRODUCTION_REGION,
@@ -122,8 +140,9 @@ class ModelRunDetailView(DetailView):
             "plot_type", "-product_type", "title"
         )
         context["market_prices_plots"] = plots_qs.filter(plot_type=market_prices).order_by("title")
+        context["capacity_policy_plots"] = plots_qs.filter(plot_type=capacity_policy).order_by("-product_type", "title")
         context["simulation_plots_other"] = plots_qs.exclude(
-            plot_type__in=[cost_curve, emissions, market_prices, *production_capacity]
+            plot_type__in=[cost_curve, emissions, market_prices, capacity_policy, *production_capacity]
         )
         context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
         context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
@@ -212,11 +231,24 @@ def run_simulation(request, pk):
 
 @require_POST
 def rerun_modelrun(request, pk):
-    """Reset a failed run that crashed and enqueue it again."""
+    """Reset a failed run that crashed and enqueue it again.
+
+    Notes:
+        Worker availability is checked before the reset, so a rerun refused for want of workers or capacity keeps the
+        previous attempt's state and outputs.
+    """
     modelrun = get_object_or_404(ModelRun, pk=pk)
 
     if not modelrun.can_rerun:
         messages.error(request, "Only cancelled runs or runs that failed due to an exception can be rerun.")
+        return redirect("modelrun-detail", pk=pk)
+
+    from steeloweb.views_worker import check_worker_availability_for_simulation
+
+    availability = check_worker_availability_for_simulation()
+    if availability["status"] in ("no_capacity", "no_workers"):
+        request.session.pop("simulation_warning", None)
+        messages.error(request, availability["message"])
         return redirect("modelrun-detail", pk=pk)
 
     modelrun.reset_for_rerun()
@@ -473,7 +505,7 @@ def _get_tech_to_product_mapping(prep: DataPreparation) -> dict[str, str]:
 def _merge_posted_technology_values(request, technologies: dict) -> None:
     """Merge posted form values into technologies dict to preserve user input on validation errors.
 
-    Modifies technologies dict in place, updating 'allowed', 'from_year', and 'to_year' fields
+    Modifies technologies dict in place, updating 'allowed', 'greenfield', 'from_year', and 'to_year' fields
     based on values from request.POST.
 
     Args:
@@ -488,11 +520,19 @@ def _merge_posted_technology_values(request, technologies: dict) -> None:
             slug = key[5:-8]  # Extract slug from "tech_{slug}_allowed"
             posted_allowed_techs.add(slug)
 
+    # A table without the Greenfield column posts no box, so its rows start again from the class default
+    has_greenfield_column = GREENFIELD_COLUMN_MARKER in request.POST
+    excluded = config_default("geo_config.excluded_greenfield_technologies")
+
     # Merge posted values for each technology
     for slug, tech_info in technologies.items():
         # Checkbox: preserve exact user selection
         # If checkbox was posted, it was checked; otherwise it was unchecked
         tech_info["allowed"] = slug in posted_allowed_techs
+        if has_greenfield_column:
+            tech_info["greenfield"] = f"tech_{slug}_greenfield" in request.POST
+        else:
+            tech_info["greenfield"] = tech_info["code"] not in excluded
 
         # Year values: preserve if posted
         posted_from_year = request.POST.get(f"tech_{slug}_from_year")
@@ -655,8 +695,8 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
     from steelo.validation import check_product_coverage_enhanced
 
     # Get simulation timeframe from validated form data
-    start_year = form.cleaned_data.get("start_year", 2025)
-    end_year = form.cleaned_data.get("end_year", 2060)
+    start_year = form.cleaned_data["start_year"]
+    end_year = form.cleaned_data["end_year"]
 
     # Get tech-to-product mapping and technology data
     try:
@@ -692,133 +732,78 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
     return settings
 
 
+def _excluded_greenfield_technologies(request, prep: DataPreparation) -> list[str]:
+    """The technologies whose "Greenfield" box the posted technology table leaves unticked.
+
+    Args:
+        request: The create form's POST request.
+        prep: The run's data preparation, whose technologies the table lists.
+
+    Returns:
+        The raw ``code`` of each unticked row, as the master's "Technology" column holds it.
+
+    Notes:
+        The plant agent compares these names with the capex reader's technology names, read from the same column
+        without normalisation, so a ``normalized_code`` (``BFCCS`` for ``BF+CCS``) would never match.
+    """
+    return [
+        tech_info["code"]
+        for slug, tech_info in prep.get_technologies().items()
+        if f"tech_{slug}_greenfield" not in request.POST
+    ]
+
+
 def create_modelrun(request):
     """
     Create a new model run with custom configuration
+
+    Notes:
+        A name already held by another run, or by a CLI run under ``$STEELO_HOME/output``, gets the first free ``_2``,
+        ``_3`` suffix; a blank name stays blank. A blank setting stores its class default (``config_default``); an
+        entered one is stored as entered, so 0 stays 0.
     """
     if request.method == "POST":
         form = ModelRunCreateForm(request.POST)
         if form.is_valid():
-            # Create config dictionary from form data
-            output_file = str(settings.BASE_DIR / "django_pam_simulation_run.json")
-            config = {
-                "start_year": form.cleaned_data["start_year"],
-                "end_year": form.cleaned_data["end_year"],
-                "random_seed": form.cleaned_data.get("random_seed", 42),
-                "plant_lifetime": form.cleaned_data.get("plant_lifetime", 20),
-                "global_risk_free_rate": float(form.cleaned_data.get("global_risk_free_rate") or 0.0209),
-                "steel_price_buffer": float(
-                    form.cleaned_data.get("steel_price_buffer")
-                    if form.cleaned_data.get("steel_price_buffer") is not None
-                    else 200.0
-                ),
-                "iron_price_buffer": float(
-                    form.cleaned_data.get("iron_price_buffer")
-                    if form.cleaned_data.get("iron_price_buffer") is not None
-                    else 200.0
-                ),
-                "steel_market_clearing_share": float(
-                    form.cleaned_data.get("steel_market_clearing_share")
-                    if form.cleaned_data.get("steel_market_clearing_share") is not None
-                    else 0.95
-                ),
-                "iron_market_clearing_share": float(
-                    form.cleaned_data.get("iron_market_clearing_share")
-                    if form.cleaned_data.get("iron_market_clearing_share") is not None
-                    else 0.95
-                ),
-                "peg_iron_to_steel_price": form.cleaned_data.get("peg_iron_to_steel_price", False),
-                "iron_to_steel_price_ratio": float(
-                    form.cleaned_data.get("iron_to_steel_price_ratio")
-                    if form.cleaned_data.get("iron_to_steel_price_ratio") is not None
-                    else 0.8
-                ),
-                "opening_balance_multiplier": float(
-                    form.cleaned_data.get("opening_balance_multiplier")
-                    if form.cleaned_data.get("opening_balance_multiplier") is not None
-                    else 1.0
-                ),
-                "consideration_time": form.cleaned_data.get("consideration_time", 3),
-                "construction_time": form.cleaned_data.get("construction_time", 4),
-                "probabilistic_agents": form.cleaned_data.get("probabilistic_agents", True),
-                "probability_of_announcement": float(form.cleaned_data.get("probability_of_announcement") or 0.7),
-                "probability_of_construction": float(form.cleaned_data.get("probability_of_construction") or 0.9),
-                "top_n_loctechs_as_business_op": form.cleaned_data.get("top_n_loctechs_as_business_op", 15),
-                "opportunity_pool_depth": int(form.cleaned_data.get("opportunity_pool_depth") or 3),
-                "pick_priority_sites_share": float(form.cleaned_data.get("pick_priority_sites_share") or 0.05),
-                "calculate_npv_sites_share": float(form.cleaned_data.get("calculate_npv_sites_share") or 0.1),
-                # Plant capacity parameters (convert Mt to t)
-                "expanded_capacity": float(form.cleaned_data.get("expanded_capacity") or 2.5) * 1000000,
-                "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 100) * 1000000,
-                "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel") or 100) * 1000000,
-                "new_capacity_share_from_new_plants": float(
-                    form.cleaned_data.get("new_capacity_share_from_new_plants")
-                    if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
-                    else 0.4
-                ),
-                "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 100.0),
-                "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", False),
-                "long_dist_pipeline_transport_cost": float(
-                    form.cleaned_data.get("long_dist_pipeline_transport_cost") or 1.0
-                ),
-                # Policy settings
-                "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
-                "green_steel_emissions_limit": 0.4,  # Hardcoded - no longer user-configurable
-                "include_tariffs": form.cleaned_data.get("include_tariffs", True),
-                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", True),
-                "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope") or "plant",
-                "output_file": output_file,
-                # Add new demand and circularity fields
-                "total_steel_demand_scenario": form.cleaned_data.get(
-                    "total_steel_demand_scenario", "business_as_usual"
-                ),
-                "green_steel_demand_scenario": form.cleaned_data.get(
-                    "green_steel_demand_scenario", "business_as_usual"
-                ),
-                "scrap_generation_scenario": form.cleaned_data.get("scrap_generation_scenario", "business_as_usual"),
-                "chosen_grid_emissions_scenario": form.cleaned_data.get(
-                    "chosen_grid_emissions_scenario", "Business As Usual"
-                ),
-                "circularity_file": form.cleaned_data.get("circularity_file", ""),
-                # Technology fields will be added after extraction from POST data
-                "hydrogen_subsidies": form.cleaned_data.get("hydrogen_subsidies", False),
-                "esf_cost_scenario": form.cleaned_data.get("esf_cost_scenario", ""),
-                "moe_cost_scenario": form.cleaned_data.get("moe_cost_scenario", ""),
-                "electrowinning_cost_scenario": form.cleaned_data.get("electrowinning_cost_scenario", ""),
-                "ccs_cost_scenario": form.cleaned_data.get("ccs_cost_scenario", ""),
-                # Geospatial fields
-                "included_power_mix": form.cleaned_data.get("included_power_mix", "85% baseload + 15% grid"),
-                "max_slope": float(form.cleaned_data.get("max_slope") or 2.0),
-                "max_altitude": form.cleaned_data.get("max_altitude", 1500),
-                "max_latitude": float(
-                    form.cleaned_data.get("max_latitude") if form.cleaned_data.get("max_latitude") is not None else 70.0
-                ),
-                "include_infrastructure_cost": form.cleaned_data.get("include_infrastructure_cost", True),
-                "include_transport_cost": form.cleaned_data.get("include_transport_cost", True),
-                "include_lulc_cost": form.cleaned_data.get("include_lulc_cost", True),
-                # Transportation cost fields - assembled into the expected dictionary structure
-                "transportation_cost_per_km_per_ton": {
-                    "iron_mine_to_plant": float(
-                        form.cleaned_data.get("iron_mine_to_plant")
-                        if form.cleaned_data.get("iron_mine_to_plant") is not None
-                        else 0.013
-                    ),
-                    "iron_to_steel_plant": float(
-                        form.cleaned_data.get("iron_to_steel_plant")
-                        if form.cleaned_data.get("iron_to_steel_plant") is not None
-                        else 0.015
-                    ),
-                    "steel_to_demand": float(
-                        form.cleaned_data.get("steel_to_demand")
-                        if form.cleaned_data.get("steel_to_demand") is not None
-                        else 0.019
-                    ),
-                },
+            # A blank field takes the class default; an entered value is kept, so 0 stays 0
+            simulation_fields = {config_field.name for config_field in fields(SimulationConfig)}
+            transport_costs = config_default("geo_config.transportation_cost_per_km_per_ton")
+            config = {}
+            for field_name, value in form.cleaned_data.items():
+                if field_name in ("name", "data_preparation") or field_name in transport_costs:
+                    continue
+                if isinstance(value, Decimal):
+                    value = float(value)
+                if value is None or value == "":
+                    config_name = field_name if field_name in simulation_fields else f"geo_config.{field_name}"
+                    config[field_name] = config_default(config_name)
+                elif field_name in ("expanded_capacity", "capacity_limit_iron", "capacity_limit_steel"):
+                    config[field_name] = value * MT_TO_T
+                else:
+                    config[field_name] = value
+            config["transportation_cost_per_km_per_ton"] = {
+                route: default if form.cleaned_data[route] is None else float(form.cleaned_data[route])
+                for route, default in transport_costs.items()
             }
 
             # Extract technology settings from POST data if data preparation is available
             data_preparation = form.cleaned_data.get("data_preparation")
             if data_preparation:
+                # A table served before the Greenfield column posts no box, which would read as every row unticked
+                if GREENFIELD_COLUMN_MARKER not in request.POST:
+                    form.technology_validation_errors = [
+                        ValidationError(
+                            title="Technology table out of date",
+                            description=(
+                                "The technology table was loaded before it had the Greenfield column. Check the "
+                                "table below, then create the simulation again."
+                            ),
+                            suggestions=[],
+                            product_type=None,
+                        )
+                    ]
+                    context = _build_validation_error_context(request, form, data_preparation)
+                    return render(request, "steeloweb/create_modelrun.html", context)
                 technology_settings = _extract_technology_settings(request, data_preparation, form)
                 if not technology_settings:  # Validation failed
                     # ALWAYS build context with preserved user input, regardless of error type
@@ -828,6 +813,9 @@ def create_modelrun(request):
                     context = _build_validation_error_context(request, form, data_preparation)
                     return render(request, "steeloweb/create_modelrun.html", context)
                 config["technology_settings"] = technology_settings
+                config["excluded_greenfield_technologies"] = _excluded_greenfield_technologies(
+                    request, data_preparation
+                )
             else:
                 messages.error(request, "Data preparation is required to configure technologies")
                 return render(request, "steeloweb/create_modelrun.html", {"form": form})
@@ -838,9 +826,19 @@ def create_modelrun(request):
                 if any(key.startswith(p) for p in LEGACY_PREFIXES):
                     del config[key]
 
+            name = form.cleaned_data["name"]
+            if name:
+                from steelo import simulation
+
+                taken = {other.strip() for other in ModelRun.objects.values_list("name", flat=True) if other.strip()}
+                output_base = cli_base()
+                if output_base is not None:
+                    taken |= simulation.run_names_in_use(output_base)
+                name = simulation.unique_run_name(name, taken)
+
             # Create the model run
             modelrun = ModelRun.objects.create(
-                name=form.cleaned_data.get("name", ""),
+                name=name,
                 config=config,
                 data_preparation=data_preparation,
             )
@@ -925,7 +923,11 @@ def technologies_fragment(request):
 
     if tech_path.exists():
         st = tech_path.stat()
-        etag_val = hashlib.md5(f"{st.st_mtime_ns}:{st.st_size}:{prep.id}".encode()).hexdigest()
+        # The partial's own version too, so a table cached before the template changed is not reused
+        partial = Path(get_template(TECHNOLOGY_TABLE_TEMPLATE).origin.name).stat()
+        etag_val = hashlib.md5(
+            f"{st.st_mtime_ns}:{st.st_size}:{prep.id}:{partial.st_mtime_ns}:{partial.st_size}".encode()
+        ).hexdigest()
 
         # Normalize client ETag (strip quotes) for comparison
         client_tag = (request.headers.get("If-None-Match", "") or "").strip('"')
@@ -959,6 +961,9 @@ def technologies_fragment(request):
     # Set default availability years and reset metadata
     # set_from_year=True for initial load (sets both from_year and default_from_year)
     _enrich_technology_defaults(technologies, set_from_year=True)
+    excluded = config_default("geo_config.excluded_greenfield_technologies")
+    for tech in technologies.values():
+        tech["greenfield"] = tech["code"] not in excluded
 
     context = {
         "technologies": technologies,
@@ -984,6 +989,25 @@ def technologies_fragment(request):
 
 
 @require_http_methods(["GET"])
+def demand_scrap_scenarios_fragment(request):
+    """HTMX endpoint: the steel demand and scrap availability scenario selects for a given preparation.
+
+    Returns:
+        The two selects of a run form on the requested preparation, each keeping the choice sent along when the
+        preparation offers it.
+
+    Notes:
+        The form builds the choices, the initials and the warning for a preparation without the scenario index, so
+        the fragment and the create page show the same selects.
+    """
+    form = ModelRunCreateForm(initial={"data_preparation": request.GET.get("data_preparation")})
+    for name in ("chosen_demand_scenario", "chosen_scrap_scenario"):
+        if request.GET.get(name) in dict(form.fields[name].choices):
+            form.initial[name] = request.GET[name]
+    return render(request, "steeloweb/partials/_demand_scrap_scenarios.html", {"form": form})
+
+
+@require_http_methods(["GET"])
 @require_http_methods(["GET"])
 def grid_emissions_scenario_fragment(request):
     """
@@ -998,7 +1022,7 @@ def grid_emissions_scenario_fragment(request):
     from django.http import HttpResponse
 
     prep_id = request.GET.get("data_preparation")
-    selected = request.GET.get("chosen_grid_emissions_scenario", "Business As Usual")
+    selected = request.GET.get("chosen_grid_emissions_scenario", config_default("chosen_grid_emissions_scenario"))
 
     scenarios: list[str] = []
     if prep_id:
@@ -1104,141 +1128,6 @@ def get_modelrun_progress(request, pk):
     return render(request, "steeloweb/includes/progress_bar.html", context)
 
 
-def _missing_image_response(request, pk, message):
-    """Render a popup-only message when ?popup=1, else flash + redirect to detail.
-
-    Without this, the redirect lands on the full modelrun-detail page inside the
-    popup window, exposing the whole site UI when only an "X not available"
-    notice is wanted.
-    """
-    if request.GET.get("popup") == "1":
-        return render(request, "steeloweb/popup_message.html", {"popup": True, "message": message})
-    messages.error(request, message)
-    return redirect("modelrun-detail", pk=pk)
-
-
-def view_cost_map(request, pk, map_type):
-    """
-    View for displaying cost maps (LCOE or LCOH)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        if map_type == "lcoe":
-            image = result_images.lcoe_map
-            title = "Levelized Cost of Electricity (LCOE)"
-        elif map_type == "lcoh":
-            image = result_images.lcoh_map
-            title = "Levelized Cost of Hydrogen (LCOH)"
-        else:
-            raise Http404("Invalid map type")
-
-        if not image:
-            return _missing_image_response(
-                request,
-                pk,
-                f"{title} not available for this model run. "
-                f"This may occur if plot generation failed or certain configuration options were selected.",
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": title,
-            "map_type": map_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
-def view_priority_map(request, pk, map_type):
-    """
-    View for displaying priority location maps (iron or steel)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        if map_type == "iron":
-            image = result_images.priority_locations_iron
-            title = "Top 5% Priority Locations for Iron Production"
-        elif map_type == "steel":
-            image = result_images.priority_locations_steel
-            title = "Top 5% Priority Locations for Steel Production"
-        else:
-            raise Http404("Invalid map type")
-
-        if not image:
-            return _missing_image_response(
-                request,
-                pk,
-                f"{title} not available for this model run. "
-                f"This may occur if plot generation failed or certain configuration options were selected.",
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": title,
-            "map_type": map_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
-def view_plant_visualization(request, pk, visualization_type):
-    """
-    View for displaying various plant visualizations (construction maps, status charts)
-    """
-    modelrun = get_object_or_404(ModelRun, pk=pk)
-
-    try:
-        result_images = ResultImages.objects.get(modelrun=modelrun)
-
-        # Mapping of visualization types to model fields and titles
-        visualization_mapping = {
-            "iron-construction": {
-                "field": "new_plants_iron_construction",
-                "title": "Iron Plants Operating Map",
-            },
-            "steel-construction": {
-                "field": "new_plants_steel_construction",
-                "title": "Steel Plants Operating Map",
-            },
-            "iron-status": {"field": "new_plants_iron_status", "title": "New Iron Plants by Status"},
-            "steel-status": {"field": "new_plants_steel_status", "title": "New Steel Plants by Status"},
-        }
-
-        if visualization_type not in visualization_mapping:
-            raise Http404("Invalid visualization type")
-
-        viz_info = visualization_mapping[visualization_type]
-        image = getattr(result_images, viz_info["field"])
-
-        if not image:
-            return _missing_image_response(
-                request, pk, f"No {viz_info['title']} visualization available for this model run"
-            )
-
-        context = {
-            "modelrun": modelrun,
-            "image": image,
-            "title": viz_info["title"],
-            "visualization_type": visualization_type,
-            "popup": request.GET.get("popup") == "1",
-        }
-        return render(request, "steeloweb/result_map.html", context)
-    except ResultImages.DoesNotExist:
-        return _missing_image_response(request, pk, "No result images available for this model run")
-
-
 def upload_circularity_data(request, modelrun_id=None):
     """
     Upload circularity data file
@@ -1334,7 +1223,6 @@ class ModelRunDeleteView(DeleteView):
         context = super().get_context_data(**kwargs)
 
         # Count related objects that will be deleted
-        context["result_images_count"] = ResultImages.objects.filter(modelrun=self.object).count()
         context["simulation_plots_count"] = SimulationPlot.objects.filter(modelrun=self.object).count()
         context["has_results"] = bool(self.object.results) or bool(self.object.result_csv)
 
@@ -1985,8 +1873,8 @@ class ModelRunOutputFilesView(DetailView):
 
         sections: list[dict] = []
 
-        # Subfolder sections: nest by child folders if present, else list files flat.
-        for sub_dir in ("plots", "Data", "TM"):
+        # Subfolder sections: each folder's child folders, then its own files.
+        for sub_dir in ("plots", "data", "TM"):
             section = self._build_section(self._humanise_folder_name(sub_dir), output_path / sub_dir, output_path)
             if section:
                 sections.append(section)
@@ -2006,24 +1894,34 @@ class ModelRunOutputFilesView(DetailView):
         return " ".join(p.title() if p.islower() else p for p in parts)
 
     def _build_section(self, name, dir_path, output_path):
+        """List an output folder's own files and each of its subfolders' files.
+
+        Args:
+            name: The section's heading.
+            dir_path: The folder to list.
+            output_path: The run's output folder, which the files' links are relative to.
+
+        Returns:
+            ``{"name", "files", "subsections"}`` with each subsection ``{"name", "files"}``, or None when the folder
+            is missing or holds no listed file.
+
+        Notes:
+            One level of subfolders; a subfolder without listed files is left out.
+        """
         if not (dir_path.exists() and dir_path.is_dir()):
             return None
         subfolders = sorted(
             (p for p in dir_path.iterdir() if p.is_dir() and not p.name.startswith(".")),
             key=lambda p: p.name.lower(),
         )
-        if subfolders:
-            subsections = []
-            for sub in subfolders:
-                files = self._list_files(sub, output_path)
-                if files:
-                    subsections.append({"name": self._humanise_folder_name(sub.name), "files": files})
-            if subsections:
-                return {"name": name, "subsections": subsections}
-            return None
+        subsections = []
+        for sub in subfolders:
+            sub_files = self._list_files(sub, output_path)
+            if sub_files:
+                subsections.append({"name": self._humanise_folder_name(sub.name), "files": sub_files})
         files = self._list_files(dir_path, output_path)
-        if files:
-            return {"name": name, "files": files}
+        if files or subsections:
+            return {"name": name, "files": files, "subsections": subsections}
         return None
 
     def _list_files(self, dir_path, output_path):

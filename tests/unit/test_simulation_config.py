@@ -1,5 +1,7 @@
 # tests/unit/test_simulation_config.py
 
+import json
+
 import pytest
 from pathlib import Path
 
@@ -7,6 +9,8 @@ from steelo.simulation_types import get_default_technology_settings
 
 from steelo.domain import Year
 from steelo.domain.constants import MT_TO_T
+from steelo import simulation
+from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.simulation import SimulationConfig
 
 
@@ -24,6 +28,10 @@ def prepared_data_dir(tmp_path):
     # Create some dummy files that the resolver should find
     (fixtures_dir / "plants.json").touch()
     (fixtures_dir / "demand_centers.json").touch()
+    (fixtures_dir / "suppliers.json").touch()
+    (fixtures_dir / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
     (geo_dir / "feasibility_mask.nc").touch()
 
     return data_dir
@@ -179,3 +187,58 @@ def test_probabilistic_agents_keep_default_npv_sampling_and_priority_share():
     assert config.probabilistic_agents is True
     assert config.calculate_npv_sites_share == 0.1
     assert config.geo_config.pick_priority_sites_share == 0.05
+
+
+def test_config_as_json_dict_survives_a_json_round_trip_with_nested_settings_as_objects(tmp_path):
+    """
+    Tests that the dict written to simulation_config.json holds nested settings as JSON
+    objects and lists, not Python repr strings, and leaves out the private fields.
+    """
+    config = SimulationConfig.for_testing(repository=InMemoryRepository(), output_dir=tmp_path)
+
+    loaded = json.loads(json.dumps(simulation.config_as_json_dict(config)))
+
+    assert loaded["geo_config"]["hydrogen_ceiling_percentile"] == 100.0
+    assert loaded["capacity_policy"]["enabled"] is False
+    assert loaded["technology_settings"]["BF"]["allowed"] is True
+    assert loaded["disposal_cost_outputs"] == ["steelmaking_slag"]
+    assert loaded["output_dir"] == str(tmp_path)
+    assert not [key for key in loaded if key.startswith("_")]
+
+
+def test_config_default_returns_a_plain_field_default():
+    """A field with a plain default comes back as that default."""
+    assert simulation.config_default("chosen_demand_scenario") == "BAU"
+    assert simulation.config_default("lp_epsilon") == 1e-3
+
+
+def test_config_default_calls_the_default_factory_for_a_fresh_copy(tmp_path):
+    """A field with a ``default_factory`` comes back as a new object on every call, so callers cannot share it."""
+    first = simulation.config_default("primary_products")
+    second = simulation.config_default("primary_products")
+
+    assert first == SimulationConfig.for_testing(repository=InMemoryRepository(), output_dir=tmp_path).primary_products
+    assert first is not second
+
+
+def test_config_default_reads_nested_geo_and_capacity_policy_fields():
+    """``geo_config.<field>`` and ``capacity_policy.<field>`` name the defaults of the two nested configs."""
+    assert simulation.config_default("geo_config.max_latitude") == 70.0
+    assert simulation.config_default("geo_config.excluded_greenfield_technologies") == ["BOF"]
+    assert simulation.config_default("capacity_policy.replacement_ratio") == 1.5
+    assert simulation.config_default("capacity_policy.inter_company_swap_cutoff_year") == 2028
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "start_year",
+        "no_such_field",
+        "geo_config.no_such_field",
+        "no_such_config.enabled",
+    ],
+)
+def test_config_default_raises_key_error_for_a_name_without_a_default(name):
+    """A required field, an unknown field and an unknown nested config all raise ``KeyError``."""
+    with pytest.raises(KeyError):
+        simulation.config_default(name)

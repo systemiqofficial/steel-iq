@@ -51,6 +51,8 @@ PLANT_LIFETIME = 20  # years; default lifetime of a plant (used for data prepara
 # SimulationConfig is used. The data preparation lifetime is only used to determine the renovation
 # cycle position of existing plants.
 RANDOM_SEED_DEFAULT = 42  # single seed shared by PAM, geospatial, trade LP and data preparation
+START_YEAR_DEFAULT = 2025  # constants, not SimulationConfig defaults, so the config keeps the years required
+END_YEAR_DEFAULT = 2060
 CONSTRUCTION_TIME_DEFAULT = 4  # years from the start of construction to operation
 ANNOUNCEMENT_TIME = 1  # max years between a unit's announcement and the start of its construction
 MIN_CAPACITY_FOR_DISTANCE_CALCULATION = 1 * MT_TO_T  # t; minimum capacity for plants to be considered

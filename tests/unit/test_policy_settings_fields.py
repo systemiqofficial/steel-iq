@@ -1,5 +1,8 @@
 """Test that policy settings fields are properly configured and passed through."""
 
+import tempfile
+from pathlib import Path
+
 import pytest
 from django.test import TestCase
 from steeloweb.forms import ModelRunCreateForm
@@ -59,11 +62,20 @@ class TestPolicySettingsFields(TestCase):
             },
         )
 
+        data_directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (data_directory / "data" / "fixtures").mkdir(parents=True)
+        (data_directory / "data" / "fixtures" / "technology_emission_factors.json").write_text(
+            '[{"boundary": "rs-inspired"}]'
+        )
+        (data_directory / "data" / "fixtures" / "scenarios.json").write_text(
+            '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+        )
         data_prep = DataPreparation.objects.create(
             name="Test Data Preparation",
             status=DataPreparation.Status.READY,
             core_data_package=core_package,
             geo_data_package=geo_package,
+            data_directory=str(data_directory),
         )
 
         form_data = {
@@ -73,10 +85,6 @@ class TestPolicySettingsFields(TestCase):
             "data_preparation": data_prep.id,  # Required field
             "use_iron_ore_premiums": False,
             "include_tariffs": False,
-            # Add other required fields
-            "total_steel_demand_scenario": "business_as_usual",
-            "green_steel_demand_scenario": "business_as_usual",
-            "scrap_generation_scenario": "business_as_usual",
         }
 
         form = ModelRunCreateForm(data=form_data)

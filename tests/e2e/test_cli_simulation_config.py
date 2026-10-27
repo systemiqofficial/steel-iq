@@ -2,6 +2,7 @@
 Tests for CLI creating and passing SimulationConfig.
 """
 
+import json
 import sys
 from unittest.mock import patch, MagicMock, Mock
 from pathlib import Path
@@ -9,6 +10,7 @@ import tempfile
 
 import pytest
 
+from steelo.data.cache_manager import DataPreparationCache
 from steelo.simulation import SimulationConfig
 from steelo.entrypoints.cli import run_full_simulation
 from steelo.domain import Year
@@ -60,6 +62,14 @@ def stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep
         (fixtures_subdir / "plants.json").write_text("[]")
         (fixtures_subdir / "demand_centers.json").write_text("[]")
         (fixtures_subdir / "suppliers.json").write_text("[]")
+        (fixtures_subdir / "scenarios.json").write_text(
+            json.dumps(
+                {
+                    "demand": {"BAU": "demand_centers.json", "High growth": "demand_centers.json"},
+                    "scrap": {"BAU": "suppliers.json", "High recycling": "suppliers.json"},
+                },
+            ),
+        )
         (fixtures_subdir / "country_mappings.json").write_text("[]")
         (fixtures_subdir / "railway_costs.json").write_text("[]")
 
@@ -188,6 +198,98 @@ def test_cli_grid_emissions_scenario_flag_lands_on_the_config(
 
         config = mock_create_runner.call_args[0][0]
         assert config.chosen_grid_emissions_scenario == expected
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_runs_differing_only_by_scenario_look_up_one_cached_preparation(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+    monkeypatch,
+):
+    """A preparation holds every demand and scrap scenario, so two runs naming different scenarios share one key."""
+    stub_cli_dependencies(tmp_path, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    master = tmp_path / "master.xlsx"
+    master.write_bytes(b"workbook")
+    keys = []
+    original_get_cache_key = DataPreparationCache.get_cache_key
+
+    def recorded_get_cache_key(cache, master_excel_path):
+        keys.append(original_get_cache_key(cache, master_excel_path))
+        return keys[-1]
+
+    monkeypatch.setattr(DataPreparationCache, "get_cache_key", recorded_get_cache_key)
+
+    for scenario_argv in [[], ["--demand-scenario", "High growth", "--scrap-scenario", "High recycling"]]:
+        argv = [
+            "run_simulation",
+            "--end-year",
+            "2026",
+            "--master-excel",
+            str(master),
+            "--steelo-home",
+            str(tmp_path / "home"),
+            *scenario_argv,
+        ]
+        with patch.object(sys, "argv", argv):
+            run_full_simulation()
+
+    assert len(keys) == 2
+    assert keys[0] == keys[1]
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_unknown_demand_scenario_exits_with_the_prepared_names_before_any_run_output(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+    capsys,
+):
+    """A scenario the preparation lacks exits non-zero naming those it holds; no run file is written, the data kept."""
+    stub_cli_dependencies(tmp_path, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    home = tmp_path / "home"
+    output_base = tmp_path / "runs"
+    argv = [
+        "run_simulation",
+        "--end-year",
+        "2026",
+        "--steelo-home",
+        str(home),
+        "--output-dir",
+        str(output_base),
+        "--demand-scenario",
+        "Nope",
+    ]
+
+    with patch.object(sys, "argv", argv):
+        with pytest.raises(SystemExit) as exit_info:
+            run_full_simulation()
+
+    assert exit_info.value.code == 1
+    message = " ".join(capsys.readouterr().out.split())
+    assert "No demand scenario 'Nope'" in message
+    assert "available: ['BAU', 'High growth']" in message
+    mock_create_runner.assert_not_called()
+    assert [path for path in output_base.rglob("*") if path.is_file()] == []
+    assert list(home.glob("temp_prep/prep_*/fixtures/scenarios.json")) != []
 
 
 @pytest.mark.parametrize(
@@ -344,6 +446,96 @@ def test_cli_run_name_lands_on_the_config(
         assert config.run_name == expected
 
 
+@pytest.mark.parametrize(
+    "taken_names, run_name, expected",
+    [
+        (["test"], "test", "test_2"),
+        (["test", "test_2"], "test", "test_3"),
+        (["test"], "other", "other"),
+        (["  test  "], "test", "test_2"),
+        ([], "   ", None),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_run_name_in_use_under_the_output_base_gets_a_suffix(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    taken_names,
+    run_name,
+    expected,
+):
+    """
+    A ``--run-name`` already held by a ``simulation_config.json`` under the output base gets the
+    first free ``_2``, ``_3`` suffix, even in a folder without ``run.json``; names compare trimmed,
+    any other name is kept, and a blank name records no name.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+        output_base = cli_temp_base / "my-runs"
+        for folder, taken in zip(["sim_a", "sim_b"], taken_names):
+            (output_base / folder).mkdir(parents=True)
+            (output_base / folder / "simulation_config.json").write_text(json.dumps({"run_name": taken}))
+
+        argv = [
+            "run_simulation",
+            "--start-year",
+            "2026",
+            "--end-year",
+            "2027",
+            "--output-dir",
+            str(output_base),
+            "--run-name",
+            run_name,
+        ]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.run_name == expected
+        assert json.loads((config.output_dir / "simulation_config.json").read_text())["run_name"] == expected
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_output_dir_is_the_base_of_the_run_folder(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+):
+    """``--output-dir`` is the base folder: the run's ``sim_<timestamp>`` folder is created inside it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+        output_base = cli_temp_base / "my-runs"
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", "--output-dir", str(output_base)]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.output_dir.parent == output_base
+        assert config.output_dir.name.startswith("sim_")
+
+
 @pytest.mark.parametrize("flag_argv, expected", [([], False), (["--enable-capacity-policy"], True)])
 @patch("steelo.entrypoints.cli.setup_legacy_symlinks")
 @patch("steelo.entrypoints.cli.update_output_symlink")
@@ -421,6 +613,59 @@ def test_cli_credit_validity_years_is_refused_at_parse_time(argv_tail, message, 
 
     assert raised.value.code == 2
     assert message in capsys.readouterr().err
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_run_without_steelo_home_writes_into_the_test_home(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+):
+    """A CLI call without ``--steelo-home`` lands in the test's own home, never in the developer's ``~/.steelo``."""
+    stub_cli_dependencies(tmp_path / "stubs", mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+    with patch.object(sys, "argv", ["run_simulation", "--start-year", "2026", "--end-year", "2027"]):
+        with patch("sys.exit"):
+            run_full_simulation()
+
+    config = mock_create_runner.call_args[0][0]
+    assert config.output_dir.parent == tmp_path / "home" / "output"
+
+
+def test_cli_output_file_flag_is_refused_at_parse_time(capsys):
+    """``--output-file`` names a JSON that nothing writes, so the flag no longer exists and stops the run at parsing."""
+    with patch.object(sys, "argv", ["run_simulation", "--output-file", "x.json"]):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 2
+    assert "--output-file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--plants-json", "--demand-excel", "--location-csv", "--cost-of-x-csv", "--demand-sheet"],
+)
+def test_cli_unread_input_file_flags_are_refused_at_parse_time(flag, capsys):
+    """
+    The four single-file flags and the demand sheet name were never read, so they no longer exist and stop the run at
+    parsing.
+    """
+    with patch.object(sys, "argv", ["run_simulation", flag, "x"]):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 2
+    assert flag in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

@@ -1,14 +1,17 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import hashlib
 import shutil
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from django.utils import timezone
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from steelo.simulation import GeoConfig
 
 # Cache for technology configurations
 # Cache structure: key -> {ts: timestamp, fp: (mtime_ns, size), data: dict}
@@ -478,6 +481,84 @@ class DataPreparation(models.Model):
             scenarios.insert(0, "Business As Usual")
         return scenarios
 
+    def get_emission_boundaries(self) -> list[str]:
+        """The emissions boundaries the prepared data offers for pricing carbon.
+
+        Returns:
+            The sorted distinct ``boundary`` values of ``fixtures/technology_emission_factors.json``.
+
+        Raises:
+            FileNotFoundError: When the file is missing.
+            ValueError: When the file is not JSON.
+
+        Notes:
+            Unlike ``get_region_emissivity_scenarios`` this fails loudly: every preparation writes the file and the
+            run needs it, so a missing or malformed one is bad data. A record without ``boundary`` raises KeyError.
+        """
+        import json
+
+        path = Path(self.data_directory) / "data" / "fixtures" / "technology_emission_factors.json"
+        records = json.loads(path.read_text(encoding="utf-8"))
+        return sorted({record["boundary"] for record in records})
+
+    def get_demand_scenarios(self) -> list[str]:
+        """The steel demand scenarios the prepared data holds, one of which a run picks.
+
+        Returns:
+            The sorted names under ``demand`` in ``fixtures/scenarios.json``.
+
+        Raises:
+            FileNotFoundError: When the preparation has no index, as one made before run-time scenarios.
+        """
+        return self._scenario_names("demand")
+
+    def get_scrap_scenarios(self) -> list[str]:
+        """The scrap availability scenarios the prepared data holds, one of which a run picks.
+
+        Returns:
+            The sorted names under ``scrap`` in ``fixtures/scenarios.json``.
+
+        Raises:
+            FileNotFoundError: When the preparation has no index, as one made before run-time scenarios.
+        """
+        return self._scenario_names("scrap")
+
+    def _scenario_names(self, kind: str) -> list[str]:
+        """The scenario names of one kind in the preparation's scenario index.
+
+        Args:
+            kind: ``demand`` or ``scrap``.
+
+        Returns:
+            The names under ``kind`` in ``fixtures/scenarios.json``, sorted.
+        """
+        import json
+
+        path = Path(self.data_directory) / "data" / "fixtures" / "scenarios.json"
+        return sorted(json.loads(path.read_text(encoding="utf-8"))[kind])
+
+    def has_capacity_pool_fixtures(self) -> bool:
+        """Whether the prepared data holds the capacity pool fixtures an enabled capacity policy needs.
+
+        Returns:
+            True when ``capacity_pool_provinces.json``, ``capacity_pool_technologies.json`` and
+            ``capacity_pool_opening_credits.json`` all exist under the preparation's ``data/fixtures`` and the first
+            two hold at least one record.
+
+        Notes:
+            Mirrors the capacity policy bootstrap, which refuses a missing fixture and an empty provinces or
+            technologies one; empty opening credits are a zero-pool start there.
+        """
+        import json
+
+        fixtures = Path(self.data_directory) / "data" / "fixtures"
+        if not (fixtures / "capacity_pool_opening_credits.json").is_file():
+            return False
+        return all(
+            (fixtures / name).is_file() and bool(json.loads((fixtures / name).read_text(encoding="utf-8")))
+            for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json")
+        )
+
 
 @dataclass
 class Progress:
@@ -500,6 +581,50 @@ class Progress:
         progress_ratio = (self.current_year - self.start_year) / total_years
         progress_ratio = max(0.0, min(progress_ratio, 1.0))
         return round(progress_ratio * 100)
+
+
+def _simulation_and_geo_settings(settings: dict[str, Any], geo_names: set[str]) -> tuple[dict[str, Any], "GeoConfig"]:
+    """Split a run's stored settings into its ``SimulationConfig`` keyword arguments and its ``GeoConfig``.
+
+    Args:
+        settings: The run's stored settings, each named after a ``SimulationConfig`` or ``GeoConfig`` field.
+        geo_names: The ``GeoConfig`` field names, less those ``SimulationConfig`` also has.
+
+    Returns:
+        The settings that are no geo setting, and a ``GeoConfig`` holding the geo ones; a setting stored as None is
+        left out of either, so it keeps its class default.
+
+    Notes:
+        Forms before the class defaults applied stored None for a blank field. Numbers are cast so a Decimal or int
+        stored by an older form reaches the config as float (int for ``consideration_time``); a blank transport
+        route is left out of the transport costs.
+    """
+    from steelo.simulation import GeoConfig
+
+    float_names = {
+        "max_latitude",
+        "max_altitude",
+        "max_slope",
+        "hydrogen_ceiling_percentile",
+        "long_dist_pipeline_transport_cost",
+        "pick_priority_sites_share",
+    }
+    geo_settings = {}
+    for name in geo_names & settings.keys():
+        value = settings[name]
+        if value is None:
+            continue
+        if name in float_names:
+            value = float(value)
+        elif name == "transportation_cost_per_km_per_ton":
+            value = {route: float(cost) for route, cost in value.items() if cost not in (None, "")}
+        geo_settings[name] = value
+    simulation_settings = {
+        name: value for name, value in settings.items() if name not in geo_names and value is not None
+    }
+    if "consideration_time" in simulation_settings:
+        simulation_settings["consideration_time"] = int(simulation_settings["consideration_time"])
+    return simulation_settings, GeoConfig(**geo_settings)
 
 
 class ModelRun(models.Model):
@@ -637,6 +762,8 @@ class ModelRun(models.Model):
             self.save(update_fields=["state", "error_message"])
             return
 
+        config_data["run_name"] = self.name or f"Model Run #{self.pk}"
+
         # Add isolated output directory configuration
         if output_path:
             config_data["output_dir"] = str(output_path)
@@ -677,110 +804,13 @@ class ModelRun(models.Model):
                 # Geo data paths will be auto-detected by the factory method
                 pass  # Factory method will auto-detect all geo paths
 
-        # Add circularity file path if custom circularity file was uploaded
-        if "circularity_file_path" in config_data and config_data["circularity_file_path"]:
-            # The path is already stored in the config
-            pass
+        from steelo.capacity_policy.config import CapacityPolicyConfig
+        from steelo.simulation import SimulationConfig, GeoConfig, config_as_json_dict
 
-        # Filter config_data to only include keys that SimulationConfig expects
-        expected_params = {
-            # Core parameters (required)
-            "start_year",
-            "end_year",
-            "master_excel_path",
-            "output_dir",
-            # Data directory (optional - for locating fixtures)
-            "data_dir",
-            # Economic parameters
-            "plant_lifetime",
-            "global_risk_free_rate",
-            "steel_price_buffer",
-            "iron_price_buffer",
-            "steel_market_clearing_share",
-            "iron_market_clearing_share",
-            "peg_iron_to_steel_price",
-            "iron_to_steel_price_ratio",
-            "opening_balance_multiplier",
-            # Output paths (optional, will be derived from output_dir if not provided)
-            "plots_dir",
-            "geo_plots_dir",
-            "pam_plots_dir",
-            # Core simulation parameters (have defaults)
-            "active_statuses",
-            "capacity_limit",
-            "soft_minimum_capacity_share",
-            "hot_metal_radius",
-            "random_seed",
-            "construction_time",
-            "consideration_time",
-            "probabilistic_agents",
-            "probability_of_construction",
-            "probability_of_announcement",
-            "top_n_loctechs_as_business_op",
-            "opportunity_pool_depth",
-            "calculate_npv_sites_share",
-            # Plant capacity parameters
-            "expanded_capacity",
-            "capacity_limit_iron",
-            "capacity_limit_steel",
-            "new_capacity_share_from_new_plants",
-            "pick_priority_sites_share",
-            "hydrogen_ceiling_percentile",
-            "intraregional_trade_allowed",
-            "long_dist_pipeline_transport_cost",
-            # Trade module parameters
-            "lp_epsilon",
-            "minimum_active_utilisation_rate",
-            "minimum_margin",
-            # Status lists
-            "announced_statuses",
-            # Scenario and policy settings
-            "chosen_emissions_boundary_for_carbon_costs",
-            "chosen_grid_emissions_scenario",
-            "use_iron_ore_premiums",
-            "green_steel_emissions_limit",
-            "enable_furnace_group_clustering",
-            "geographical_clustering_scope",
-            # Feature flags
-            "include_infrastructure_cost",
-            "include_transport_cost",
-            "include_lulc_cost",
-            "use_master_excel",
-            "transportation_cost_per_km_per_ton",
-            # Technology availability settings
-            "technology_settings",
-            # Optional geo data paths
-            "terrain_nc_path",
-            "land_cover_tif_path",
-            "rail_distance_nc_path",
-            "countries_shapefile_dir",
-            "disputed_areas_shapefile_dir",
-            "landtype_percentage_nc_path",
-            # Other optional parameters
-            "log_level",
-            "scrap_generation_scenario",
-            "demand_sheet_name",
-            "technology_lifetimes",
-            # Baseload power simulation parameters
-            "baseload_demand",
-            "years_of_operation",
-            "included_power_mix",
-            # Data processing parameters
-            "steel_plant_gem_data_year",
-            "production_gem_data_years",
-            "excel_reader_start_year",
-            "excel_reader_end_year",
-            # Geo processing parameters
-            "max_altitude",
-            "max_slope",
-            "max_latitude",
-        }
-
-        # Helper function for defensive extraction with type casting
-        def _pick(cfg, key, default):
-            """Extract value from config with defensive handling of None/empty values."""
-            val = cfg.get(key, default)
-            return default if val in (None, "", []) else val
+        # Geo settings are stored flat, so geo_config itself is no stored key
+        simulation_names = {config_field.name for config_field in fields(SimulationConfig) if config_field.init}
+        simulation_names.discard("geo_config")
+        geo_names = {config_field.name for config_field in fields(GeoConfig)} - simulation_names
 
         # Create a deep copy of config data first to avoid modifying the original
         from copy import deepcopy
@@ -794,10 +824,14 @@ class ModelRun(models.Model):
                 logger.warning(f"Ignoring deprecated parameter '{param}' from stored configuration")
                 filtered_config.pop(param)
 
-        # Remove any parameters not in the expected set
-        for key in list(filtered_config.keys()):
-            if key not in expected_params:
+        # Runs stored before a form input was removed still start
+        unknown_keys = sorted(set(filtered_config) - simulation_names - geo_names)
+        if unknown_keys:
+            logger.warning(f"Dropping stored settings that are no run setting: {', '.join(unknown_keys)}")
+            for key in unknown_keys:
                 filtered_config.pop(key)
+        if "capacity_policy" in filtered_config:
+            filtered_config["capacity_policy"] = CapacityPolicyConfig(**filtered_config["capacity_policy"])
 
         # Load and validate technology settings if not already present
         if "technology_settings" not in filtered_config:
@@ -914,57 +948,10 @@ class ModelRun(models.Model):
 
         # Create the SimulationConfig using the factory method when data preparation is available,
         # otherwise use the manual config creation for backwards compatibility
-        from steelo.simulation import SimulationConfig, GeoConfig
         from steelo.domain import Year
 
         if data_dir is not None and data_dir.exists():
-            # Separate GeoConfig parameters from SimulationConfig parameters
-            geo_params = [
-                "max_altitude",
-                "max_slope",
-                "max_latitude",
-                "hydrogen_ceiling_percentile",
-                "included_power_mix",
-                "intraregional_trade_allowed",
-                "long_dist_pipeline_transport_cost",
-                "include_infrastructure_cost",
-                "include_transport_cost",
-                "include_lulc_cost",
-                "transportation_cost_per_km_per_ton",
-                "pick_priority_sites_share",
-            ]
-            # Only include geo parameters that are not None to avoid overriding defaults
-            # Apply defensive type casting for specific fields
-            geo_config_data = {}
-            for k in geo_params:
-                if k in filtered_config and filtered_config[k] is not None:
-                    val = filtered_config[k]
-                    # Cast max_latitude to float to ensure no Decimal leakage
-                    if k == "max_latitude":
-                        val = float(_pick(filtered_config, k, 65.0))
-                    # Cast other numeric fields appropriately
-                    elif k == "max_altitude":
-                        val = float(_pick(filtered_config, k, 1500.0))
-                    elif k == "max_slope":
-                        val = float(_pick(filtered_config, k, 2.0))
-                    elif k == "hydrogen_ceiling_percentile":
-                        val = float(_pick(filtered_config, k, 100.0))
-                    elif k == "long_dist_pipeline_transport_cost":
-                        val = float(_pick(filtered_config, k, 1.0))
-                    elif k == "pick_priority_sites_share":
-                        val = float(_pick(filtered_config, k, 0.05))
-                    elif k == "transportation_cost_per_km_per_ton":
-                        val = {route: float(v) for route, v in filtered_config[k].items() if v not in (None, "")}
-                    geo_config_data[k] = val
-            sim_config_data = {k: v for k, v in filtered_config.items() if k not in geo_params}
-            # Apply type casting for consideration_time
-            if "consideration_time" in sim_config_data:
-                sim_config_data["consideration_time"] = int(_pick(sim_config_data, "consideration_time", 3))
-
-            # Create GeoConfig if we have geo parameters
-            extra_kwargs = {}
-            if geo_config_data:
-                extra_kwargs["geo_config"] = GeoConfig(**geo_config_data)
+            sim_config_data, geo_config = _simulation_and_geo_settings(filtered_config, geo_names)
 
             # Use factory method with auto-detected paths
             config = SimulationConfig.from_data_directory(
@@ -978,58 +965,12 @@ class ModelRun(models.Model):
                     for k, v in sim_config_data.items()
                     if k not in ["start_year", "end_year", "output_dir", "master_excel_path", "data_dir"]
                 },
-                **extra_kwargs,
+                geo_config=geo_config,
             )
         else:
             # Fallback to manual config creation
-            # Separate GeoConfig parameters from SimulationConfig parameters
-            geo_params = [
-                "max_altitude",
-                "max_slope",
-                "max_latitude",
-                "hydrogen_ceiling_percentile",
-                "included_power_mix",
-                "intraregional_trade_allowed",
-                "long_dist_pipeline_transport_cost",
-                "include_infrastructure_cost",
-                "include_transport_cost",
-                "include_lulc_cost",
-                "transportation_cost_per_km_per_ton",
-                "pick_priority_sites_share",
-            ]
-            # Only include geo parameters that are not None to avoid overriding defaults
-            # Apply defensive type casting for specific fields
-            geo_config_data = {}
-            for k in geo_params:
-                if k in filtered_config and filtered_config[k] is not None:
-                    val = filtered_config[k]
-                    # Cast max_latitude to float to ensure no Decimal leakage
-                    if k == "max_latitude":
-                        val = float(_pick(filtered_config, k, 65.0))
-                    # Cast other numeric fields appropriately
-                    elif k == "max_altitude":
-                        val = float(_pick(filtered_config, k, 1500.0))
-                    elif k == "max_slope":
-                        val = float(_pick(filtered_config, k, 2.0))
-                    elif k == "hydrogen_ceiling_percentile":
-                        val = float(_pick(filtered_config, k, 100.0))
-                    elif k == "long_dist_pipeline_transport_cost":
-                        val = float(_pick(filtered_config, k, 1.0))
-                    elif k == "pick_priority_sites_share":
-                        val = float(_pick(filtered_config, k, 0.05))
-                    elif k == "transportation_cost_per_km_per_ton":
-                        val = {route: float(v) for route, v in filtered_config[k].items() if v not in (None, "")}
-                    geo_config_data[k] = val
-            sim_config_data = {k: v for k, v in filtered_config.items() if k not in geo_params}
-            # Apply type casting for consideration_time
-            if "consideration_time" in sim_config_data:
-                sim_config_data["consideration_time"] = int(_pick(sim_config_data, "consideration_time", 3))
-
-            # Create GeoConfig if we have geo parameters
-            if geo_config_data:
-                sim_config_data["geo_config"] = GeoConfig(**geo_config_data)
-
-            config = SimulationConfig(**sim_config_data)
+            sim_config_data, geo_config = _simulation_and_geo_settings(filtered_config, geo_names)
+            config = SimulationConfig(**sim_config_data, geo_config=geo_config)
 
         # Write simulation_config.json and preparation_metadata.json alongside the
         # other run outputs, mirroring the terminal `run_simulation` CLI layout.
@@ -1038,14 +979,20 @@ class ModelRun(models.Model):
             from datetime import datetime
 
             try:
-                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
-                (output_path / "simulation_config.json").write_text(json.dumps(config_dict, indent=2, default=str))
+                (output_path / "simulation_config.json").write_text(json.dumps(config_as_json_dict(config), indent=2))
 
+                master_row = self.data_preparation.master_excel if self.data_preparation else None
+                # An uploaded master without a MasterExcelFile row is known by its file name
+                uploaded_name = master_excel_path.name if master_excel_path else None
                 prep_metadata = {
                     "preparation_time": datetime.now().isoformat(),
                     "cache_used": True,
                     "master_excel": str(master_excel_path) if master_excel_path else None,
                     "cached_from": str(data_dir) if data_dir else None,
+                    "made_in": "app",
+                    "master_source": "default" if master_row and master_row.is_template else "custom",
+                    "master_name": master_row.name if master_row else uploaded_name,
+                    "preparation_name": self.data_preparation.name if self.data_preparation else None,
                 }
                 (output_path / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
             except Exception as e:
@@ -1154,7 +1101,18 @@ class ModelRun(models.Model):
         return self.failed_with_exception
 
     def reset_for_rerun(self) -> None:
-        """Restore the run to a pristine CREATED state so it can be queued again."""
+        """Restore the run to a pristine CREATED state so it can be queued again.
+
+        Notes:
+            Also removes the previous attempt's outputs: the output folder, the result CSV file and the plot rows
+            with their image files.
+            ``output_directory`` is cleared so the next run recreates the folder structure.
+        """
+        self.cleanup_output_directory()
+        self.result_csv.delete(save=False)
+        for plot in self.simulation_plots.all():
+            plot.image.delete(save=False)
+        self.simulation_plots.all().delete()
         self.state = self.RunState.CREATED
         self.error_message = ""
         self.results = {}
@@ -1162,6 +1120,8 @@ class ModelRun(models.Model):
         self.run_started_at = None
         self.finished_at = None
         self.task_id = None
+        self.result_csv = None
+        self.output_directory = ""
         self.save(
             update_fields=[
                 "state",
@@ -1171,6 +1131,8 @@ class ModelRun(models.Model):
                 "run_started_at",
                 "finished_at",
                 "task_id",
+                "result_csv",
+                "output_directory",
                 "updated_at",
             ]
         )
@@ -1319,209 +1281,13 @@ class ModelRun(models.Model):
 
 
 def result_image_upload_path(instance, filename) -> str:
-    """Generate upload path for result image files"""
+    """Generate upload path for result image files.
+
+    Notes:
+        The model that used it is gone; migrations 0005, 0022 and 0027 still import it, so ``migrate`` on a new
+        database needs it.
+    """
     return f"results/{instance.modelrun.id}/{filename}"
-
-
-class ResultImages(models.Model):
-    """
-    Result Images (maps) for a model run.
-    """
-
-    lcoe_map = models.ImageField(upload_to=result_image_upload_path, verbose_name="LCOE Map", blank=True)
-    lcoh_map = models.ImageField(upload_to=result_image_upload_path, verbose_name="LCOH Map", blank=True)
-    priority_locations_iron = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="Priority Locations for Iron", blank=True
-    )
-    priority_locations_steel = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="Priority Locations for Steel", blank=True
-    )
-    new_plants_iron_construction = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Iron Plants Under Construction", blank=True
-    )
-    new_plants_steel_construction = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Steel Plants Under Construction", blank=True
-    )
-    new_plants_iron_status = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Iron Plants by Status", blank=True
-    )
-    new_plants_steel_status = models.ImageField(
-        upload_to=result_image_upload_path, verbose_name="New Steel Plants by Status", blank=True
-    )
-    modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="result_images")
-
-    class Meta:
-        verbose_name = "Result Images"
-        verbose_name_plural = "Result Images"
-
-    def __str__(self):
-        return f"Result Images for Model Run #{self.modelrun.id}"
-
-    @classmethod
-    def create_from_plots(cls, modelrun, plots_dir: Path | None = None):
-        """
-        Create ResultImages by loading available plots from the simulation output directory.
-
-        Args:
-            modelrun: The ModelRun instance
-            plots_dir: Override the default output directory for testing
-
-        Returns:
-            ResultImages: The created instance with image fields populated for available plots
-        """
-        from django.core.files.base import ContentFile
-        import logging
-        import re
-
-        logger = logging.getLogger(__name__)
-
-        def sort_plots_by_year(paths: list[Path]) -> list[Path]:
-            """
-            Sort plot files by year (descending) extracted from filename.
-            Falls back to modification time if no year is found.
-
-            Examples:
-                optimal_lcoe_2035.png -> year 2035
-                lcoh_2030_p15.png -> year 2030
-                top20_priority_locations_iron_2027.png -> year 2027
-                lcoe_map.png -> use mtime
-
-            Args:
-                paths: List of Path objects to sort
-
-            Returns:
-                List of Path objects sorted by year (newest first)
-            """
-
-            def get_sort_key(path: Path) -> tuple[int, float]:
-                # Try to extract year from filename
-                # Matches patterns like: _2025.png, _2025_p15.png, _2027_p20.png
-                match = re.search(r"_(\d{4})(?:_p\d+)?\.png$", path.name)
-                if match:
-                    year = int(match.group(1))
-                    # Return negative year for descending sort, and mtime as secondary key
-                    mtime = path.stat().st_mtime if path.exists() else 0
-                    return (-year, -mtime)
-                else:
-                    # No year found - sort by mtime only (put these after year-specific files)
-                    mtime = path.stat().st_mtime if path.exists() else 0
-                    return (0, -mtime)  # 0 puts non-year files after year files
-
-            return sorted(paths, key=get_sort_key)
-
-        if plots_dir is None:
-            # Use the model run's isolated directory if available
-            output_path = modelrun.get_output_path()
-            if output_path:
-                plots_dir = output_path / "plots"
-            else:
-                raise ValueError("ModelRun must have an output path set")
-
-        # Directory names for PAM, GEO, and greenfield plots
-        pam_plots_dir = plots_dir / "PAM"
-        geo_plots_dir = plots_dir / "GEO"
-        greenfield_plots_dir = plots_dir / "greenfield"
-
-        # Mapping of field names to potential plot files
-        # Note: Using glob patterns to match files with any priority percentage (e.g., top5, top20, etc.)
-        # and year suffixes, sorted by year (newest first) to prefer recent plots over stale ones
-        plot_mappings = {
-            "lcoe_map": [
-                *sort_plots_by_year(
-                    list(geo_plots_dir.glob("optimal_lcoe_*.png"))
-                ),  # Year-specific files (newest year first)
-                geo_plots_dir / "lcoe_map.png",
-                geo_plots_dir / "optimal_lcoe.png",
-                pam_plots_dir / "lcoe_visualization.png",
-            ],
-            "lcoh_map": [
-                # Match actual filename pattern: lcoh_{year}_p{percentage}.png
-                *sort_plots_by_year(list(geo_plots_dir.glob("lcoh_*_p*.png"))),  # e.g., lcoh_2025_p15.png
-                *sort_plots_by_year(list(geo_plots_dir.glob("optimal_lcoh_*.png"))),  # Keep for backward compatibility
-                geo_plots_dir / "lcoh_map.png",
-                geo_plots_dir / "optimal_lcoh.png",
-                pam_plots_dir / "lcoh_visualization.png",
-            ],
-            "priority_locations_iron": [
-                # Match any percentage (top5, top20, etc.) with year suffix, sorted by year (newest first)
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_iron_*.png"))),
-                # Match any percentage without year suffix, sorted by mtime
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_iron.png"))),
-                pam_plots_dir / "iron_priority_locations.png",
-            ],
-            "priority_locations_steel": [
-                # Match any percentage (top5, top20, etc.) with year suffix, sorted by year (newest first)
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_steel_*.png"))),
-                # Match any percentage without year suffix, sorted by mtime
-                *sort_plots_by_year(list(geo_plots_dir.glob("top*_priority_locations_steel.png"))),
-                pam_plots_dir / "steel_priority_locations.png",
-            ],
-            "new_plants_iron_construction": [
-                greenfield_plots_dir / "iron_greenfield_map.png",  # New filename (operating plants)
-                geo_plots_dir / "new_iron_plants_map.png",  # Old filenames for backward compatibility
-                geo_plots_dir / "new_iron_plants_under_construction_map.png",
-                pam_plots_dir / "iron_plants_construction.png",
-            ],
-            "new_plants_steel_construction": [
-                greenfield_plots_dir / "steel_greenfield_map.png",  # New filename (operating plants)
-                geo_plots_dir / "new_steel_plants_map.png",  # Old filenames for backward compatibility
-                geo_plots_dir / "new_steel_plants_under_construction_map.png",
-                pam_plots_dir / "steel_plants_construction.png",
-            ],
-            "new_plants_iron_status": [
-                greenfield_plots_dir / "iron_greenfield_status.png",
-                geo_plots_dir / "new_iron_plants_by_status.png",
-                pam_plots_dir / "iron_plants_status.png",
-            ],
-            "new_plants_steel_status": [
-                greenfield_plots_dir / "steel_greenfield_status.png",
-                geo_plots_dir / "new_steel_plants_by_status.png",
-                pam_plots_dir / "steel_plants_status.png",
-            ],
-        }
-
-        # Create empty ResultImages object
-        result_images = cls(modelrun=modelrun)
-
-        logger.info(f"Creating ResultImages for ModelRun {modelrun.id} from plots directory: {plots_dir}")
-
-        # Load and save each image
-        for field_name, potential_paths in plot_mappings.items():
-            file_content = None
-            file_name = None
-
-            # First, try to find a real plot
-            for plot_path in potential_paths:
-                if plot_path.exists():
-                    with open(plot_path, "rb") as f:
-                        file_content = f.read()
-                    file_name = plot_path.name
-                    break
-
-            # For priority locations, also check for year-specific files
-            if file_content is None and "priority_locations" in field_name:
-                product = "iron" if "iron" in field_name else "steel"
-                # Look for any year-specific file
-                pattern = f"top5_priority_locations_{product}_*.png"
-                for year_file in sorted(geo_plots_dir.glob(pattern)):
-                    with open(year_file, "rb") as f:
-                        file_content = f.read()
-                    file_name = year_file.name
-                    break
-
-            # Log warning if no plot found
-            if file_content is None:
-                logger.warning(f"No plot found for {field_name} - checked paths: {[str(p) for p in potential_paths]}")
-
-            # Save the content to the model field
-            if file_content and file_name:
-                getattr(result_images, field_name).save(file_name, ContentFile(file_content))
-                logger.debug(f"Saved image for {field_name}: {file_name}")
-            else:
-                logger.info(f"No image saved for {field_name} - field will remain empty")
-
-        result_images.save()
-        return result_images
 
 
 def simulation_plot_upload_path(instance, filename) -> str:
@@ -1544,6 +1310,7 @@ class SimulationPlot(models.Model):
         CAPACITY_TECHNOLOGY = "capacity_technology", "Capacity by Technology"
         EMISSIONS = "emissions", "Emissions by Technology"
         MARKET_PRICES = "market_prices", "Market Prices"
+        CAPACITY_POLICY = "capacity_policy", "Capacity Policy"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1561,8 +1328,22 @@ class SimulationPlot(models.Model):
 
     @classmethod
     def capture_simulation_plots(cls, modelrun, pam_plots_dir: Path | None = None):
-        """
-        Find and capture all simulation plots generated from CSV processing.
+        """Find and capture all simulation plots generated from CSV processing.
+
+        Args:
+            modelrun: The run whose plots are captured.
+            pam_plots_dir: The run's ``plots/PAM`` folder; by default the one in the run's output folder.
+
+        Returns:
+            The created ``SimulationPlot`` rows; empty when ``pam_plots_dir`` does not exist.
+
+        Raises:
+            ValueError: No ``pam_plots_dir`` was given and the run has no output folder.
+
+        Notes:
+            Emissions, cost curves and the capacity pool charts are read from folders beside ``pam_plots_dir``. A
+            capacity pool chart takes its title from its file name and its product from an ``iron_`` or ``steel_``
+            prefix; a policy-off run has none.
         """
         if pam_plots_dir is None:
             # Use the model run's isolated directory if available
@@ -1659,13 +1440,17 @@ class SimulationPlot(models.Model):
                 "plot_type": cls.PlotType.MARKET_PRICES,
                 "title": "Market Prices",
             },
+            {
+                "pattern": "capacity_pool/*.png",
+                "plot_type": cls.PlotType.CAPACITY_POLICY,
+            },
         ]
 
         created_plots = []
 
-        # Emissions and cost-curve charts live in sibling folders to PAM
+        # Emissions, cost-curve and capacity pool charts live in sibling folders to PAM
         plots_root = pam_plots_dir.parent
-        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE}
+        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE, cls.PlotType.CAPACITY_POLICY}
 
         for config in plot_configs:
             pattern = config["pattern"]
@@ -1679,6 +1464,9 @@ class SimulationPlot(models.Model):
                         file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
                     elif config["plot_type"] == cls.PlotType.EMISSIONS:
                         file_config["title"] = cls._build_emissions_title(plot_file, config["title"])
+                    elif config["plot_type"] == cls.PlotType.CAPACITY_POLICY:
+                        product = plot_file.stem.split("_", 1)[0]
+                        file_config["product_type"] = product if product in ("iron", "steel") else ""
                     plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)

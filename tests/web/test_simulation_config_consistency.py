@@ -102,6 +102,10 @@ class TestSimulationConfigConsistency(TestCase):
             # Create required files
             (fixtures_dir / "plants.json").write_text("[]")
             (fixtures_dir / "demand_centers.json").write_text("[]")
+            (fixtures_dir / "suppliers.json").write_text("[]")
+            (fixtures_dir / "scenarios.json").write_text(
+                '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+            )
             master_excel = data_dir / "master_input.xlsx"
             master_excel.touch()
 
@@ -153,6 +157,10 @@ class TestSimulationConfigConsistency(TestCase):
             # Create required files
             (fixtures_dir / "plants.json").write_text("[]")
             (fixtures_dir / "demand_centers.json").write_text("[]")
+            (fixtures_dir / "suppliers.json").write_text("[]")
+            (fixtures_dir / "scenarios.json").write_text(
+                '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+            )
 
             # Create config without any geo parameters
             sim_config = SimulationConfig.from_data_directory(

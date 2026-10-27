@@ -7,6 +7,7 @@ These functions were moved from cli.py to follow clean architecture principles.
 import csv
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,6 +22,7 @@ from ..domain.constants import PLANT_LIFETIME, T_TO_KG, Year
 from ..adapters.dataprocessing.excel_reader import (
     read_biomass_availability,
     read_co2_storage_availability,
+    read_demand_and_scrap_scenarios,
     read_demand_centers,
     read_scrap_as_suppliers,
     read_mines_as_suppliers,
@@ -288,6 +290,117 @@ def recreate_mines_and_scrap_as_suppliers_data(
         f"[green]  Total suppliers: {len(suppliers)} ({len(scrap_suppliers)} scrap + {len(mine_suppliers)} mines)[/green]"
     )
     return write_repository
+
+
+def scenario_fixture_path(fixtures_dir: Path, kind: str, scenario: str) -> Path:
+    """
+    The file a preparation writes for one demand or scrap scenario.
+
+    Args:
+        fixtures_dir: The preparation's fixtures folder.
+        kind: "demand" or "scrap".
+        scenario: The scenario's name in the sheet's "Scenario" column.
+
+    Returns:
+        Path: ``demand_scenarios/<slug>/demand_centers.json`` or ``scrap_scenarios/<slug>/suppliers.json`` under
+        ``fixtures_dir``, ``<slug>`` the name in lower case with each run of characters other than letters and digits
+        made one hyphen.
+
+    Raises:
+        ValueError: If the name holds no letter or digit.
+    """
+    folder, filename = {
+        "demand": ("demand_scenarios", "demand_centers.json"),
+        "scrap": ("scrap_scenarios", "suppliers.json"),
+    }[kind]
+    slug = re.sub(r"[\W_]+", "-", scenario.casefold()).strip("-")
+    if not slug:
+        raise ValueError(f"Scenario name {scenario!r} holds no letter or digit to name its folder")
+    return fixtures_dir / folder / slug / filename
+
+
+def write_scenario_index(json_path: Path, paths: dict[str, dict[str, Path]]) -> Path:
+    """
+    Write the index that maps each demand and scrap scenario name to its file.
+
+    Args:
+        json_path: The index, ``scenarios.json`` in the fixtures folder.
+        paths: Under "demand" and "scrap", each scenario name and the path of its file.
+
+    Returns:
+        Path: ``json_path``, holding ``{"demand": {name: path}, "scrap": {name: path}}`` with each path relative to
+        the fixtures folder, so readers never derive a name from a folder.
+    """
+    index = {
+        kind: {name: path.relative_to(json_path.parent).as_posix() for name, path in kind_paths.items()}
+        for kind, kind_paths in paths.items()
+    }
+    json_path.write_text(json.dumps(index, indent=2))
+    return json_path
+
+
+def recreate_scenario_fixtures(
+    *,
+    json_path: Path,
+    master_excel_path: Path,
+    sheet_name: str,
+    mines_sheet_name: str,
+    gravity_distances_path: Path,
+    location_csv: Path,
+) -> Path:
+    """
+    Write the demand centres of every demand scenario, the suppliers of every scrap scenario and their index.
+
+    Args:
+        json_path: The index, ``scenarios.json`` in the fixtures folder; the scenario files go under the same folder.
+        master_excel_path: Workbook holding the demand and scrap sheet and the mines sheet.
+        sheet_name: The demand and scrap sheet, with "Scenario" and "Metric" columns.
+        mines_sheet_name: The iron ore mines sheet; its mines go into every scrap scenario's suppliers.
+        gravity_distances_path: Pickled {iso3: {iso3: distance}} dict.
+        location_csv: Country centroid CSV used to place each centre and supplier.
+
+    Returns:
+        Path: The index written by ``write_scenario_index``.
+
+    Raises:
+        ValueError: If two names of one kind would share a folder.
+
+    Notes:
+        A run picks its pair from the index, so one preparation serves every scenario. The sheet is read once per
+        scenario and the mines once per scrap scenario.
+    """
+    fixtures_dir = json_path.parent
+    names = read_demand_and_scrap_scenarios(master_excel_path, sheet_name)
+    paths = {
+        kind: {name: scenario_fixture_path(fixtures_dir, kind, name) for name in kind_names}
+        for kind, kind_names in names.items()
+    }
+    for kind, kind_paths in paths.items():
+        if len(set(kind_paths.values())) != len(kind_paths):
+            raise ValueError(f"The {kind} scenarios {sorted(kind_paths)} do not each have a folder name of their own")
+
+    for name, path in paths["demand"].items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        recreate_demand_center_data(
+            json_path=path,
+            demand_excel_path=master_excel_path,
+            demand_sheet_name=sheet_name,
+            gravity_distances_path=gravity_distances_path,
+            location_csv=location_csv,
+            demand_scenario=name,
+        )
+    for name, path in paths["scrap"].items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        recreate_mines_and_scrap_as_suppliers_data(
+            json_path=path,
+            master_excel_path=str(master_excel_path),
+            scrap_sheet_name=sheet_name,
+            mines_sheet_name=mines_sheet_name,
+            location_csv=location_csv,
+            gravity_distances_pkl_path=gravity_distances_path,
+            scrap_scenario=name,
+        )
+    return write_scenario_index(json_path, paths)
 
 
 def recreate_tarrifs_data(

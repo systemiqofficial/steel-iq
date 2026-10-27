@@ -42,7 +42,7 @@ The Django application (`src/steeloweb/`) provides:
 - `DataPreparation`: Manages input data preparation
 - `Worker`: Handles parallel task execution
 - `MasterExcelFile`: Stores configuration spreadsheets
-- `ResultImages`: Captures visualization outputs
+- `SimulationPlot`: Holds the run's charts for its run page
 
 #### Views & Templates
 - **HTMX-powered UI**: Real-time updates without page refreshes
@@ -225,12 +225,12 @@ This automatic cleanup ensures efficient disk space usage, especially important 
 4. **Analyze Results**
    - View generated maps and charts
    - Export data to CSV/Excel
-   - Compare with previous runs
+   - Compare with previous runs in the [Scenario Viewer](../user_guide/scenario_viewer.md): "Open in viewer" on a finished run's page, or "Scenario viewer" in the navigation bar
 
 ### Managing Workers
 
 1. **Open Worker Panel**
-   - Click "Worker Status" in navigation
+   - Click the "Worker Status" panel on the Simulations page
    - Expand to see detailed information
 
 2. **Scale Workers**

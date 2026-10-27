@@ -15,13 +15,15 @@ from typing import Dict
 from collections import defaultdict
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..domain import Year
-from ..domain.constants import RANDOM_SEED_DEFAULT
+from ..domain.constants import END_YEAR_DEFAULT, RANDOM_SEED_DEFAULT, START_YEAR_DEFAULT
 
-from ..simulation import SimulationConfig
+from ..simulation import SimulationConfig, config_as_json_dict, config_default, run_names_in_use, unique_run_name
 from ..bootstrap import bootstrap_simulation
+from ..data.path_resolver import resolve_scenario_fixtures
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
 GUROBI_LICENSE_NOTICE = (
@@ -31,79 +33,72 @@ GUROBI_LICENSE_NOTICE = (
 )
 
 
-def run_full_simulation() -> None:
-    """
-    Run a full simulation from start to end year with the
-    configuration provided via command line arguments.
+def _build_parser() -> argparse.ArgumentParser:
+    """The argument parser of ``run_simulation``.
+
+    Returns:
+        The parser, every flag defined and nothing parsed yet.
 
     Notes:
-        The console script passes the return value to sys.exit(), so a successful run
-        returns None (exit code 0); failures call sys.exit() with a non-zero code.
+        A flag that repeats a run setting's default takes it from ``config_default``, the years from the
+        constants, so a CLI run on the defaults records the class defaults. ``--log-level`` defaults to WARNING
+        against the class's DEBUG on purpose, for a quiet console.
     """
-    console = Console()
-
     # Initialize the argument parser
     parser = argparse.ArgumentParser(description="Run a full steel model simulation.")
 
     # Add the options for the simulation
-    parser.add_argument("--start-year", type=int, default=2025, help="The year to start the simulation (default: 2025)")
-    parser.add_argument("--end-year", type=int, default=2060, help="The year to end the simulation (default: 2060)")
     parser.add_argument(
-        "--plants-json",
-        type=str,
-        default=None,
-        help="Path to the plants JSON file (default: ./data/fixtures/plants.json)",
+        "--start-year",
+        type=int,
+        default=START_YEAR_DEFAULT,
+        help="The year to start the simulation (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=END_YEAR_DEFAULT,
+        help="The year to end the simulation (default: %(default)s)",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
         default=None,
-        help="Base output directory for simulation results (default: ./outputs)",
-    )
-    parser.add_argument(
-        "--output-file",
-        type=str,
-        default=None,
-        help="Path for the output JSON file (default: <output-dir>/pam_simulation_run.json)",
-    )
-    parser.add_argument(
-        "--demand-excel",
-        type=str,
-        default=None,
-        help="Path to the demand excel file (default: ./data/fixtures/2025_05_27 Demand outputs for trade module.xlsx)",
-    )
-    parser.add_argument(
-        "--demand-sheet",
-        type=str,
-        default="Steel_Demand_Chris Bataille",
-        help="Sheet name in the demand excel file (default: 'Steel_Demand_Chris Bataille')",
+        help="Base output directory for simulation results (default: $STEELO_HOME/output)",
     )
     parser.add_argument(
         "--demand-scenario",
         type=str,
-        default="BAU",
-        help="Scenario name in the 'Demand and scrap availability' sheet used for steel demand (default: BAU)",
+        default=config_default("chosen_demand_scenario"),
+        help=(
+            "Steel demand scenario of the run, named as in the 'Demand and scrap availability' sheet and picked "
+            "at run time from the prepared data; a name it lacks stops the run before it starts "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--scrap-scenario",
         type=str,
         default=None,
-        help="Scenario name in the same sheet used for scrap availability (default: same as --demand-scenario)",
+        help=(
+            "Scrap availability scenario of the run, named and picked the same way (default: same as --demand-scenario)"
+        ),
     )
     parser.add_argument(
         "--grid-emissions-scenario",
         type=str,
-        default="Business As Usual",
+        default=config_default("chosen_grid_emissions_scenario"),
         help=(
             "Grid emissivity projection applied at run time, named as in the 'Power grid emissivity' sheet "
-            "without its 'projection_' prefix (default: 'Business As Usual'; alternative: 'Net Zero')"
+            "without its 'projection_' prefix (default: '%(default)s'; alternative: 'Net Zero')"
         ),
     )
     parser.add_argument(
         "--run-name",
         type=str,
         default=None,
-        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name)",
+        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name); "
+        "a name already in use under the output base gets _2, _3, and so on",
     )
     parser.add_argument(
         "--hydrogen-ceiling-percentile",
@@ -119,18 +114,6 @@ def run_full_simulation() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Allow hydrogen imports between linked regions (default: the GeoConfig value, off)",
-    )
-    parser.add_argument(
-        "--location-csv",
-        type=str,
-        default=None,
-        help="Path to the location CSV file (default: ./data/fixtures/countries.csv)",
-    )
-    parser.add_argument(
-        "--cost-of-x-csv",
-        type=str,
-        default=None,
-        help="Path to the cost of x CSV file (default: ./data/fixtures/cost_of_x.json)",
     )
     parser.add_argument(
         "--log-level",
@@ -207,8 +190,8 @@ def run_full_simulation() -> None:
     parser.add_argument(
         "--iron-to-steel-price-ratio",
         type=float,
-        default=0.8,
-        help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
+        default=config_default("iron_to_steel_price_ratio"),
+        help="Ratio of steel price for iron floor when pegging is enabled (default: %(default)s)",
     )
     parser.add_argument(
         "--random-seed",
@@ -242,11 +225,45 @@ def run_full_simulation() -> None:
         "--optimization-solver",
         type=str,
         choices=["highs", "gurobi"],
-        default="highs",
-        help="Trade LP solver backend (default: highs). 'gurobi' requires your own Gurobi license "
+        default=config_default("optimization_solver"),
+        help="Trade LP solver backend (default: %(default)s). 'gurobi' requires your own Gurobi license "
         "and a gurobipy installation reachable from wherever the simulation runs; you must "
         "follow the terms of your license.",
     )
+    return parser
+
+
+def _exit_unless_prepared(console: Console, data_dir: Path, demand_scenario: str, scrap_scenario: str) -> None:
+    """Stop the CLI before the run when the prepared data lacks the run's demand or scrap scenario.
+
+    Args:
+        console: The CLI's console, for the error.
+        data_dir: The prepared data folder the run would use.
+        demand_scenario: The run's demand scenario.
+        scrap_scenario: The run's scrap scenario.
+
+    Notes:
+        Exits with code 1 and the resolver's message, which lists the scenarios the preparation holds; the
+        prepared data is kept, since one preparation serves every scenario.
+    """
+    try:
+        resolve_scenario_fixtures(data_dir / "fixtures", demand_scenario, scrap_scenario)
+    except ValueError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        sys.exit(1)
+
+
+def run_full_simulation() -> None:
+    """
+    Run a full simulation from start to end year with the
+    configuration provided via command line arguments.
+
+    Notes:
+        The console script passes the return value to sys.exit(), so a successful run
+        returns None (exit code 0); failures call sys.exit() with a non-zero code.
+    """
+    console = Console()
+    parser = _build_parser()
 
     # Parse the command-line arguments
     try:
@@ -280,8 +297,13 @@ def run_full_simulation() -> None:
 
         # Prepare output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_base = steelo_home / "output"
-        output_base.mkdir(exist_ok=True)
+        output_base = Path(args.output_dir) if args.output_dir else steelo_home / "output"
+        output_base.mkdir(parents=True, exist_ok=True)
+        run_name = (
+            unique_run_name(args.run_name, run_names_in_use(output_base))
+            if args.run_name and args.run_name.strip()
+            else None
+        )
 
         # Unique output directory for this simulation
         output_dir = output_base / f"sim_{timestamp}"
@@ -340,9 +362,7 @@ def run_full_simulation() -> None:
         # Check if we can use cached data directly
         cached_data_dir = None
         if not args.no_cache and not args.force_refresh:
-            cached_data_dir = cache_manager.get_cached_preparation(
-                master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
-            )
+            cached_data_dir = cache_manager.get_cached_preparation(master_excel_path)
             if cached_data_dir:
                 # cached_data_dir already points to the data directory
                 console.print(f"[blue]Using cached preparation from:[/blue] {cached_data_dir}")
@@ -351,6 +371,7 @@ def run_full_simulation() -> None:
         if cached_data_dir:
             # Use cached data directory directly
             actual_data_dir = cached_data_dir
+            _exit_unless_prepared(console, actual_data_dir, demand_scenario, scrap_scenario)
 
             # Create symlink to cached data
             try:
@@ -366,11 +387,10 @@ def run_full_simulation() -> None:
                 "data_dir": actual_data_dir,
                 "output_dir": output_dir,
                 "master_excel_path": master_excel_path,
-                "demand_sheet_name": args.demand_sheet,
                 "chosen_demand_scenario": demand_scenario,
                 "chosen_scrap_scenario": scrap_scenario,
                 "chosen_grid_emissions_scenario": grid_emissions_scenario,
-                "run_name": args.run_name,
+                "run_name": run_name,
                 "log_level": log_level,
                 "random_seed": args.random_seed,
                 "plot_tm": args.plot_tm,
@@ -423,16 +443,15 @@ def run_full_simulation() -> None:
                 config.carbon_border_export_rebates = True
                 console.print("[green]Carbon border export rebates enabled[/green]")
             # Override trade LP solver backend from command line
-            if args.optimization_solver != "highs":
+            if args.optimization_solver != config_default("optimization_solver"):
                 config.optimization_solver = args.optimization_solver
                 console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
                 if args.optimization_solver == "gurobi":
                     console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
             # Save config and metadata
-            config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
-            config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+            config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
             prep_metadata = {
                 "preparation_time": datetime.now().isoformat(),
@@ -441,6 +460,8 @@ def run_full_simulation() -> None:
                 "cached_from": str(cached_data_dir),
                 "demand_scenario": demand_scenario,
                 "scrap_scenario": scrap_scenario,
+                "made_in": "cli",
+                "master_source": "custom" if args.master_excel else "default",
             }
             (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -460,11 +481,10 @@ def run_full_simulation() -> None:
                     master_excel_path=master_excel_path,
                     force_refresh=args.force_refresh,
                     verbose=True,
-                    demand_scenario=demand_scenario,
-                    scrap_scenario=scrap_scenario,
                 )
 
                 actual_data_dir = prep_dir
+                _exit_unless_prepared(console, actual_data_dir, demand_scenario, scrap_scenario)
 
                 # Create symlink to prepared data
                 try:
@@ -480,11 +500,10 @@ def run_full_simulation() -> None:
                     "data_dir": actual_data_dir,
                     "output_dir": output_dir,
                     "master_excel_path": master_excel_path,
-                    "demand_sheet_name": args.demand_sheet,
                     "chosen_demand_scenario": demand_scenario,
                     "chosen_scrap_scenario": scrap_scenario,
                     "chosen_grid_emissions_scenario": grid_emissions_scenario,
-                    "run_name": args.run_name,
+                    "run_name": run_name,
                     "log_level": log_level,
                     "random_seed": args.random_seed,
                     "plot_tm": args.plot_tm,
@@ -539,16 +558,15 @@ def run_full_simulation() -> None:
                     config.carbon_border_export_rebates = True
                     console.print("[green]Carbon border export rebates enabled[/green]")
                 # Override trade LP solver backend from command line
-                if args.optimization_solver != "highs":
+                if args.optimization_solver != config_default("optimization_solver"):
                     config.optimization_solver = args.optimization_solver
                     console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
                     if args.optimization_solver == "gurobi":
                         console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
                 # Save config and metadata
-                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
                 config_path = output_dir / "simulation_config.json"
-                config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+                config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
                 prep_metadata = {
                     "preparation_time": datetime.now().isoformat(),
@@ -559,6 +577,8 @@ def run_full_simulation() -> None:
                     "temp_prep_dir": str(prep_dir),
                     "demand_scenario": demand_scenario,
                     "scrap_scenario": scrap_scenario,
+                    "made_in": "cli",
+                    "master_source": "custom" if args.master_excel else "default",
                 }
                 (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -621,6 +641,7 @@ def run_full_simulation() -> None:
 
         console.print("[green]Simulation completed![/green]")
         console.print(f"[green]Results in:[/green] {output_dir}")
+        console.print(f"[green]View it:[/green] steelo-viewer {output_dir}")
         console.print(f"[green]Latest symlink:[/green] {latest_link}")
 
     except argparse.ArgumentError as e:

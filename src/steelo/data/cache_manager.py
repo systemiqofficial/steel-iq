@@ -12,19 +12,18 @@ if TYPE_CHECKING:
     from .preparation import PreparationResult
 
 
-def get_preparation_hash(
-    master_excel_path: Path, version: str = "1.0", *, demand_scenario: str = "BAU", scrap_scenario: str = "BAU"
-) -> str:
-    """Generate cache key from file content, version and the demand/scrap scenarios read from it.
+def get_preparation_hash(master_excel_path: Path, version: str = "1.0") -> str:
+    """Generate cache key from file content and version.
 
     Args:
         master_excel_path: Path to master Excel file
         version: Cache version (bump to invalidate old caches)
-        demand_scenario: "Scenario" column value the demand centres were read for
-        scrap_scenario: "Scenario" column value the scrap suppliers were read for
 
     Returns:
         16-character hex string for use in directory names
+
+    Notes:
+        A preparation holds every demand and scrap scenario of the workbook, so no scenario is part of the key.
     """
     sha256_hash = hashlib.sha256()
 
@@ -33,9 +32,8 @@ def get_preparation_hash(
         while chunk := f.read(65536):  # 64KB chunks
             sha256_hash.update(chunk)
 
-    # Include version for cache invalidation and the scenario selection baked into the fixtures
+    # Include version for cache invalidation
     sha256_hash.update(version.encode())
-    sha256_hash.update(f"|demand={demand_scenario}|scrap={scrap_scenario}".encode())
 
     return sha256_hash.hexdigest()[:16]
 
@@ -51,14 +49,12 @@ class CacheMetadata:
     preparation_time_seconds: float
     file_count: int
     total_size_bytes: int
-    demand_scenario: str
-    scrap_scenario: str
 
 
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.13"  # Bump to invalidate all caches (bloc carbon-cost series and the common-price flag)
+    CACHE_VERSION = "1.14"  # Bump to invalidate all caches (every demand and scrap scenario prepared, none keyed)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.
@@ -139,30 +135,20 @@ class DataPreparationCache:
             del self.index["entries"][cache_key]
             self._save_index()
 
-    def get_cache_key(
-        self, master_excel_path: Path, *, demand_scenario: str = "BAU", scrap_scenario: str = "BAU"
-    ) -> str:
-        """Generate cache key from file content and the demand/scrap scenario selection."""
-        return get_preparation_hash(
-            master_excel_path, self.CACHE_VERSION, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
-        )
+    def get_cache_key(self, master_excel_path: Path) -> str:
+        """Generate cache key from file content."""
+        return get_preparation_hash(master_excel_path, self.CACHE_VERSION)
 
-    def get_cached_preparation(
-        self, master_excel_path: Path, *, demand_scenario: str = "BAU", scrap_scenario: str = "BAU"
-    ) -> Optional[Path]:
+    def get_cached_preparation(self, master_excel_path: Path) -> Optional[Path]:
         """Return path to cached preparation if exists and valid.
 
         Args:
             master_excel_path: Path to master Excel file
-            demand_scenario: "Scenario" column value the demand centres were read for
-            scrap_scenario: "Scenario" column value the scrap suppliers were read for
 
         Returns:
             Path to cached data directory or None if not cached
         """
-        cache_key = self.get_cache_key(
-            master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
-        )
+        cache_key = self.get_cache_key(master_excel_path)
 
         # Fast path: check index first
         if cache_key in self.index.get("entries", {}):
@@ -215,9 +201,6 @@ class DataPreparationCache:
         master_excel_path: Path,
         preparation_time: float,
         result: Optional["PreparationResult"] = None,
-        *,
-        demand_scenario: str = "BAU",
-        scrap_scenario: str = "BAU",
     ) -> Path:
         """Save preparation to cache.
 
@@ -226,15 +209,11 @@ class DataPreparationCache:
             master_excel_path: Path to master Excel file
             preparation_time: Time taken to prepare data in seconds
             result: Optional PreparationResult with detailed timing
-            demand_scenario: "Scenario" column value the demand centres were read for
-            scrap_scenario: "Scenario" column value the scrap suppliers were read for
 
         Returns:
             Path to cached directory
         """
-        cache_key = self.get_cache_key(
-            master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
-        )
+        cache_key = self.get_cache_key(master_excel_path)
         cache_dir = self.cache_root / f"prep_{cache_key}"
 
         # Remove existing if present
@@ -258,8 +237,6 @@ class DataPreparationCache:
             preparation_time_seconds=preparation_time,
             file_count=file_count,
             total_size_bytes=total_size,
-            demand_scenario=demand_scenario,
-            scrap_scenario=scrap_scenario,
         )
 
         metadata_dict = {
@@ -270,8 +247,6 @@ class DataPreparationCache:
             "preparation_time_seconds": metadata.preparation_time_seconds,
             "file_count": metadata.file_count,
             "total_size_bytes": metadata.total_size_bytes,
-            "demand_scenario": metadata.demand_scenario,
-            "scrap_scenario": metadata.scrap_scenario,
         }
 
         # Include detailed timing if available

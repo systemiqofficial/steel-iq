@@ -50,7 +50,9 @@ def chain_tm_dir(tmp_path: Path) -> Path:
             edge("steel", FG, "P1_1", location("CHN"), "BOF", DC, "India", location("IND"), 2e6),
             edge("steel", FG, "P2_0", location("DEU"), "EAF", DC, "Germany", location("DEU"), 1e6),
             edge("hot_metal", FG, "P1_0", location("CHN"), "BF", FG, "P1_1", location("CHN"), 2.2e6),
-            edge("io_high", SUPPLIER, "sup_a", mine_location("Australia"), "N/A", FG, "P1_0", location("CHN"), 3e6),
+            edge(
+                "io_high", SUPPLIER, "sup_a", mine_location("Australia", "AUS"), "N/A", FG, "P1_0", location("CHN"), 3e6
+            ),
             edge("scrap", SUPPLIER, "Germany_scrap", location("DEU"), "N/A", FG, "P2_0", location("DEU"), 1.1e6),
             edge("bio_pci", SUPPLIER, "bio_1", location("DEU"), "N/A", FG, "P1_0", location("CHN"), 5e5),
             edge("steel", FG, "P3_0", location("BRA"), "EAF", DC, "Brazil", location("BRA"), 0.2),
@@ -70,7 +72,7 @@ def test_pack_edges_keeps_every_metal_edge_with_shared_endpoint_tables(tmp_path:
     assert endpoints["P1_1"] == [0, "CHN", "P1_1"]
     assert endpoints["India"] == [1, "IND", "India"]
     assert endpoints["Germany_scrap"] == [2, "DEU", "Germany_scrap"]
-    assert endpoints["sup_a"] == [3, "Australia", "sup_a"]
+    assert endpoints["sup_a"] == [3, "AUS", "sup_a"]
     assert "bio_1" not in endpoints  # reductants are not metal trade
 
     year = packed["edges"][2025]
@@ -100,17 +102,17 @@ def test_pack_edges_rejects_unmapped_commodity(tmp_path: Path) -> None:
         supply_chain.pack_edges(trade_matrix.allocation_files(tm_dir))
 
 
-def test_pack_edges_rejects_mine_without_label(tmp_path: Path) -> None:
-    """A mine whose location carries no country label cannot be placed in the chain."""
+def test_pack_edges_rejects_mine_without_iso3(tmp_path: Path) -> None:
+    """A mine whose location carries no ISO3 cannot be placed in the chain."""
     tm_dir = tmp_path / "TM"
-    bad_mine = "Location(lat=1.0, lon=2.0, country='', region='X', iso3='', distance_to_other_iso3=None, geo_unit=None)"
+    bad_mine = mine_location("X", "")
     write_allocations(
         tm_dir,
         2025,
         [edge("io_low", SUPPLIER, "s", bad_mine, "N/A", FG, "P1_0", location("DEU"), 1.0)],
     )
 
-    with pytest.raises(ValueError, match="country label"):
+    with pytest.raises(ValueError, match="No iso3"):
         supply_chain.pack_edges(trade_matrix.allocation_files(tm_dir))
 
 

@@ -23,7 +23,7 @@ def data_packages(db):
 
 
 @pytest.fixture
-def data_preparation(db, data_packages):
+def data_preparation(db, data_packages, prepared_data_directory):
     """Create a ready data preparation for model runs."""
     core_package, geo_package = data_packages
     return DataPreparation.objects.create(
@@ -31,7 +31,7 @@ def data_preparation(db, data_packages):
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
-        data_directory="/fake/path",
+        data_directory=str(prepared_data_directory),
     )
 
 
@@ -74,7 +74,6 @@ def test_plant_lifetime_passed_to_config(db, data_preparation):
         "plant_lifetime": 25,  # Custom value
         "global_risk_free_rate": 0.0209,  # Default value
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -145,7 +144,6 @@ def test_global_risk_free_rate_passed_to_config(db, data_preparation):
         "plant_lifetime": 20,
         "global_risk_free_rate": 0.035,  # Custom value 3.5%
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -218,7 +216,6 @@ def test_construction_time_passed_to_config(db, data_preparation):
         "global_risk_free_rate": 0.0209,
         "construction_time": 7,  # Custom value
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -293,7 +290,6 @@ def test_expanded_capacity_passed_to_config(db, data_preparation):
         "construction_time": 4,
         "expanded_capacity": 5.0,  # Custom value 5 Mt
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -366,7 +362,6 @@ def test_capacity_limit_iron_passed_to_config(db, data_preparation):
         "construction_time": 4,
         "capacity_limit_iron": 200.0,  # Custom value 200 Mt
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -439,7 +434,6 @@ def test_capacity_limit_steel_passed_to_config(db, data_preparation):
         "construction_time": 4,
         "capacity_limit_steel": 175.0,  # Custom value 175 Mt
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -484,7 +478,6 @@ def test_capacity_limit_defaults_applied_when_blank(db, data_preparation):
         "capacity_limit_iron": "",
         "capacity_limit_steel": "",
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -551,7 +544,6 @@ def test_probabilistic_agents_passed_to_config_true(db, data_preparation):
         "global_risk_free_rate": 0.0209,
         "probabilistic_agents": True,  # Explicitly set to True
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -594,7 +586,6 @@ def test_probabilistic_agents_passed_to_config_false(db, data_preparation):
         "global_risk_free_rate": 0.0209,
         "probabilistic_agents": False,  # Explicitly set to False (deterministic)
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -670,7 +661,6 @@ def test_new_capacity_share_from_new_plants_passed_to_config_default(db, data_pr
         "global_risk_free_rate": 0.0209,
         # Don't specify new_capacity_share_from_new_plants - should use default
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -717,7 +707,6 @@ def test_new_capacity_share_from_new_plants_passed_to_config_custom_value(db, da
         "global_risk_free_rate": 0.0209,
         "new_capacity_share_from_new_plants": 0.5,  # Custom value 50%
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -764,7 +753,6 @@ def test_new_capacity_share_from_new_plants_zero_value_preserved(db, data_prepar
         "global_risk_free_rate": 0.0209,
         "new_capacity_share_from_new_plants": 0.0,  # CRITICAL: All capacity from expansions
         # Add other required fields with defaults
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -808,7 +796,6 @@ def test_new_capacity_share_from_new_plants_validation_min_boundary(db):
         "end_year": 2030,
         "new_capacity_share_from_new_plants": -0.1,  # Invalid: negative value
         # Add other required fields
-        "scrap_generation_scenario": "business_as_usual",
     }
 
     form = ModelRunCreateForm(data=form_data)
@@ -824,7 +811,6 @@ def test_new_capacity_share_from_new_plants_validation_max_boundary(db):
         "end_year": 2030,
         "new_capacity_share_from_new_plants": 1.1,  # Invalid: greater than 100%
         # Add other required fields
-        "scrap_generation_scenario": "business_as_usual",
     }
 
     form = ModelRunCreateForm(data=form_data)
@@ -840,7 +826,6 @@ def test_new_capacity_share_from_new_plants_validation_valid_boundaries(db):
         "start_year": 2025,
         "end_year": 2030,
         "new_capacity_share_from_new_plants": 0.0,  # Valid: all capacity from expansions
-        "scrap_generation_scenario": "business_as_usual",
     }
     form_min = ModelRunCreateForm(data=form_data_min)
     # Only check field validation, not overall form validity (other required fields missing)
@@ -853,7 +838,6 @@ def test_new_capacity_share_from_new_plants_validation_valid_boundaries(db):
         "start_year": 2025,
         "end_year": 2030,
         "new_capacity_share_from_new_plants": 1.0,  # Valid: all capacity from new plants
-        "scrap_generation_scenario": "business_as_usual",
     }
     form_max = ModelRunCreateForm(data=form_data_max)
     # Only check field validation, not overall form validity (other required fields missing)

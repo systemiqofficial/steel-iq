@@ -74,7 +74,7 @@ def steel_demand_rows(demand_centers: Iterable[DemandCenter], years: set[int]) -
     unserved (which drop out of the allocation files).
 
     Args:
-        demand_centers: The prepared demand centres (``fixtures/demand_centers.json``).
+        demand_centers: The prepared demand centres of the run's demand scenario.
         years: The years to keep (the table's years).
 
     Returns:

@@ -20,7 +20,7 @@ OTHER_DIRECT = f"{OTHER_BOUNDARY}|direct_ghg"
 def chain_rows() -> list[list]:
     """A Chinese BF feeding a Chinese BOF (3/4) and a German EAF (1/4); a Brazilian EAF has no recorded emissions."""
     return [
-        edge("io_high", SUPPLIER, "sup_a", mine_location("Australia"), "N/A", FG, "P1_0", location("CHN"), 6e6),
+        edge("io_high", SUPPLIER, "sup_a", mine_location("Australia", "AUS"), "N/A", FG, "P1_0", location("CHN"), 6e6),
         edge("hot_metal", FG, "P1_0", location("CHN"), "BF", FG, "P1_1", location("CHN"), 3e6),
         edge("pig_iron", FG, "P1_0", location("CHN"), "BF", FG, "P2_0", location("DEU"), 1e6),
         edge("steel", FG, "P1_1", location("CHN"), "BOF", DC, "India", location("IND"), 2e6),

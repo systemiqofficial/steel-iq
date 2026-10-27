@@ -6,8 +6,8 @@ demand-centre country, scrap and iron ore drawn against supplier capacity
 per source country, and CO2 storage and biomass (bio-PCI) use per consuming
 country against the input-side limits. Usage comes from the trade LP's
 per-year allocation files; steel demand and the other availabilities come from
-the prepared inputs (``fixtures/demand_centers.json``, ``fixtures/suppliers.json``
-and ``fixtures/biomass_availability.json``). The allocation files only list the
+the prepared inputs (the demand centres and suppliers of the run's demand and scrap
+scenarios, and ``fixtures/biomass_availability.json``). The allocation files only list the
 demand centres that received steel, so they cannot give the demand of a centre
 the LP left fully unserved. A biomass budget belongs to a whole
 TIAM-UCL region rather than one country, so those rows carry a ``region:``
@@ -163,7 +163,7 @@ def availability_rows(
     """Available volumes per year, group and geography, from the prepared inputs.
 
     Args:
-        suppliers: The prepared scrap and ore suppliers (``fixtures/suppliers.json``);
+        suppliers: The prepared scrap and ore suppliers of the run's scrap scenario;
             other commodities' suppliers are ignored.
         biomass_items: The prepared biomass and CO2 storage rows
             (``fixtures/biomass_availability.json``), mapped to geographies as the

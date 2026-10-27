@@ -34,9 +34,9 @@ def location(iso3: str, geo_unit: str | None = None) -> str:
     )
 
 
-def mine_location(region: str) -> str:
-    """A mine's Location repr: the mine sheet's region label as country, no resolved ISO3."""
-    return f"Location(lat=1.0, lon=2.0, country='{region}', region='{region}', iso3='', distance_to_other_iso3=None, geo_unit=None)"
+def mine_location(region: str, iso3: str) -> str:
+    """A mine's Location repr: the mine sheet's region label as country, with its resolved ISO3."""
+    return f"Location(lat=1.0, lon=2.0, country='{region}', region='{region}', iso3='{iso3}', distance_to_other_iso3=None, geo_unit=None)"
 
 
 def allocation(commodity: str, source: str, tech: str, destination: str, volume: float) -> list:
@@ -84,9 +84,9 @@ def sample_tm_dir(tmp_path: Path) -> Path:
             # Iron products go plant → steelmaking furnace group
             allocation("pig_iron", location("CHN", "CN-HE"), "BF", location("JPN"), 5_000_000.0),
             allocation("hot_metal", location("CHN", "CN-HE"), "BF", location("CHN"), 200_000_000.0),
-            # Ore goes mine → furnace group; its origin is the mine sheet's label, ISO3-mapped or not
-            allocation("io_high", mine_location("Australia"), "N/A", location("CHN"), 80_000_000.0),
-            allocation("io_mid", mine_location("Guinea"), "N/A", location("CHN"), 30_000_000.0),
+            # Ore goes mine → furnace group
+            allocation("io_high", mine_location("Australia", "AUS"), "N/A", location("CHN"), 80_000_000.0),
+            allocation("io_mid", mine_location("Guinea", "GIN"), "N/A", location("CHN"), 30_000_000.0),
             # Scrap is not metal trade
             allocation("scrap", location("DEU"), "N/A", location("DEU"), 50_000_000.0),
         ],
@@ -108,7 +108,7 @@ def test_allocation_files_keyed_by_year(tmp_path: Path) -> None:
 
 
 def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_path: Path) -> None:
-    """Allocations collapse to commodity × origin × destination × technology in Mt; ore origins are mine labels."""
+    """Allocations collapse to commodity × origin × destination × technology in Mt."""
     flows = trade_matrix.read_flows(trade_matrix.allocation_files(sample_tm_dir(tmp_path)))
 
     assert list(flows.columns) == ["year", "product", "commodity", "origin", "destination", "technology", "volume_mt"]
@@ -119,8 +119,8 @@ def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_pat
     assert by_key[("steel", "steel", "DEU", "DEU", "EAF")] == pytest.approx(10.0)
     assert by_key[("iron", "pig_iron", "CHN", "JPN", "BF")] == pytest.approx(5.0)
     assert by_key[("iron", "hot_metal", "CHN", "CHN", "BF")] == pytest.approx(200.0)
-    assert by_key[("ore", "io_high", "Australia", "CHN", "N/A")] == pytest.approx(80.0)
-    assert by_key[("ore", "io_mid", "Guinea", "CHN", "N/A")] == pytest.approx(30.0)
+    assert by_key[("ore", "io_high", "AUS", "CHN", "N/A")] == pytest.approx(80.0)
+    assert by_key[("ore", "io_mid", "GIN", "CHN", "N/A")] == pytest.approx(30.0)
     assert by_key[("scrap", "scrap", "DEU", "DEU", "N/A")] == pytest.approx(50.0)
     assert len(by_key) == 9
 
@@ -134,12 +134,26 @@ def test_read_flows_rejects_location_without_iso3(tmp_path: Path) -> None:
         trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
 
 
-def test_read_flows_rejects_mine_without_label(tmp_path: Path) -> None:
-    """An ore origin needs the mine's label; an empty one fails loudly."""
+def test_read_flows_keys_ore_origins_by_mine_iso3(tmp_path: Path) -> None:
+    """A Brazilian mine shipping to a Brazilian furnace group is a BRA → BRA flow, not "Brazil" → BRA."""
     tm_dir = tmp_path / "TM"
-    write_allocations(tm_dir, 2025, [allocation("io_low", mine_location(""), "N/A", location("CHN"), 1.0)])
+    write_allocations(
+        tm_dir,
+        2025,
+        [allocation("io_mid", mine_location("Brazil", "BRA"), "N/A", location("BRA"), 5_000_000.0)],
+    )
 
-    with pytest.raises(ValueError, match="No country label"):
+    flows = trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
+
+    assert flows[["origin", "destination"]].values.tolist() == [["BRA", "BRA"]]
+
+
+def test_read_flows_rejects_mine_without_iso3(tmp_path: Path) -> None:
+    """An ore origin needs the mine's ISO3; an empty one fails loudly."""
+    tm_dir = tmp_path / "TM"
+    write_allocations(tm_dir, 2025, [allocation("io_low", mine_location("Brazil", ""), "N/A", location("CHN"), 1.0)])
+
+    with pytest.raises(ValueError, match="No iso3"):
         trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
 
 
@@ -177,7 +191,7 @@ def coord_location(iso3: str, lat: float, lon: float) -> str:
 
 
 def test_read_coords_weights_endpoints_by_allocated_volume(tmp_path: Path) -> None:
-    """Each endpoint sits at the volume-weighted mean of its locations; mine origins keep their label key,
+    """Each endpoint sits at the volume-weighted mean of its locations, mines under their ISO3;
     commodities outside the product mapping contribute nothing."""
     tm_dir = tmp_path / "TM"
     write_allocations(
@@ -186,7 +200,7 @@ def test_read_coords_weights_endpoints_by_allocated_volume(tmp_path: Path) -> No
         [
             allocation("steel", coord_location("CHN", 30.0, 110.0), "BOF", coord_location("IND", 20.0, 78.0), 3e6),
             allocation("steel", coord_location("CHN", 40.0, 120.0), "BOF", coord_location("IND", 20.0, 78.0), 1e6),
-            allocation("io_high", mine_location("Australia"), "N/A", coord_location("CHN", 30.0, 110.0), 2e6),
+            allocation("io_high", mine_location("Australia", "AUS"), "N/A", coord_location("CHN", 30.0, 110.0), 2e6),
             allocation("bio_pci", coord_location("BRA", -10.0, -50.0), "N/A", coord_location("CHN", 30.0, 110.0), 5e6),
         ],
     )
@@ -194,7 +208,7 @@ def test_read_coords_weights_endpoints_by_allocated_volume(tmp_path: Path) -> No
     coords = trade_matrix.read_coords(trade_matrix.allocation_files(tm_dir))
 
     # CHN = 3 Mt @ (30, 110) + 1 Mt @ (40, 120) as an origin + 2 Mt @ (30, 110) as an ore destination
-    assert coords == {"CHN": [31.67, 111.67], "IND": [20.0, 78.0], "Australia": [1.0, 2.0]}
+    assert coords == {"CHN": [31.67, 111.67], "IND": [20.0, 78.0], "AUS": [1.0, 2.0]}
     assert trade_matrix.read_coords({}) == {}
 
 

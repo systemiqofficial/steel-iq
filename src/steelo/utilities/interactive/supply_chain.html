@@ -155,16 +155,10 @@ const SAME = {
   region: ["region", "regions"],
   bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
 };
-// Mine nodes carry a key prefix so a mine label can never merge with a country or
-// region node of the same name.
-const SRC = "src:";
 const RUNS = Object.values(DATA);
 const kindIndex = (run, kind) => run.chain.kinds.indexOf(kind);
-// Countries of the chain: every endpoint but the mines.
-const ALL_GEOS = [...new Set(RUNS.flatMap(run => {
-  const mine = kindIndex(run, "mine");
-  return run.chain.endpoints.filter(e => e[0] !== mine).map(e => e[1]);
-}))].sort();
+// Countries of the chain: every endpoint's.
+const ALL_GEOS = [...new Set(RUNS.flatMap(run => run.chain.endpoints.map(e => e[1])))].sort();
 const ALL_REGIONS = [...new Set(ALL_GEOS.map(Interactive.regionOf))].sort();
 const REGION_COLOURS = Interactive.colourTable(CONFIG.regionColours, ALL_REGIONS);
 const commodityCbs = new Map();
@@ -179,7 +173,7 @@ function commodityColour(c) { return CONFIG.commodityColours[c] || GREY; }
 function blocs() { return Object.keys(CONFIG.tradeBlocs).sort(); }
 function fmtMt(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1); }
 function pct(v, of) { return of > 0 ? (100 * v / of).toFixed(0) : "0"; }
-/* Node ids are "<tier>|<geo>", geo being a grouped country (or the rest of the world) or a prefixed mine label. */
+/* Node ids are "<tier>|<geo>", geo being a grouped country or the rest of the world. */
 function tierOf(id) { return id.slice(0, id.indexOf("|")); }
 function geoOf(id) { return id.slice(id.indexOf("|") + 1); }
 
@@ -216,17 +210,17 @@ function labelName(label, groupBy) {
 
 function displayName(id, groupBy) {
   const geo = geoOf(id);
-  return `${geo.startsWith(SRC) ? geo.slice(SRC.length) : labelName(geo, groupBy)} · ${TIERS[tierOf(id)].name}`;
+  return `${labelName(geo, groupBy)} · ${TIERS[tierOf(id)].name}`;
 }
 
 function shortLabel(id) {
   const geo = geoOf(id);
-  return `${geo.startsWith(SRC) ? geo.slice(SRC.length) : geo} ${TIERS[tierOf(id)].name}`;
+  return `${geo} ${TIERS[tierOf(id)].name}`;
 }
 
 function nodeColour(id, groupBy) {
   const geo = geoOf(id);
-  if (geo.startsWith(SRC) || geo === REST) return GREY;
+  if (geo === REST) return GREY;
   const region = groupBy === "region" ? geo : Interactive.regionOf(geo);
   return REGION_COLOURS[region] || GREY;
 }
@@ -398,7 +392,7 @@ function updateCommodityUi() {
    iron-making furnace groups took in. Each upstream edge is attributed pro rata to
    the share of its destination's output (steel, or iron products) that went down the
    chain, so a plant sending 5% of its steel to the target contributes 5% of its
-   inputs. Rows carry raw geographies (ISO3, or the mine label for ore), the source
+   inputs. Rows carry raw geographies (ISO3), the source
    furnace group's technology and id (null for suppliers and mines) and Mt. */
 function chainRows(run, year, members) {
   const ch = run.chain, E = ch.edges[year];
@@ -504,10 +498,10 @@ function render() {
   }
 
   // Countries outside the geography filter fold into "Rest of world" rather than
-  // vanishing; mines are labels, not countries, and stay as they are.
+  // vanishing.
   const group = grouper(groupBy, bloc);
   const geoId = iso3 => selectedGeo.has(iso3) ? group(iso3) : REST;
-  const nodeId = (tier, raw) => tier === "ore" ? `ore|${SRC}${raw}` : `${tier}|${geoId(raw)}`;
+  const nodeId = (tier, raw) => `${tier}|${geoId(raw)}`;
 
   // Per-node totals over every flow (so hover and sizing stay true regardless of the
   // top-N cut), the plants behind each node for its hover's count, and one flow per
@@ -550,7 +544,7 @@ function render() {
     const mines = new Set(yearRows.filter(r => r.oTier === "ore").map(r => r.o)).size;
     const lines = [`${targetName} steel demand in ${year}: ${total.toFixed(0)} Mt steel ` +
                    `(${pct(domestic, total)}% made ${target.within}) ← ${shipped(yearRows, "iron")} Mt iron products + ` +
-                   `${shipped(yearRows, "scrap")} Mt scrap ← ${shipped(yearRows, "ore")} Mt ore from ${mines} mine regions`];
+                   `${shipped(yearRows, "scrap")} Mt scrap ← ${shipped(yearRows, "ore")} Mt ore from ${mines} mining countries`];
     if (rows.length < yearRows.length) {
       lines.push(`Commodity and technology filters leave on show: ${shipped(rows, "steel")} Mt steel, ` +
                  `${shipped(rows, "iron")} Mt iron products, ${shipped(rows, "scrap")} Mt scrap, ${shipped(rows, "ore")} Mt ore`);

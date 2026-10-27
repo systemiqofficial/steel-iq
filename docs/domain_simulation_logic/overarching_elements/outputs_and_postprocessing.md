@@ -1,6 +1,6 @@
 # Outputs and Post-Processing
 
-This page describes the artefacts a simulation produces — in-memory traces during the run, plot files written by `SteelPlotter`, and the post-processed CSVs assembled at the end. The model also writes geospatial statistics (LCOE / LCOH / overbuild factors) per-year and aggregated.
+This page describes the artefacts a simulation produces — in-memory traces during the run, plot files written by `SteelPlotter`, the post-processed CSVs assembled at the end, and the scenario viewer's files in `viewer/`. The model also writes geospatial statistics (LCOE / LCOH / overbuild factors) per-year and aggregated.
 
 For where individual costs and emissions originate, see [Cost Calculation Functions](../plant_agent_model/calculate_costs.md). For how the trade LP feeds these traces, see [Trade Model Overview](../trade_model/overview_trade_model.md) and [TM-PAM Connector](../plant_agent_model/trade_model_connector.md).
 
@@ -107,6 +107,7 @@ output/
     greenfield/   # SteelPlotter greenfield status charts, maps and greenfield_plants.csv (see above)
     capacity_pool/  # CapacityPoolPlotter charts, policy-ON runs only (see below)
     interactive/  # InteractivePlotter viewers (self-contained HTML, see below)
+  viewer/       # scenario viewer files, written last (see below)
 ```
 
 `plots/GEO/` and `plots/TM/` are written only when `run_simulation` is given `--plot-geo` / `--plot-tm`; without the flag the folder is not created. The trade maps are replaced by the `trade_matrix.html`, `trade_network.html`, `supply_chain.html` and `trade_allocations.html` viewers below, which read the per-year `TM/steel_trade_allocations_<year>.csv` files written on every run.
@@ -121,21 +122,21 @@ Cost-curve filenames follow `cost_curve_{product}_by_{aggregation}_{year}.png` (
 
 `InteractivePlotter` (`src/steelo/utilities/interactive/`) writes a set of interactive plotly viewers to `plots/interactive/` at the end of every run. Each viewer is a single self-contained HTML file with the run's data embedded — open it in any browser, no server or network access needed.
 
-All viewers except the two capacity maps share one shell (`common.js` / `common.css`): a run selector, a geography filter (countries, sub-national geo units, trade blocs, regions), an opt-in technology filter, and the shared colour schemes. Tick-box filters show as a row of ticks up to six options and fold into a dropdown with removable chips above that. Each shared dropdown has a search box and its own All/None buttons, which act on the rows the search shows; the countries dropdown lists the major producers (CHN, IND, USA, JPN, KOR, SAU, ARE, when present) first, above a separator, and the rest alphabetically. Sub-national units are labelled from the prepared `fixtures/geo_hierarchy.json` (codes when absent). Chart titles carry the run name — `--run-name`, defaulting to the `sim_<timestamp>` output directory name. The capacity maps (`capacity_world_map.html`, `capacity_china_map.html`) are pure SVG with their own toolbar, light theme only and no run selector; they take the shared CSS, the technology colours, and the country and geo-unit names from the same config.
+All viewers except the two capacity maps share one shell (`common.js` / `common.css`): a run selector, a geography filter (countries, sub-national geo units, trade blocs, regions), an opt-in technology filter, and the shared colour schemes. Tick-box filters show as a row of ticks up to six options and fold into a dropdown with removable chips above that. Each shared dropdown has a search box and its own All/None buttons, which act on the rows the search shows; the countries dropdown lists the major producers (CHN, IND, USA, JPN, KOR, SAU, ARE, when present) first, above a separator, and the rest alphabetically. Sub-national units are labelled from the prepared `fixtures/geo_hierarchy.json` (codes when absent). Chart titles carry the run name — `--run-name` from the CLI or the run form's name from the app, with `_2`, `_3` added when another run holds it; without one, the `sim_<timestamp>` output directory name (CLI) or "Model Run #<id>" (app). The capacity maps (`capacity_world_map.html`, `capacity_china_map.html`) are pure SVG with their own toolbar, light theme only and no run selector; they take the shared CSS, the technology colours, and the country and geo-unit names from the same config.
 
 | Viewer | Shows | Data source |
 |--------|-------|-------------|
 | `emissions.html` | Furnace-group emissions with direct / indirect / incl.-biogenic scope tickboxes, for every emissions boundary in the table, stacked by technology or region, annual or cumulative-to-year | `post_processed_<timestamp>.csv` |
-| `capacity_and_production.html` | Capacity and production over time, with a capacity-vs-production compare mode and a steel demand overlay | `post_processed_<timestamp>.csv` + `fixtures/demand_centers.json` |
+| `capacity_and_production.html` | Capacity and production over time, with a capacity-vs-production compare mode and a steel demand overlay | `post_processed_<timestamp>.csv` + the run's demand scenario's `demand_centers.json` (found through `fixtures/scenarios.json`) |
 | `cost_curves.html` | Per-commodity cost curves with the engine's market-clearing rule (clearing shares and price buffers from the run config) | `post_processed_<timestamp>.csv` + `data/market_prices_<start>_<end>.csv` |
-| `trade_matrix.html` | Steel, iron products, iron ore (mine-labelled origins) and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
+| `trade_matrix.html` | Steel, iron products, iron ore and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
 | `trade_network.html` | The same trade flows as a chord diagram with a map layout | `TM/steel_trade_allocations_<year>.csv` |
 | `supply_chain.html` | The whole chain behind the steel demand of one country or region, per year: the steel plants serving it, the iron products and scrap those plants took in, and the ore behind that iron, as tiers, a circle or a map. Upstream volumes are attributed pro rata to the share of each furnace group's output that went down the chain | `TM/steel_trade_allocations_<year>.csv` |
 | `trade_allocations.html` | Every year's trade-LP allocations as commodity arcs over a world map, with a year slider and commodity toggles | `TM/steel_trade_allocations_<year>.csv` |
 | `embedded_emissions_map.html` | The emissions embedded in steel trade as a world map with a year slider: each furnace group's emissions — direct / indirect / incl.-biogenic scope tickboxes, for every emissions boundary in the table, opening on direct (excl. biogenic) in the run's chosen boundary — are carried along the realised allocations, iron furnace group → steel furnace group → demand centre, pro rata to volume, giving production-based and consumption-based emissions per country, the emissions embedded in imports and exports, net imports (also as % of production-based) and the embedded intensity of the steel consumed. Clicking a country shows its series and partners; the geography filter treats a selection as one economy, netting out trade inside it. Indirect emissions are grid electricity at the plant's location plus the technology's indirect factor | post-processed CSV + `TM/steel_trade_allocations_<year>.csv` |
-| `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + `fixtures/demand_centers.json` + `fixtures/suppliers.json` + `fixtures/biomass_availability.json` |
+| `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + the run's demand scenario's `demand_centers.json` and scrap scenario's `suppliers.json` (found through `fixtures/scenarios.json`) + `fixtures/biomass_availability.json` |
 | `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
-| `metallic_charge_use.html` | Metallic charges fed into steel (scrap, hot metal, pig iron, DRI/HBI) and iron (ore grades), per charge / technology / region, with a local scrap supply overlay | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` + `fixtures/suppliers.json` |
+| `metallic_charge_use.html` | Metallic charges fed into steel (scrap, hot metal, pig iron, DRI/HBI) and iron (ore grades), per charge / technology / region, with a local scrap supply overlay | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` + the run's scrap scenario's `suppliers.json` (found through `fixtures/scenarios.json`) |
 | `decision_flows.html` | Furnace-group decision flows as a Sankey: each group's state when it first acts (its technology, or NEW for capacity that does not exist yet) flowing through decision rounds grouped into Renovate / Switch / Retire / Pipeline / Expand / Greenfield bands with technology sub-nodes; link width is the capacity entering the decision, in Mt; the Retire band keeps the closures the input data scheduled (`source` = `input_data`) and states their share in the hovers and the summary; a year-range slider narrows the flows by the year each motion took effect (the motions table's per-kind convention: a switch shows in its execution year, not its decision year) | `data/pam_motions.csv` |
 | `greenfield_status.html` | The static greenfield status charts made interactive: greenfield furnace groups per year stacked by lifecycle status or by technology, as plant count, capacity or production, as the stock in each status or the flow entering it | `data/greenfield_status_timeseries.csv` |
 | `greenfield_map.html` | The static greenfield maps made interactive: every greenfield furnace group as a capacity-sized dot on a world map with a year slider, filters for status, technology, product, reductant and metallic charge, and a per-site history (status entry years, technology and reductant switches, production and charge allocations); light and dark themes | `data/greenfield_status_timeseries.csv` + `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
@@ -143,6 +144,26 @@ All viewers except the two capacity maps share one shell (`common.js` / `common.
 | `capacity_china_map.html` | The capacity world map focused on China: Chinese plants only, provinces as the geography unit, an equirectangular view fitted to the country, province names shown. On policy-ON runs the capacity pool's province groups (Jing-Jin-Ji, Yangtze River Delta, Fenwei Plain) are selectable regions and hovers name a province's group and type. Skipped with a warning when the run has no Chinese plants | As `capacity_world_map.html` + `fixtures/capacity_pool_provinces.json` (policy-ON runs) |
 
 A missing input file skips that viewer with a warning instead of failing the plot stage. The greenfield map drops its metallic-charge filter, with a warning, when only the post-processed table or the Bill of Materials is missing. The capacity world and China maps are still written, with a warning, without the greenfield table (no new builds), the switch decisions (no rebuilds; older runs lack the file) the pipeline table (older runs lack the file: the input data's announced and under-construction units then only appear once they operate) or the motions (no fallback for expansions under construction); any other failure skips the map with a warning. The maps' provenance text names only the inputs the run really had. Their plant names and source line come from the master's Furnace units sheet, read at start-up.
+
+---
+
+## Scenario viewer files (`viewer/`)
+
+As its last step, every `run_simulation` and app run writes `viewer/` into its folder: the files the [Scenario Viewer](../../user_guide/scenario_viewer.md) reads (`write_viewer_files` in `src/steelo/viewer/extract.py`). They come from the last `post_processed_*.csv` in sorted order, `simulation_config.json`, `preparation_metadata.json`, the master workbook the run recorded and the pages in `plots/interactive/`; nothing is read from the prepared data.
+
+| File | Content | Source |
+|------|---------|--------|
+| `timeseries.csv` | One row per year, geo key, product and technology: capacity, production and the nine emissions accountings (three boundaries, each direct, direct with biogenic and indirect), in kt | Post-processed CSV |
+| `greenfield.csv` | New furnace groups and their capacity in kt, by build year, geo key, product and technology | Post-processed CSV |
+| `annual_costs.csv` | Cost components in million USD by year, geo key, product, technology and reductant, with capacity and production | Post-processed CSV; `plant_lifetime` and `equity_share` from `simulation_config.json`; the master's "Cost of capital" and "Techno-economic details" sheets |
+| `charge.csv`, `reductant.csv`, `trade.csv` | Metallic charges, reductant use and trade flows, as the plot pages show them | The data embedded in `metallic_charge_use.html`, `reductant_use.html` and `trade_matrix.html` |
+| `supply.csv` | Use and availability of steel, scrap, iron ore, CO2 storage and biomass by year, geography, commodity and grade, in Mt | `supply_demand.html`; steel demand from the master's "Demand and scrap availability" sheet for the run's demand scenario |
+| `geo.json` | Trade blocs, country and geo-unit names, region budgets | The configuration embedded in `emissions.html` and `supply_demand.html` |
+| `inputs.json` | The run's View data rows: 11 topics over 9 master sheets, for the run's demand, scrap and grid emissions scenarios | The master workbook |
+| `results/` | The Download results tables in the folders Run, Data, LCOE, LCOH, Trade and Policy, each table as `<name>.csv.gz` and in pages of 5,000 rows, listed in `index.json`. A yearly family `<name>_<year>.csv` becomes one table with a `year` column, unless a stacked `<name>_<y1>_<y2>.csv` sits beside it; a folder with no table is left out with a warning | `post_processed_*.csv`, `data/*.csv`, `data/LCOE/`, `data/LCOH/`, `TM/`, `data/policy/` |
+| `run.json` | The run's name and folder, where it was made (`made_in`), its start (the config file's modification time, UTC) and end, the package version, its input data (master file name, master source, master name, preparation name, the SHA-256 of the master's bytes), its plot pages, the files above, and `schema` | `simulation_config.json`, `preparation_metadata.json`, the master workbook (the SHA-256 of its bytes) |
+
+`run.json` is written last, so a `viewer/` folder holding it is complete, and the viewer lists only such runs. A plot page the run did not write skips the file taken from it, with a warning. `schema` is `SCHEMA_VERSION`, 1, also written into `inputs.json`; no reader checks it yet. The step cannot fail the run: an error is logged as "viewer files incomplete for this run" and the run still finishes, without `run.json`. `steelo-viewer regenerate` writes the folder again (see [CLI Commands](../../user_guide/cli_commands.md)); unlike the run's own step, it requires `emissions.html`.
 
 ---
 
@@ -200,7 +221,7 @@ This file feeds the `capacity_world_map.html` and `capacity_china_map.html` view
 
 ### `data/policy/` (policy-ON runs only)
 
-When China's capacity-replacement policy is enabled (`run_simulation --enable-capacity-policy`), `CapacityPolicyRecorder` additionally writes four CSVs to `output/data/policy/`. A policy-OFF run creates no `data/policy/` directory.
+When China's capacity-replacement policy is enabled (`run_simulation --enable-capacity-policy`, or the app's "Capacity-replacement policy (China)" switch), `CapacityPolicyRecorder` additionally writes four CSVs to `output/data/policy/`. A policy-OFF run creates no `data/policy/` directory.
 
 | File | One row per | Columns |
 |------|-------------|---------|
@@ -306,11 +327,11 @@ sorted by `(year, country)`, formatted to 4 decimals. Per-year files are kept; a
 
 ---
 
-## Per-app-run config artefacts
+## Run config and metadata files
 
-When a simulation is launched from the Django/Electron app, `SimulationRunner` mirrors the CLI output layout by writing two artefacts into the run's output directory:
+Both entry points, `run_simulation` and the Django/Electron app, write two files into the run's output directory before the run starts:
 
-- `simulation_config.json` — the resolved `SimulationConfig` (after defaults, parameter merges and validation).
-- `preparation_metadata.json` — metadata about the data preparation that fed this run (cache hash, source master-input version, etc.).
+- `simulation_config.json` — the run's `SimulationConfig`, one key per public field in declaration order: paths as strings, `geo_config` and `capacity_policy` as nested objects keyed by their field names, `technology_settings` as one object per technology code (`allowed`, `from_year`, `to_year`), and `disposal_cost_outputs` as a sorted list. Private fields are left out.
+- `preparation_metadata.json` — where the run's data came from. Both writers record `preparation_time`, `cache_used`, `master_excel` (the workbook's path; null for an app run without a ready data preparation), `made_in` (`cli` or `app`) and `master_source` (`default` for the packaged master, else `custom`). A CLI run adds `cached_from` on a cache hit, or `preparation_duration`, `files_prepared` and `temp_prep_dir` when it prepared the data, and its `demand_scenario` and `scrap_scenario`. An app run adds `cached_from` (its preparation's data folder), `master_name` and `preparation_name`; its scenarios are recorded only in `simulation_config.json`.
 
 This makes app runs and CLI runs leave the same on-disk shape, simplifying downstream analysis tooling that walks output directories regardless of how the run was started.

@@ -211,7 +211,7 @@ class InteractivePlotter:
 
         Args:
             post_processed_csv: The run's ``post_processed_<timestamp>.csv``.
-            demand_centers_json: The prepared ``fixtures/demand_centers.json``, for the
+            demand_centers_json: The prepared demand centres of the run's demand scenario, for the
                 steel demand overlay — the demand the trade LP is asked to serve, per
                 year and country. None (or a missing file) omits the overlay with a
                 warning.
@@ -237,7 +237,7 @@ class InteractivePlotter:
             centres = DemandCenterJsonRepository(demand_centers_json).list()
             years = {int(year) for year in aggregated["year"]}
             steel_demand = capacity_production.steel_demand_rows(centres, years)
-            demand_source = "; steel demand from fixtures/demand_centers.json"
+            demand_source = "; steel demand from the run's demand scenario (fixtures/scenarios.json)"
         else:
             logger.warning(
                 "No demand centres fixture at %s — steel demand omitted from the capacity and production viewer",
@@ -571,12 +571,12 @@ class InteractivePlotter:
         Args:
             tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``,
                 which gives every commodity's use.
-            suppliers_json: The prepared ``fixtures/suppliers.json``, for scrap and ore
+            suppliers_json: The prepared suppliers of the run's scrap scenario, for scrap and ore
                 availability. None (or a missing file) omits those availabilities with a warning.
             biomass_availability_json: The prepared ``fixtures/biomass_availability.json``,
                 for the CO2 storage limits and biomass budgets. None (or a missing file)
                 omits them with a warning.
-            demand_centers_json: The prepared ``fixtures/demand_centers.json``, for the steel
+            demand_centers_json: The prepared demand centres of the run's demand scenario, for the steel
                 demand — the demand the trade LP is asked to serve, including centres it
                 leaves fully unserved. None (or a missing file) omits it with a warning.
 
@@ -627,8 +627,8 @@ class InteractivePlotter:
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": "Use from TM/steel_trade_allocations_<year>.csv; steel demand from "
-                "fixtures/demand_centers.json; scrap and ore availability from fixtures/suppliers.json; "
+                "provenance": "Use from TM/steel_trade_allocations_<year>.csv; steel demand and scrap and ore "
+                "availability from the run's demand and scrap scenarios (fixtures/scenarios.json); "
                 "CO2 storage and biomass limits from fixtures/biomass_availability.json.",
                 "years": list(files),
                 "rows": supply_demand.pack_rows(used),
@@ -720,7 +720,7 @@ class InteractivePlotter:
                 (the Bill of Materials), whose ``metallic_charge`` fields identify
                 which feedstock rows are charges. Required — None (or a missing file)
                 skips the viewer with a warning.
-            suppliers_json: The prepared ``fixtures/suppliers.json``, for the local
+            suppliers_json: The prepared suppliers of the run's scrap scenario, for the local
                 scrap supply overlay. None (or a missing file) omits the overlay
                 with a warning.
 
@@ -762,7 +762,7 @@ class InteractivePlotter:
                 "title": self.run_title,
                 "provenance": f"Per-feedstock charge allocations from {post_processed_csv.name}; charges "
                 "identified by the Bill of Materials (fixtures/primary_feedstocks.json); local scrap "
-                "supply from fixtures/suppliers.json.",
+                "supply from the run's scrap scenario (fixtures/scenarios.json).",
                 "rows": metallic_charge_use.pack_rows(aggregated),
                 "groups": metallic_charge_use.pack_charge_sets(metallic_charge_use.count_charge_sets(charges)),
                 "supply": metallic_charge_use.pack_supply(supply),

@@ -10,7 +10,7 @@ The Steel Model UI comes in two flavors:
 - **Django Web Application** for shared, server-hosted deployments.
 - **Electron Standalone App** for self-contained desktop use.
 
-Both experiences share the same workflows for configuring simulations, launching runs, and reviewing results. Start with the [Django & Electron Overview](django_electron_overview.md) for a tour of the interface.
+Both experiences share the same workflows for configuring simulations, launching runs, and reviewing results. Start with the [Django & Electron Overview](django_electron_overview.md) for a tour of the interface. **Scenario viewer** in the navigation bar compares finished runs, the app's and the command line's alike, in the [Scenario Viewer](../user_guide/scenario_viewer.md).
 :::
 
 :::{only} not public
@@ -59,7 +59,7 @@ Data management and repository system:
 
 - **Running the Django Server**: `cd src/django && python manage.py runserver`
 - **Building Electron App**: `cd src/electron && npm run build-all`
-- **Worker Management**: Access via the web interface navigation panel
+- **Worker Management**: The "Worker Status" panel on the Simulations page
 - **Issue Reporting**: See project issue tracker for bugs and feature requests
 
 :::
