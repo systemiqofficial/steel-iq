@@ -149,7 +149,7 @@ A missing input file skips that viewer with a warning instead of failing the plo
 
 ## Scenario viewer files (`viewer/`)
 
-As its last step, every run writes `viewer/` into its folder: the files the [Scenario Viewer](../../user_guide/scenario_viewer.md) reads (`write_viewer_files` in `src/steelo/viewer/extract.py`). They come from the last `post_processed_*.csv` in sorted order, `simulation_config.json`, `preparation_metadata.json`, the master workbook the run recorded and the pages in `plots/interactive/`; nothing is read from the prepared data.
+As its last step, every `run_simulation` and app run writes `viewer/` into its folder: the files the [Scenario Viewer](../../user_guide/scenario_viewer.md) reads (`write_viewer_files` in `src/steelo/viewer/extract.py`). They come from the last `post_processed_*.csv` in sorted order, `simulation_config.json`, `preparation_metadata.json`, the master workbook the run recorded and the pages in `plots/interactive/`; nothing is read from the prepared data.
 
 | File | Content | Source |
 |------|---------|--------|
