@@ -35,6 +35,10 @@ Geo-keyed inputs use the same form in the master workbook: a bare country code f
 
 `Location.resolve()` logs at INFO when a province has no value and the country value is used, and at DEBUG when the province value is used.
 
+### Cells of the site rasters
+
+The geospatial model prices candidate sites on a global grid. Every cell gets a geo key from the province it lies in, by point-in-polygon against the admin-1 layer for the provinces `geo_hierarchy.json` declares (`hydrogen_lcoe.build_geo_key_grid`). A cell's grid electricity price and its electrolyser CAPEX/OPEX resolve at its province row, else its country row. Unlike a new plant's location, a cell whose centre lies outside every province polygon, such as some coastal cells, gets no nearest-province fallback and stays at country level. A cell's hydrogen ceiling is a percentile of its region's cells, not of country prices.
+
 ### Per-commodity fallback in input costs
 
 A province row in `Input costs` may author only some commodities, for example only electricity. Data preparation fills each unauthored commodity from the country row for the same year. A commodity still unpriced after the fallback stops data preparation with an error.

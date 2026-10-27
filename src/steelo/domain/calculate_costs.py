@@ -1699,9 +1699,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
 
 
 # ----------------------------------- Hydrogen Costs -------------------------------------------------
-# Note: A pixel-level version of the functions below  can be found in geospatial_calculations.py and is used by the
-# GeospatialModel to follow the same logic to get hydrogen costs from electricity prices. For consistency,
-# any changes to the logic below should be reflected in there as well.
+# Note: geospatial_calculations.py holds the cell-level counterparts that price new sites' hydrogen. Both share
+# the LCOH formula and resolve the electrolyser cost at the geo key, then the country, so a change to either
+# belongs in both. The ceilings differ: there a percentile of a region's cells, here of its countries' prices,
+# with a province taking its country's ceiling.
 
 
 def calculate_lcoh_from_electricity_country_level(

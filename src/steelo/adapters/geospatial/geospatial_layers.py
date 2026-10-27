@@ -457,11 +457,14 @@ def add_grid_power_price(
     geo_paths: "GeoDataPaths",
 ) -> xr.Dataset:
     """
-    Assign country-level grid power prices to each grid cell based on ISO3 codes.
+    Assign grid power prices to each grid cell, at the cell's geo key where the input costs have a row, else its
+    country.
 
     Args:
-        ds: Dataset to add grid prices to (must contain 'iso3' and 'feasibility_mask' variables)
-        input_costs: Dictionary mapping ISO3 codes to year-specific costs including electricity prices
+        ds: Dataset to add grid prices to (must contain 'iso3' and 'feasibility_mask' variables, and optionally
+            'geo_key' from ``hydrogen_lcoe.build_geo_key_grid``)
+        input_costs: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to year-specific
+            costs including electricity prices
         year: Simulation year
         geo_paths: Paths to geospatial data files for plotting outputs
 
@@ -470,28 +473,38 @@ def add_grid_power_price(
 
     Side Effects:
         - Generates and saves plot of grid power prices
+        - Traces the raster as the ``site_grid`` stage
 
-    Note:
-        For grid cells without a matching ISO3 code, the maximum grid price is used as a fallback.
+    Notes:
+        Each cell resolves at its geo key, then its iso3. Cells with neither get the highest country-level grid
+        price as a never-site-here fallback, so a province priced above every country never sets it. Without a
+        'geo_key' variable every cell resolves at its iso3.
     """
     logger = logging.getLogger(f"{__name__}.add_grid_power_price")
-    # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
-    grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
-    iso3_vals = ds["iso3"].values
-    # Hash lookup; np.isin sorts the million object strings and takes about 30 s per call
-    known_mask = pd.Series(iso3_vals.ravel()).isin(grid_price.index).to_numpy().reshape(iso3_vals.shape)
+    grid_price = pd.Series({key: input_costs[key][year]["electricity"] for key in input_costs})
+
+    def is_priced(keys: np.ndarray) -> np.ndarray:
+        # Hash lookup; np.isin sorts the million object strings and takes about 30 s per call
+        return pd.Series(keys.ravel()).isin(grid_price.index).to_numpy().reshape(keys.shape)
+
+    keys = ds["iso3"].values
+    if "geo_key" in ds:
+        geo_keys = ds["geo_key"].values
+        keys = np.where(is_priced(geo_keys), geo_keys, keys)
+    known_mask = is_priced(keys)
     fallback_mask = ~known_mask & (ds["feasibility_mask"].values > 0)
     fallback_count = int(fallback_mask.sum())
     if fallback_count:
-        fallback_iso3 = sorted(set(iso3_vals[fallback_mask].tolist()))
+        fallback_iso3 = sorted(set(keys[fallback_mask].tolist()))
         logger.warning(
             f"[GEO LAYERS] {fallback_count} feasible cells have no grid price for iso3 {fallback_iso3}; "
-            f"assigning the maximum grid price as a never-site-here fallback."
+            f"assigning the maximum country grid price as a never-site-here fallback."
         )
     # One reindex over the flattened grid replaces a per-cell Python lambda (~1M calls/year)
-    prices = grid_price.reindex(iso3_vals.ravel()).to_numpy(dtype=float)
-    prices[~known_mask.ravel()] = grid_price.max()
-    ds["grid_price"] = (("lat", "lon"), prices.reshape(iso3_vals.shape))
+    prices = grid_price.reindex(keys.ravel()).to_numpy(dtype=float)
+    prices[~known_mask.ravel()] = grid_price[[":" not in key for key in grid_price.index]].max()
+    ds["grid_price"] = (("lat", "lon"), prices.reshape(keys.shape))
+    energy_trace.site_grid(ds, year, input_costs)
 
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
     plot_screenshot(
@@ -521,9 +534,10 @@ def add_power_price(
         where p = baseload_coverage
 
     Args:
-        ds: Dataset to add power prices to
+        ds: Dataset to add power prices to (with 'iso3', 'feasibility_mask' and optionally 'geo_key')
         year: Simulation year
-        input_costs: Dictionary mapping ISO3 codes to year-specific costs including electricity prices
+        input_costs: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to year-specific
+            costs including electricity prices
         baseload_coverage: Percentage of power requirement covered by own baseload installation (0.0 to 1.0)
         geo_paths: Paths to geospatial data files
         start_year: Simulation start year. Used together with ``end_year`` to limit the
@@ -615,10 +629,11 @@ def add_capped_hydrogen_price(
         3. Apply regional ceilings and intraregional trade options to set capped hydrogen price
 
     Args:
-        ds: Dataset with power prices (must contain 'power_price' and 'iso3' variables)
+        ds: Dataset with power prices (must contain 'power_price' and 'iso3' variables, optionally 'geo_key')
         year: Simulation year
         hydrogen_efficiency: Dictionary mapping years to electrolyser efficiency values (MWh/kg)
-        hydrogen_capex_opex: Dictionary mapping country codes to year-specific CAPEX and OPEX values (USD/kg)
+        hydrogen_capex_opex: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to
+            year-specific CAPEX and OPEX values (USD/kg)
         country_mappings: CountryMappingService with region mappings for hydrogen trade
         baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
         geo_config: Configuration containing hydrogen ceiling percentile and trade settings
@@ -640,7 +655,7 @@ def add_capped_hydrogen_price(
     ds = calculate_lcoh_from_power_price(ds, year, hydrogen_efficiency, hydrogen_capex_opex)
     regional_ceiling = calculate_regional_hydrogen_ceiling(ds, country_mappings, geo_config.hydrogen_ceiling_percentile)
     ds = apply_hydrogen_price_cap(ds, regional_ceiling, geo_config)
-    energy_trace.site_hydrogen(ds, year, regional_ceiling)
+    energy_trace.site_hydrogen(ds, year, regional_ceiling, hydrogen_efficiency, hydrogen_capex_opex)
 
     is_milestone_year = (
         start_year is None or end_year is None or year == start_year or year == end_year or (year - start_year) % 5 == 0

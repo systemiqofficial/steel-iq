@@ -19,6 +19,14 @@ from steelo.utilities import energy_trace
 ACTIVE = ["operating", "operating pre-retirement", "operating switching technology"]
 COVERAGE = 0.85
 BASELOAD_MIX = "85% baseload + 15% grid"
+HYDROGEN_EFFICIENCY = {Year(2030): 0.05}
+HYDROGEN_CAPEX_OPEX = {"CHN": {Year(2030): 1.0}, "CHN:CN-LN": {Year(2030): 1.5}, "FRA": {Year(2030): 0.5}}
+GRID_INPUT_COSTS = {
+    "CHN": {Year(2030): {"electricity": 0.06}},
+    "CHN:CN-LN": {Year(2030): {"electricity": 0.09}},
+    "DEU:DE-BY": {Year(2030): {"electricity": 0.5}},
+    "FRA": {Year(2030): {"electricity": 0.08}},
+}
 
 
 @pytest.fixture(autouse=True)
@@ -162,23 +170,52 @@ def hydrogen_dataset() -> tuple[xr.Dataset, dict[str, float]]:
     A 2 x 3 raster of LCOH capped at regional ceilings, with one priced cell that has no LCOH.
 
     Returns:
-        The dataset and the regional ceilings (USD/kg).
+        The dataset and the regional ceilings (USD/kg). Each LCOH is 50 kWh/kg × the cell's power price plus the
+        electrolyser cost of ``HYDROGEN_CAPEX_OPEX`` at its geo key, else its iso3; the second Chinese cell lies in
+        CN-LN, which has its own cost.
     """
     ceilings = {"China": 5.0, "Western Europe": 4.0}
     iso3 = np.array([["CHN", "CHN", "CHN"], ["FRA", "FRA", "nan"]], dtype=object)
+    geo_key = np.array([["CHN", "CHN:CN-LN", "CHN"], ["FRA", "FRA", "nan"]], dtype=object)
     regions = np.array([["China", "China", "China"], ["Western Europe", "Western Europe", np.nan]], dtype=object)
+    power = np.array([[0.06, 0.09, np.nan], [0.05, 0.08, np.nan]])
     lcoh = np.array([[4.0, 6.0, np.nan], [3.0, 4.5, np.nan]])
     capped = np.array([[4.0, 5.0, 5.0], [3.0, 4.0, np.nan]])
     ds = xr.Dataset(
         {
             "iso3": (("lat", "lon"), iso3),
+            "geo_key": (("lat", "lon"), geo_key),
             "tiam_ucl_region": (("lat", "lon"), regions),
+            "power_price": (("lat", "lon"), power),
             "lcoh": (("lat", "lon"), lcoh),
             "capped_lcoh": (("lat", "lon"), capped),
         },
         coords={"lat": [0.0, 1.0], "lon": [0.0, 1.0, 2.0]},
     )
     return ds, ceilings
+
+
+def grid_dataset() -> xr.Dataset:
+    """
+    A 2 x 3 raster of grid prices as ``GRID_INPUT_COSTS`` resolve them.
+
+    Returns:
+        The dataset: a CN-LN cell at its province's price, a cell of a province without a row and a country cell at
+        China's, a French cell, and two cells without a price at the highest country price (FRA's 0.08 USD/kWh,
+        not DE-BY's 0.5), one of them infeasible.
+    """
+    iso3 = np.array([["CHN", "CHN", "CHN"], ["FRA", "ZZZ", "nan"]], dtype=object)
+    geo_key = np.array([["CHN:CN-LN", "CHN:CN-XZ", "CHN"], ["FRA", "ZZZ", "nan"]], dtype=object)
+    grid = np.array([[0.09, 0.06, 0.06], [0.08, 0.08, 0.08]])
+    return xr.Dataset(
+        {
+            "iso3": (("lat", "lon"), iso3),
+            "geo_key": (("lat", "lon"), geo_key),
+            "feasibility_mask": (("lat", "lon"), np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 0.0]])),
+            "grid_price": (("lat", "lon"), grid),
+        },
+        coords={"lat": [0.0, 1.0], "lon": [0.0, 1.0, 2.0]},
+    )
 
 
 def lcoe_case() -> tuple[xr.DataArray, xr.DataArray, dict[str, float], dict[str, np.ndarray]]:
@@ -290,8 +327,9 @@ def test_stage_functions_touch_no_argument_when_off():
 
     energy_trace.lcoe_source(u, u, u)
     energy_trace.lcoe_source_medians(u, u)
+    energy_trace.site_grid(u, u, u)
     energy_trace.site_power(u, u, u, u)
-    energy_trace.site_hydrogen(u, u, u)
+    energy_trace.site_hydrogen(u, u, u, u, u)
     energy_trace.hydrogen_lcoe(u, u, u, u, u, u)
     energy_trace.country_hydrogen(u, u, u, u, u, u, u, u, u, u, u)
     energy_trace.brownfield(u, u, u, u, u)
@@ -482,6 +520,10 @@ def test_stages_leave_dataset_and_furnace_group_dicts_unchanged(tmp_path):
     energy_trace.configure(True, ["CHN", "IND"], ["P1"], tmp_path)
     power_ds = power_dataset("demand")
     power_before = power_ds.copy(deep=True)
+    grid_ds = grid_dataset()
+    grid_before = grid_ds.copy(deep=True)
+    input_costs_before = copy.deepcopy(GRID_INPUT_COSTS)
+    hydrogen_tables_before = copy.deepcopy([HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX])
     hydrogen_ds, ceilings = hydrogen_dataset()
     hydrogen_before = hydrogen_ds.copy(deep=True)
     fg = make_furnace_group("P1_1", electricity=0.08, hydrogen=4000.0)
@@ -496,8 +538,9 @@ def test_stages_leave_dataset_and_furnace_group_dicts_unchanged(tmp_path):
     country_arguments = country_hydrogen_arguments(BASELOAD_MIX)
     country_arguments_before = copy.deepcopy(country_arguments)
 
+    energy_trace.site_grid(grid_ds, 2030, GRID_INPUT_COSTS)
     energy_trace.site_power(power_ds, 2030, COVERAGE, None)
-    energy_trace.site_hydrogen(hydrogen_ds, 2030, ceilings)
+    energy_trace.site_hydrogen(hydrogen_ds, 2030, ceilings, HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX)
     energy_trace.hydrogen_lcoe(2030, lcoe, iso3, 50.0, lcoe_by_geo_key, neighbour_sources)
     energy_trace.country_hydrogen(**country_arguments)
     energy_trace.brownfield(
@@ -506,6 +549,9 @@ def test_stages_leave_dataset_and_furnace_group_dicts_unchanged(tmp_path):
     energy_trace.greenfield_revalue(new_plant, new_fg, Year(2030), np.array(0.05), np.array(4.0), written)
 
     xr.testing.assert_identical(power_ds, power_before)
+    xr.testing.assert_identical(grid_ds, grid_before)
+    assert GRID_INPUT_COSTS == input_costs_before
+    assert [HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX] == hydrogen_tables_before
     xr.testing.assert_identical(hydrogen_ds, hydrogen_before)
     xr.testing.assert_identical(lcoe, lcoe_before)
     xr.testing.assert_identical(iso3, iso3_before)
@@ -523,7 +569,7 @@ def test_site_hydrogen_flags_a_cell_above_its_regional_ceiling(tmp_path, trace_l
     ds, ceilings = hydrogen_dataset()
     ds["capped_lcoh"].values[1, 1] = 4.2
 
-    energy_trace.site_hydrogen(ds, 2030, ceilings)
+    energy_trace.site_hydrogen(ds, 2030, ceilings, HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX)
 
     rows = rows_for(read_rows(tmp_path), quantity="cells_above_ceiling")
     assert {row["iso3"]: row["value"] for row in rows} == {"CHN": "0", "ALL": "1"}
@@ -535,7 +581,7 @@ def test_site_hydrogen_counts_priced_cells_without_lcoh_without_failing(tmp_path
     energy_trace.configure(True, ["CHN"], [], tmp_path)
     ds, ceilings = hydrogen_dataset()
 
-    energy_trace.site_hydrogen(ds, 2030, ceilings)
+    energy_trace.site_hydrogen(ds, 2030, ceilings, HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX)
 
     china = {row["quantity"]: row["value"] for row in rows_for(read_rows(tmp_path), iso3="CHN")}
     assert china["cells_checked"] == "3"
@@ -544,6 +590,69 @@ def test_site_hydrogen_counts_priced_cells_without_lcoh_without_failing(tmp_path
     assert float(china["ceiling"]) == 5.0
     assert float(china["share_capped"]) == pytest.approx(1 / 3)
     assert warnings_logged(trace_log) == []
+
+
+def test_site_hydrogen_flags_an_lcoh_with_the_countrys_electrolyser_cost_inside_a_province_with_its_own(
+    tmp_path,
+    trace_log,
+):
+    """A CN-LN cell whose LCOH took China's electrolyser cost instead of CN-LN's fails; the other cells pass."""
+    energy_trace.configure(True, ["CHN", "FRA"], [], tmp_path)
+    ds, ceilings = hydrogen_dataset()
+    ds["lcoh"].values[0, 1] = 50 * 0.09 + 1.0
+
+    energy_trace.site_hydrogen(ds, 2030, ceilings, HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX)
+
+    rows = rows_for(read_rows(tmp_path), quantity="cells_off_lcoh")
+    assert {row["iso3"]: row["value"] for row in rows} == {"CHN": "1", "FRA": "0", "ALL": "1"}
+    assert len(warnings_logged(trace_log)) == 2
+    assert "stage=site_hydrogen year=2030 checked 5, failed 0; LCOH checked 4, failed 1" in trace_log.text
+
+
+def test_site_grid_passes_a_raster_resolved_at_the_geo_key_and_summarises_each_province(tmp_path, trace_log):
+    """
+    Prices at the province, at the country for a province without a row, and the highest country price for cells
+    with neither pass; each listed country and each of its geo units gets its rows, over feasible cells.
+    """
+    energy_trace.configure(True, ["CHN"], [], tmp_path)
+
+    energy_trace.site_grid(grid_dataset(), 2030, GRID_INPUT_COSTS)
+
+    rows = read_rows(tmp_path)
+    assert {row["check_failed"] for row in rows} == {"0"}
+    by_area = {(row["iso3"], row["geo_key"], row["quantity"]): row["value"] for row in rows}
+    assert by_area[("CHN", "", "median_grid_price")] == "0.06"
+    assert by_area[("CHN", "", "cells_subnational")] == "1"
+    assert by_area[("CHN", "CHN:CN-LN", "median_grid_price")] == "0.09"
+    assert by_area[("CHN", "CHN:CN-XZ", "cells_subnational")] == "0"
+    assert by_area[("ALL", "", "cells_grid_fallback")] == "1"
+    assert {(row["iso3"], row["geo_key"]) for row in rows} == {
+        ("CHN", ""),
+        ("CHN", "CHN:CN-LN"),
+        ("CHN", "CHN:CN-XZ"),
+        ("ALL", ""),
+    }
+    assert "stage=site_grid year=2030 checked 6, failed 0" in trace_log.text
+
+
+def test_site_grid_flags_a_country_price_inside_a_priced_province_and_a_fallback_at_a_provinces_price(
+    tmp_path,
+    trace_log,
+):
+    """A CN-LN cell at China's price fails cells_off_grid; a fallback cell at DE-BY's price fails cells_off_fallback."""
+    energy_trace.configure(True, ["CHN"], [], tmp_path)
+    ds = grid_dataset()
+    ds["grid_price"].values[0, 0] = 0.06
+    ds["grid_price"].values[1, 1] = 0.5
+
+    energy_trace.site_grid(ds, 2030, GRID_INPUT_COSTS)
+
+    rows = read_rows(tmp_path)
+    off_grid = {(row["iso3"], row["geo_key"]): row["value"] for row in rows_for(rows, quantity="cells_off_grid")}
+    assert off_grid == {("CHN", ""): "1", ("CHN", "CHN:CN-LN"): "1", ("CHN", "CHN:CN-XZ"): "0", ("ALL", ""): "1"}
+    off_fallback = {row["iso3"]: row["value"] for row in rows_for(rows, quantity="cells_off_fallback", geo_key="")}
+    assert off_fallback == {"CHN": "0", "ALL": "1"}
+    assert "stage=site_grid year=2030 checked 6, failed 2" in trace_log.text
 
 
 def test_country_hydrogen_passes_trade_lowered_prices_and_flags_a_price_above_the_bound(tmp_path, trace_log):
@@ -850,8 +959,9 @@ def test_trace_draws_no_random_number(tmp_path):
     plant, _ = built_new_site(tmp_path)
     hydrogen_ds, ceilings = hydrogen_dataset()
     lcoe, iso3, lcoe_by_geo_key, neighbour_sources = lcoe_case()
+    energy_trace.site_grid(grid_dataset(), 2030, GRID_INPUT_COSTS)
     energy_trace.site_power(power_dataset("demand"), 2030, COVERAGE, None)
-    energy_trace.site_hydrogen(hydrogen_ds, 2030, ceilings)
+    energy_trace.site_hydrogen(hydrogen_ds, 2030, ceilings, HYDROGEN_EFFICIENCY, HYDROGEN_CAPEX_OPEX)
     energy_trace.hydrogen_lcoe(2030, lcoe, iso3, 50.0, lcoe_by_geo_key, neighbour_sources)
     energy_trace.country_hydrogen(**country_hydrogen_arguments(BASELOAD_MIX))
     energy_trace.greenfield_operating(make_repository(plant), Year(2032), ACTIVE)

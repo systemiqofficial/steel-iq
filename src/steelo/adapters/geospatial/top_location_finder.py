@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from steelo.domain.models import GeoDataPaths
 
 from steelo.domain.constants import GEO_RESOLUTION
+from steelo.adapters.geospatial import hydrogen_lcoe
 from steelo.adapters.geospatial.geospatial_layers import (
     add_iso3_codes,
     add_feasibility_mask,
@@ -64,6 +65,8 @@ def get_candidate_locations_for_opening_new_plants(
           The first three layers are saved to temp files in the first simulation year and reused in subsequent years to
           reduce runtime - temp files are cleaned up after simulation. The landtype factor only pre-calculates a part
           which is independent from the user input.
+        - Per-year, input-independent: geo_key, the cell's sub-national geo unit where geo_hierarchy.json declares
+          one, else its iso3; grid prices and electrolyser costs resolve at it.
         - Dynamic, PAM-independent: power price (both baseload and grid), hydrogen price, and some transportation costs
           (iron feedstock and steel demand). The hydrogen price is not used for the priority location KPI, but needed
           for the full NPV calculation later on.
@@ -96,6 +99,10 @@ def get_candidate_locations_for_opening_new_plants(
     with time_step("add_iso3_codes", geo_timer_logger):
         # Always added; required as a basis for other layers
         global_ds = add_iso3_codes(resolution=GEO_RESOLUTION, geo_paths=geo_paths)
+
+    with time_step("build_geo_key_grid", geo_timer_logger):
+        # Sub-national geo units, so grid prices and electrolyser costs resolve where the master has rows
+        global_ds["geo_key"] = hydrogen_lcoe.build_geo_key_grid(global_ds["iso3"], geo_paths)
 
     with time_step("add_feasibility_mask", geo_timer_logger):
         # Always added; required as a basis for other layers

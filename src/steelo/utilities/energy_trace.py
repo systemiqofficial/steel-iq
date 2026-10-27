@@ -78,6 +78,13 @@ UNITS: dict[str, dict[str, str]] = {
         "schema_version": "",
         "median_lcoe": "USD/MWh",
     },
+    "site_grid": {
+        "median_grid_price": "USD/kWh",
+        "cells_subnational": "cells",
+        "cells_grid_fallback": "cells",
+        "cells_off_grid": "cells",
+        "cells_off_fallback": "cells",
+    },
     "site_power": {
         "coverage": "fraction",
         "median_grid_price": "USD/kWh",
@@ -94,6 +101,7 @@ UNITS: dict[str, dict[str, str]] = {
         "cells_checked": "cells",
         "cells_above_ceiling": "cells",
         "cells_nan_lcoh_priced": "cells",
+        "cells_off_lcoh": "cells",
     },
     "hydrogen_lcoe": {"lcoe": "USD/MWh", "from_neighbours": ""},
     "country_hydrogen": {
@@ -383,6 +391,61 @@ def lcoe_source_medians(ds: "xr.Dataset", year: int) -> None:
         _emit("lcoe_source", year, {"iso3": country}, {"median_lcoe": median}, {}, record=True, log=True)
 
 
+def site_grid(ds: "xr.Dataset", year: int, input_costs: Mapping[str, Mapping[int, Mapping[str, float]]]) -> None:
+    """
+    Trace and check the site grid price raster of the year.
+
+    Args:
+        ds: The global dataset with ``iso3``, ``feasibility_mask``, ``grid_price`` (USD/kWh) and, from the GEO
+            pipeline, ``geo_key``.
+        year: Simulation year.
+        input_costs: Geo key to year to carrier price, the master's input costs.
+
+    Returns:
+        None.
+
+    Notes:
+        The expected prices come from the input costs, read here. A cell whose geo key or iso3 has an electricity
+        price must hold its geo key's when the input costs hold one, else its iso3's (``cells_off_grid``). A cell
+        with neither is a fallback cell and must hold the highest country-level price, so a province priced above
+        every country never becomes the fallback (``cells_off_fallback``). Both checks cover every cell. Rows per
+        listed country, per geo unit of a listed country and ``ALL``: the median grid price, the cells priced at a
+        sub-national row and the fallback cells, over feasible cells, and the two counts of cells off. Without
+        ``geo_key`` every cell is expected at its iso3.
+    """
+    if not _state.enabled:
+        return
+    stage = "site_grid"
+    dims = ds["grid_price"].dims
+    grid, iso3, feasibility = (_raster(ds, name, dims) for name in ("grid_price", "iso3", "feasibility_mask"))
+    geo_key = _raster(ds, "geo_key", dims) if "geo_key" in ds else iso3
+    prices = {key: _nested(year_costs, year, "electricity") for key, year_costs in input_costs.items()}
+    flat_key, flat_iso3 = pd.Series(geo_key.ravel()), pd.Series(iso3.ravel())
+    at_key = flat_key.map(prices)
+    expected = at_key.fillna(flat_iso3.map(prices)).to_numpy(dtype=float).reshape(grid.shape)
+    subnational = (at_key.notna() & (flat_key != flat_iso3)).to_numpy().reshape(grid.shape)
+    fallback = np.isnan(expected)
+    fallback_price = float(np.nanmax([price for key, price in prices.items() if ":" not in key]))
+    off_grid = ~fallback & ~np.isclose(grid, expected, rtol=REL_TOL, atol=0.0)
+    off_fallback = fallback & ~np.isclose(grid, fallback_price, rtol=REL_TOL, atol=0.0)
+    feasible = feasibility > 0
+    for identity, mask in _site_grid_masks(iso3, geo_key):
+        cells = mask & feasible
+        n_off_grid = int((mask & off_grid).sum())
+        n_off_fallback = int((mask & off_fallback).sum())
+        values = {
+            "median_grid_price": _median(grid[cells]),
+            "cells_subnational": int((cells & subnational).sum()),
+            "cells_grid_fallback": int((cells & fallback).sum()),
+        }
+        checks = {
+            "cells_off_grid": _Check(n_off_grid, 0, n_off_grid == 0),
+            "cells_off_fallback": _Check(n_off_fallback, 0, n_off_fallback == 0),
+        }
+        _emit(stage, year, identity, values, checks, record=True, log=True)
+    _summary(stage, year, f"checked {grid.size}, failed {int((off_grid | off_fallback).sum())}")
+
+
 def site_power(ds: "xr.Dataset", year: int, coverage: float, lcoe_basis: str | None) -> None:
     """
     Trace and check the site power price raster of the year.
@@ -424,14 +487,23 @@ def site_power(ds: "xr.Dataset", year: int, coverage: float, lcoe_basis: str | N
     _summary(stage, year, f"checked {int(priced.sum())}, failed {int(off_blend.sum())}")
 
 
-def site_hydrogen(ds: "xr.Dataset", year: int, regional_ceiling: Mapping[str, float]) -> None:
+def site_hydrogen(
+    ds: "xr.Dataset",
+    year: int,
+    regional_ceiling: Mapping[str, float],
+    hydrogen_efficiency: Mapping[Year, float],
+    hydrogen_capex_opex: Mapping[str, Mapping[Year, float]],
+) -> None:
     """
-    Trace and check the capped site hydrogen raster of the year.
+    Trace and check the site hydrogen rasters of the year.
 
     Args:
-        ds: The global dataset with ``iso3``, ``tiam_ucl_region``, ``lcoh`` and ``capped_lcoh`` (USD/kg).
+        ds: The global dataset with ``iso3``, ``tiam_ucl_region``, ``power_price`` (USD/kWh), ``lcoh`` and
+            ``capped_lcoh`` (USD/kg) and, from the GEO pipeline, ``geo_key``.
         year: Simulation year.
         regional_ceiling: Region to its hydrogen ceiling (USD/kg), before any trade option.
+        hydrogen_efficiency: Year to the electrolyser's electricity use (MWh/kg).
+        hydrogen_capex_opex: Geo key to year to the electrolyser's capital and operating cost (USD/kg).
 
     Returns:
         None.
@@ -439,21 +511,36 @@ def site_hydrogen(ds: "xr.Dataset", year: int, regional_ceiling: Mapping[str, fl
     Notes:
         Every cell with a finite ``capped_lcoh`` must stay within its region's ceiling. Cells with no
         LCOH that still carry a price are counted, not failed. With the ceiling percentile at 100 and
-        intraregional trade off, as by default, the check cannot fail.
+        intraregional trade off, as by default, that check cannot fail. Every cell with a finite power
+        price and an electrolyser cost row must hold ``lcoh`` = kWh per kg × power price + the capital and
+        operating cost at its geo key, else its iso3 (``cells_off_lcoh``), computed here on the rasters.
+        Without ``geo_key`` the cost is expected at the iso3.
     """
     if not _state.enabled:
         return
     stage = "site_hydrogen"
     dims = ds["capped_lcoh"].dims
-    lcoh, capped, regions, iso3 = (
-        _raster(ds, name, dims) for name in ("lcoh", "capped_lcoh", "tiam_ucl_region", "iso3")
+    lcoh, capped, regions, iso3, power = (
+        _raster(ds, name, dims) for name in ("lcoh", "capped_lcoh", "tiam_ucl_region", "iso3", "power_price")
     )
+    geo_key = _raster(ds, "geo_key", dims) if "geo_key" in ds else iso3
     ceiling = pd.Series(regions.ravel()).map(regional_ceiling).to_numpy(dtype=float).reshape(regions.shape)
+    capex_opex = {key: _nested(by_year, year) for key, by_year in hydrogen_capex_opex.items()}
+    cost = (
+        pd.Series(geo_key.ravel())
+        .map(capex_opex)
+        .fillna(pd.Series(iso3.ravel()).map(capex_opex))
+        .to_numpy(dtype=float)
+        .reshape(lcoh.shape)
+    )
+    expected_lcoh = _nested(hydrogen_efficiency, year) * MWH_TO_KWH * power + cost
     priced = np.isfinite(capped)
     has_lcoh = np.isfinite(lcoh)
+    lcoh_checked = np.isfinite(power) & np.isfinite(cost)
     with np.errstate(invalid="ignore"):
         above = priced & ~(capped <= ceiling + REL_TOL * np.abs(ceiling))
         capped_below_lcoh = priced & has_lcoh & (capped < lcoh)
+        off_lcoh = lcoh_checked & ~np.isclose(lcoh, expected_lcoh, rtol=REL_TOL, atol=0.0)
     for country, mask in _country_masks(iso3):
         cells = mask & priced
         n_cells = int(cells.sum())
@@ -466,9 +553,18 @@ def site_hydrogen(ds: "xr.Dataset", year: int, regional_ceiling: Mapping[str, fl
             "cells_checked": n_cells,
             "cells_nan_lcoh_priced": int((cells & ~has_lcoh).sum()),
         }
-        checks = {"cells_above_ceiling": _Check(n_above, 0, n_above == 0)}
+        n_off_lcoh = int((mask & off_lcoh).sum())
+        checks = {
+            "cells_above_ceiling": _Check(n_above, 0, n_above == 0),
+            "cells_off_lcoh": _Check(n_off_lcoh, 0, n_off_lcoh == 0),
+        }
         _emit(stage, year, {"iso3": country}, values, checks, record=True, log=True)
-    _summary(stage, year, f"checked {int(priced.sum())}, failed {int(above.sum())}")
+    _summary(
+        stage,
+        year,
+        f"checked {int(priced.sum())}, failed {int(above.sum())}; "
+        f"LCOH checked {int(lcoh_checked.sum())}, failed {int(off_lcoh.sum())}",
+    )
 
 
 def hydrogen_lcoe(
@@ -958,6 +1054,31 @@ def _country_masks(iso3_values: np.ndarray) -> list[tuple[str, np.ndarray]]:
     flat = pd.Series(iso3_values.ravel())
     masks = [(country, (flat == country).to_numpy().reshape(iso3_values.shape)) for country in sorted(_state.countries)]
     masks.append((ALL_CELLS, np.ones(iso3_values.shape, dtype=bool)))
+    return masks
+
+
+def _site_grid_masks(iso3: np.ndarray, geo_key: np.ndarray) -> list[tuple[dict[str, object], np.ndarray]]:
+    """
+    Cell masks for each listed country, each of its geo units, then every cell.
+
+    Args:
+        iso3: The ``iso3`` raster.
+        geo_key: The ``geo_key`` raster, aligned with ``iso3``.
+
+    Returns:
+        (identity, mask) per listed country followed by its geo units in order, then (``ALL``, all cells). A
+        geo unit's identity carries its country as ``iso3`` and the unit as ``geo_key``.
+    """
+    masks: list[tuple[dict[str, object], np.ndarray]] = []
+    flat_key = pd.Series(geo_key.ravel())
+    for country, mask in _country_masks(iso3):
+        masks.append(({"iso3": country}, mask))
+        if country == ALL_CELLS:
+            continue
+        units = sorted({key for key in geo_key[mask].tolist() if isinstance(key, str) and ":" in key})
+        for unit in units:
+            unit_mask = (flat_key == unit).to_numpy().reshape(geo_key.shape)
+            masks.append(({"iso3": country, "geo_key": unit}, unit_mask))
     return masks
 
 

@@ -209,7 +209,7 @@ The capped LCOH series is computed once at bootstrap for every year of the input
 - `calculate_regional_hydrogen_ceiling_country_level()` - Regional hydrogen price ceilings (percentile-based)
 - `apply_hydrogen_price_cap_country_level()` - Applies price caps with intraregional trade options
 
-**Note:** Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations.
+**Note:** `geospatial_calculations.py` holds the cell-level counterparts that price new sites' hydrogen. Both share the LCOH formula and resolve the electrolyser cost at the geo unit, then the country, so a change to either belongs in both. The ceilings differ: there a percentile of a region's cells, here of its countries' prices, with a geo unit taking its country's ceiling.
 
 ### Energy and Reductant Selection
 Scores each (metallic charge, reductant) combination on total cost and picks the reductant. See [Reductant Choice and Investment OPEX](reductant_choice_and_opex.md) for how the annual pick and the investment NPVs use them.
