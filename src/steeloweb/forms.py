@@ -285,6 +285,18 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
     )
 
+    iron_required_per_tonne_steel = forms.DecimalField(
+        label="Iron required per tonne of steel",
+        initial=1.2,
+        min_value=0.01,
+        max_value=10.0,
+        max_digits=4,
+        decimal_places=2,
+        required=False,
+        help_text="Tonnes of virgin iron needed per tonne of steel not made from scrap; scales the iron demand behind the future iron price (default 1.2)",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
     opening_balance_multiplier = forms.DecimalField(
         label="Plant opening balance multiplier",
         initial=1.0,
@@ -768,6 +780,7 @@ class ModelRunCreateForm(forms.ModelForm):
             "iron_market_clearing_share",
             "peg_iron_to_steel_price",
             "iron_to_steel_price_ratio",
+            "iron_required_per_tonne_steel",
             "opening_balance_multiplier",
             "construction_time",
             "consideration_time",

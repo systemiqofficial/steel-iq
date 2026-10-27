@@ -733,6 +733,11 @@ def create_modelrun(request):
                     if form.cleaned_data.get("iron_to_steel_price_ratio") is not None
                     else 0.8
                 ),
+                "iron_required_per_tonne_steel": float(
+                    form.cleaned_data.get("iron_required_per_tonne_steel")
+                    if form.cleaned_data.get("iron_required_per_tonne_steel") is not None
+                    else 1.2
+                ),
                 "opening_balance_multiplier": float(
                     form.cleaned_data.get("opening_balance_multiplier")
                     if form.cleaned_data.get("opening_balance_multiplier") is not None

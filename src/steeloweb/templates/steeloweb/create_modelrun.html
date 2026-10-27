@@ -71,6 +71,7 @@ function resetEconomicParameters() {
     document.getElementById('id_iron_price_buffer').value = '200.0';
     document.getElementById('id_peg_iron_to_steel_price').checked = false;
     document.getElementById('id_iron_to_steel_price_ratio').value = '0.8';
+    document.getElementById('id_iron_required_per_tonne_steel').value = '1.2';
     document.getElementById('id_opening_balance_multiplier').value = '1.0';
     // Trigger change to update ratio field disabled state
     document.getElementById('id_peg_iron_to_steel_price').dispatchEvent(new Event('change'));
@@ -1105,6 +1106,19 @@ document.head.appendChild(style);
                                         </div>
                                         {% endif %}
                                         <small class="form-text text-muted">{{ form.iron_to_steel_price_ratio.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.iron_required_per_tonne_steel.id_for_label }}" class="col-sm-3 col-form-label">{{ form.iron_required_per_tonne_steel.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.iron_required_per_tonne_steel }}
+                                        {% if form.iron_required_per_tonne_steel.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.iron_required_per_tonne_steel.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.iron_required_per_tonne_steel.help_text }}</small>
                                     </div>
                                 </div>
 
