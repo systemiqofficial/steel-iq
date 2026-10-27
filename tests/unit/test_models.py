@@ -287,7 +287,7 @@ def test_update_dynamic_costs_power_price_not_scaled():
     assert update_cmds, "Expected an UpdateDynamicCosts command to be enqueued."
     cmd = update_cmds[0]
     assert cmd.new_energy_costs["electricity"] == pytest.approx(0.05)
-    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(1.2)
+    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(1_200.0)  # 1.2 USD/kg raster value in USD/t
 
 
 def test_env_init(mock_cost_of_x_file, mock_tech_switches_file):

@@ -6813,7 +6813,9 @@ class PlantGroup:
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
-              current year.
+              current year. Hydrogen is the site's ``capped_lcoh`` (USD/kg) × ``T_TO_KG``, in USD/t
+              as every energy cost dict holds it and as opportunity creation writes it; a site with
+              no raster value keeps its stored no-subsidy price.
             - CAPEX and debt subsidies: set to the construction start year, which is the [current year
               + consideration time + announcement time - years considered] for considered BOs and
               [current year + 1] for announced BOs, floored at [current year + 1].
@@ -6938,7 +6940,7 @@ class PlantGroup:
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
-                    hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
+                    hydrogen_price = float(raw_hydrogen_price) * T_TO_KG if raw_hydrogen_price is not None else None
                     if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
                         hydrogen_price = no_sub.get("hydrogen")
 

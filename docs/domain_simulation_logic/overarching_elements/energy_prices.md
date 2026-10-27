@@ -59,9 +59,9 @@ See [Site prices for geospatial sites](../plant_agent_model/reductant_choice_and
 
 ### 4. Each year while considered
 
-The year-start hydrogen refresh writes the regional price into every furnace group, opportunities included. Later in the year, after the plant agent model, `PlantGroup.update_dynamic_costs_for_business_opportunities` re-reads the site's `power_price` and `capped_lcoh` from the year's rasters. It writes them as the opportunity's electricity and hydrogen without subsidy, with the energy subsidies of the operating start year on top. It writes `capped_lcoh` as read, in USD/kg, where the selection converted it to USD/t. Where a raster value is missing, it keeps the stored price. The yearly NPV re-valuation (`track_business_opportunities`) then passes the stored electricity and hydrogen without subsidy to the score series as site prices, with the current year as reference.
+The year-start hydrogen refresh writes the regional price into every furnace group, opportunities included. Later in the year, after the plant agent model, `PlantGroup.update_dynamic_costs_for_business_opportunities` re-reads the site's `power_price` and `capped_lcoh` from the year's rasters. It writes them as the opportunity's electricity and hydrogen without subsidy, with the energy subsidies of the operating start year on top. It converts `capped_lcoh` from USD/kg to USD/t, as the selection does. Where a raster value is missing, it keeps the stored price. The yearly NPV re-valuation (`track_business_opportunities`) then passes the stored electricity and hydrogen without subsidy to the score series as site prices, with the current year as reference.
 
-**Trace:** `greenfield_revalue` checks that the hydrogen written equals the site's `capped_lcoh` × 1,000, and keeps the site's raster prices of the year. On the current code the check fails for every opportunity, because of the unit above.
+**Trace:** `greenfield_revalue` checks that the hydrogen written equals the site's `capped_lcoh` × 1,000, and keeps the site's raster prices of the year.
 
 ### 5. Announcement
 

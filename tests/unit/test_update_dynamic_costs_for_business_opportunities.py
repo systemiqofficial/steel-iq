@@ -190,12 +190,12 @@ def test_update_costs_for_considered_plant_no_subsidies(
     assert cmd.new_capex == 1000.0  # From capex_dict_all_locs["Americas"]["EAF"]
     assert cmd.new_capex_no_subsidy == 1000.0
     assert cmd.new_energy_costs["electricity"] == pytest.approx(50.0)
-    assert cmd.new_energy_costs["hydrogen"] == 3.5
+    assert cmd.new_energy_costs["hydrogen"] == 3_500.0  # 3.5 USD/kg raster value in USD/t
     # No subsidies → all three dicts should be equal
     assert cmd.new_output_energy_costs["electricity"] == pytest.approx(50.0)
-    assert cmd.new_output_energy_costs["hydrogen"] == 3.5
+    assert cmd.new_output_energy_costs["hydrogen"] == 3_500.0
     assert cmd.new_energy_costs_no_subsidy["electricity"] == pytest.approx(50.0)
-    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == 3.5
+    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == 3_500.0
 
 
 def test_update_costs_for_announced_plant_no_subsidies(
@@ -586,7 +586,7 @@ def test_skip_furnace_group_with_no_cost_changes(
     When all scalar costs, energy_costs, and output_energy_costs match,
     no command should be emitted.
     """
-    energy = {"electricity": 50.0, "hydrogen": 3.5}
+    energy = {"electricity": 50.0, "hydrogen": 3_500.0}
     fg = get_furnace_group(
         fg_id="fg_no_change",
         tech_name="EAF",
@@ -921,7 +921,7 @@ def test_update_costs_with_energy_subsidies(
 
     plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
 
-    # Hydrogen subsidy: $1.0/kg absolute reduction
+    # Hydrogen subsidy: 1,000 USD/t absolute reduction
     h2_subsidy = Subsidy(
         scenario_name="test",
         iso3="USA",
@@ -930,7 +930,7 @@ def test_update_costs_with_energy_subsidies(
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=1.0,
+        subsidy_amount=1_000.0,
     )
 
     energy_subsidies = {
@@ -959,14 +959,14 @@ def test_update_costs_with_energy_subsidies(
     assert len(commands) == 1
     cmd = commands[0]
 
-    # Mock provides: electricity=50.0, hydrogen=3.5
-    # Hydrogen subsidy: $1.0 absolute → input=max(0, 3.5-1.0)=2.5, output=3.5+1.0=4.5
+    # Mock provides: electricity=50.0, hydrogen=3.5 USD/kg, written as 3,500 USD/t
+    # Hydrogen subsidy: 1,000 absolute → input=max(0, 3,500-1,000)=2,500, output=3,500+1,000=4,500
     assert cmd.new_energy_costs["electricity"] == pytest.approx(50.0)
-    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2.5)
+    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2_500.0)
     assert cmd.new_output_energy_costs["electricity"] == pytest.approx(50.0)
-    assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
+    assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4_500.0)
     assert cmd.new_energy_costs_no_subsidy["electricity"] == pytest.approx(50.0)
-    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3.5)
+    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3_500.0)
     # natural_gas should be carried through from base costs
     assert "natural_gas" in cmd.new_energy_costs
     assert "natural_gas" in cmd.new_output_energy_costs
@@ -1034,7 +1034,7 @@ def test_update_costs_with_province_scoped_energy_subsidies(
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=1.0,
+        subsidy_amount=1_000.0,
     )
 
     energy_subsidies = {
@@ -1062,10 +1062,10 @@ def test_update_costs_with_province_scoped_energy_subsidies(
 
     assert len(commands) == 1
     cmd = commands[0]
-    # Mock provides hydrogen=3.5; $1.0 absolute subsidy -> input 2.5, output 4.5
-    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2.5)
-    assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
-    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3.5)
+    # Mock provides hydrogen=3.5 USD/kg (3,500 USD/t); 1,000 USD/t absolute subsidy -> input 2,500, output 4,500
+    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2_500.0)
+    assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4_500.0)
+    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3_500.0)
 
 
 def _dri_opportunity_plant_group(status: str, historical_npvs: dict[int, float] | None = None) -> PlantGroup:
@@ -1117,7 +1117,7 @@ def _hydrogen_subsidy(start_year: int, end_year: int) -> dict:
                         technology_name="DRI",
                         cost_item="hydrogen",
                         subsidy_type="absolute",
-                        subsidy_amount=1.0,
+                        subsidy_amount=1_000.0,
                     )
                 ],
             },
@@ -1173,16 +1173,16 @@ def test_energy_subsidies_filtered_at_operating_start_year(
         "announced"
     ).update_dynamic_costs_for_business_opportunities(energy_subsidies=_hydrogen_subsidy(2026, 2029), **kwargs)
     assert len(expires_during_construction) == 1
-    # Mock provides hydrogen=3.5; the subsidy is dead by 2030, so the raw price stands
-    assert expires_during_construction[0].new_energy_costs["hydrogen"] == pytest.approx(3.5)
+    # Mock provides hydrogen=3.5 USD/kg; the subsidy is dead by 2030, so the site price of 3,500 USD/t stands
+    assert expires_during_construction[0].new_energy_costs["hydrogen"] == pytest.approx(3_500.0)
 
     live_at_operating_start = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
         energy_subsidies=_hydrogen_subsidy(2030, 2035), **kwargs
     )
     assert len(live_at_operating_start) == 1
-    # $1.0 absolute subsidy -> input 2.5, output 4.5
-    assert live_at_operating_start[0].new_energy_costs["hydrogen"] == pytest.approx(2.5)
-    assert live_at_operating_start[0].new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
+    # 1,000 USD/t absolute subsidy -> input 2,500, output 4,500
+    assert live_at_operating_start[0].new_energy_costs["hydrogen"] == pytest.approx(2_500.0)
+    assert live_at_operating_start[0].new_output_energy_costs["hydrogen"] == pytest.approx(4_500.0)
 
 
 def test_capex_subsidies_stay_filtered_at_construction_start_year(

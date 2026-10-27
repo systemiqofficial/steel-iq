@@ -2,7 +2,7 @@ import math
 from datetime import date
 
 from steelo.domain.commands import UpdateDynamicCosts
-from steelo.domain.constants import Volumes, Year
+from steelo.domain.constants import T_TO_KG, Volumes, Year
 from steelo.domain.models import (
     FurnaceGroup,
     Location,
@@ -70,6 +70,12 @@ def make_test_plant(furnace_group: FurnaceGroup) -> Plant:
 
 
 def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
+    """
+    The re-valuation writes the site's power price unscaled and its hydrogen price in USD/t.
+
+    The ``power_price`` raster is already in USD/kWh, as the energy cost dicts hold it; the
+    ``capped_lcoh`` raster is in USD/kg and must be multiplied by ``T_TO_KG``.
+    """
     fg = make_test_furnace_group()
     plant = make_test_plant(fg)
     plant_group = PlantGroup(plant_group_id="PG1", plants=[plant])
@@ -125,7 +131,7 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
     (cmd,) = commands_generated
     assert isinstance(cmd, UpdateDynamicCosts)
     assert math.isclose(cmd.new_energy_costs["electricity"], raw_power_price, rel_tol=1e-9)
-    assert math.isclose(cmd.new_energy_costs["hydrogen"], raw_hydrogen_price, rel_tol=1e-9)
+    assert math.isclose(cmd.new_energy_costs["hydrogen"], raw_hydrogen_price * T_TO_KG, rel_tol=1e-9)
     # Output and no_subsidy should match input when no subsidies active
     assert math.isclose(cmd.new_output_energy_costs["electricity"], raw_power_price, rel_tol=1e-9)
     assert math.isclose(cmd.new_energy_costs_no_subsidy["electricity"], raw_power_price, rel_tol=1e-9)
