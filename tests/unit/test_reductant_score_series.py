@@ -3,10 +3,13 @@
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pytest
+import xarray as xr
 
 from steelo.domain.calculate_costs import build_direct_ghg_lookup, score_reductants_for_business_cases
 from steelo.domain.models import (
+    CaptiveEnergy,
     CountryMapping,
     Environment,
     Location,
@@ -258,7 +261,9 @@ def test_override_reference_ignores_reference_year_subsidies(tmp_path: Path) -> 
     assert input_2027["electricity"] == pytest.approx(site_electricity * country_2027 / country_2025)
 
 
-def _reference_series(env, location, technology_name, shares, start, end, overrides=None, reference_year=None):
+def _reference_series(
+    env, location, technology_name, shares, start, end, overrides=None, reference_year=None, captive=None
+):
     """The series as computed without the memo: score each year from scratch."""
     business_case = env.dynamic_feedstocks[technology_name.lower()]
     ef_by_key = build_direct_ghg_lookup(
@@ -267,7 +272,12 @@ def _reference_series(env, location, technology_name, shares, start, end, overri
     scores, picks = [], []
     for year in range(int(start), int(end)):
         input_costs, output_costs = env.candidate_energy_costs_for_year(
-            location, technology_name, Year(year), overrides=overrides, override_reference_year=reference_year
+            location,
+            technology_name,
+            Year(year),
+            overrides=overrides,
+            override_reference_year=reference_year,
+            captive=captive,
         )
         year_scores = score_reductants_for_business_cases(
             business_case,
@@ -293,14 +303,18 @@ def _reference_series(env, location, technology_name, shares, start, end, overri
 def test_memoised_series_equals_fresh_computation_across_windows_shares_and_overrides(tmp_path: Path) -> None:
     env = _make_env(tmp_path, carbon_by_year={y: 100.0 for y in range(2025, 2031)})
     windows = [(2025, 2031), (2026, 2031), (2025, 2028), (2027, 2034), (2025, 2031)]  # overlapping and repeated
+    cheap = CaptiveEnergy(Year(2026), 0.85, 0.02, 0.05, 1.0, None)
     cases = [
-        ({"IO_low": 1.0}, None, None),
-        ({"IO_low": 0.4}, None, None),  # shares only weight the picked scores
-        ({"IO_low": 1.0}, {"electricity": 0.08}, Year(2025)),
-        ({"IO_low": 1.0}, {"electricity": 0.02}, Year(2025)),  # a different override is a different entry
+        ({"IO_low": 1.0}, None, None, None),
+        ({"IO_low": 0.4}, None, None, None),  # shares only weight the picked scores
+        ({"IO_low": 1.0}, {"electricity": 0.08}, Year(2025), None),
+        ({"IO_low": 1.0}, {"electricity": 0.02}, Year(2025), None),  # a different override is a different entry
+        ({"IO_low": 1.0}, None, None, cheap),
+        ({"IO_low": 1.0}, None, None, CaptiveEnergy(Year(2026), 0.85, 0.09, 0.05, 1.0, None)),  # another stack
+        ({"IO_low": 1.0}, None, None, CaptiveEnergy(Year(2026), 0.85, 0.02, 0.05, 1.0, 9.0)),  # same, on contract
     ]
     for start, end in windows:
-        for shares, overrides, reference_year in cases:
+        for shares, overrides, reference_year, captive in cases:
             series = env.reductant_score_series(
                 LOCATION,
                 "DRI",
@@ -309,9 +323,18 @@ def test_memoised_series_equals_fresh_computation_across_windows_shares_and_over
                 Year(end),
                 overrides=overrides,
                 override_reference_year=reference_year,
+                captive=captive,
             )
             scores, picks = _reference_series(
-                env, LOCATION, "DRI", shares, start, end, overrides=overrides, reference_year=reference_year
+                env,
+                LOCATION,
+                "DRI",
+                shares,
+                start,
+                end,
+                overrides=overrides,
+                reference_year=reference_year,
+                captive=captive,
             )
             assert series.scores == scores
             assert series.picks == picks
@@ -343,3 +366,173 @@ def test_memo_follows_in_place_changes_only_after_it_is_cleared(tmp_path: Path) 
     after = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031))
     assert after.scores == _reference_series(env, LOCATION, "DRI", SHARES, 2025, 2031)[0]
     assert after.scores != before.scores
+
+
+def _make_captive_env(tmp_path: Path, grid_by_year: dict[int, float], site_ceiling: float) -> Environment:
+    """
+    An environment pricing one new site at (0, 0) in AAA as a captive system, 2025 to 2040.
+
+    Args:
+        tmp_path: Run folder.
+        grid_by_year: AAA's grid price per year (USD/kWh).
+        site_ceiling: The region's site hydrogen ceiling in every year (USD/kg).
+
+    Returns:
+        The environment: the cell's LCOE falls from 60 USD/MWh in 2025 to 48 in 2028 and 40 in 2035; the
+        electrolyser uses 0.05 MWh/kg at 1.0 USD/kg up to 2028 and less, at lower cost, after it.
+    """
+    years = [Year(y) for y in range(2025, 2041)]
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2035),
+        master_excel_path=Path("test.xlsx"),
+        output_dir=tmp_path,
+        geo_config=GeoConfig(included_power_mix="85% baseload + 15% grid"),
+    )
+    tech_switches_csv = tmp_path / "tech_switches_allowed.csv"
+    tech_switches_csv.write_text("origin,DRI\nDRI,YES\n", encoding="utf-8")
+    env = Environment(config=config, tech_switches_csv=tech_switches_csv)
+    env.year = Year(2025)
+    env.input_costs = {"AAA": {year: {"electricity": grid_by_year[int(year)], "natural_gas": 0.03} for year in years}}
+    env.hydrogen_efficiency = {year: 0.05 if year <= 2028 else 0.045 for year in years}
+    env.hydrogen_capex_opex = {"AAA": {year: 1.0 if year <= 2028 else 0.7 for year in years}}
+    env.initiate_country_mappings(
+        country_mappings=[
+            CountryMapping(
+                country="Aland",
+                iso2="AA",
+                iso3="AAA",
+                irena_name="Aland",
+                region_for_outputs="TestRegion",
+                ssp_region="TestRegion",
+                tiam_ucl_region="TestRegion",
+            )
+        ]
+    )
+    env.initiate_baseload_lcoe_by_geo_key({year: {"AAA": 0.05} for year in years})
+    env.initiate_capped_hydrogen_costs_by_year()
+    env.initiate_baseload_lcoe_grid(
+        xr.DataArray(
+            np.array([[[60.0]], [[48.0]], [[40.0]]], dtype=np.float32),
+            coords={"year": [2025, 2028, 2035], "lat": [0.0], "lon": [0.0]},
+            dims=("year", "lat", "lon"),
+            name="lcoe",
+        )
+    )
+    env.initiate_site_hydrogen_ceilings({year: {"TestRegion": site_ceiling} for year in years}, {"AAA": "TestRegion"})
+    return env
+
+
+def _operating_prices(env: Environment, captive: CaptiveEnergy, years: range) -> list[dict[str, float]]:
+    """The unsubsidised prices the NPV's score series reads for a candidate in each operating year."""
+    return [env.candidate_energy_costs_for_year(LOCATION, "DRI", Year(year), captive=captive)[0] for year in years]
+
+
+def test_captive_site_is_valued_at_its_construction_start_lcoe_with_a_flat_electrolyser(tmp_path: Path) -> None:
+    """A site found in 2025 and built from 2028 pays 0.85 × L(2028) + 0.15 × g, and e(2028) and k(2028), every year.
+
+    Notes:
+        The cell's LCOE falls from 60 to 48 USD/MWh between the selection year and the construction start, and
+        the grid is flat at 0.08 USD/kWh. Neither the later LCOE nor the later, cheaper electrolyser reaches the
+        operating years 2032 to 2051.
+    """
+    env = _make_captive_env(tmp_path, {y: 0.08 for y in range(2025, 2041)}, site_ceiling=10.0)
+
+    captive = env.captive_energy_at(LOCATION, Year(2028))
+    prices = _operating_prices(env, captive, range(2032, 2052))
+
+    electricity = 0.85 * 0.048 + 0.15 * 0.08
+    assert captive.lcoe == pytest.approx(0.048)
+    assert captive.hydrogen_contract is None
+    assert [p["electricity"] for p in prices] == pytest.approx([electricity] * 20)
+    assert [p["hydrogen"] for p in prices] == pytest.approx([(0.05 * 1000 * electricity + 1.0) * 1000] * 20)
+
+
+def test_captive_site_above_the_ceiling_is_valued_at_the_ceiling_flat(tmp_path: Path) -> None:
+    """A site whose own price in 2028 (3.64 USD/kg) is above the ceiling of 2028 (3.0) pays 3,000 USD/t for life."""
+    env = _make_captive_env(tmp_path, {y: 0.08 + 0.005 * max(y - 2028, 0) for y in range(2025, 2041)}, 3.0)
+
+    captive = env.captive_energy_at(LOCATION, Year(2028))
+    prices = _operating_prices(env, captive, range(2032, 2052))
+
+    assert captive.hydrogen_contract == pytest.approx(3.0)
+    assert [p["hydrogen"] for p in prices] == pytest.approx([3000.0] * 20)
+
+
+def test_captive_site_electricity_moves_by_the_grid_share_of_a_rising_grid(tmp_path: Path) -> None:
+    """A grid rising by 0.005 USD/kWh a year moves the site's electricity by 0.15 × 0.005 a year, its hydrogen with it."""
+    grid = {y: 0.08 + 0.005 * max(y - 2028, 0) for y in range(2025, 2041)}
+    env = _make_captive_env(tmp_path, grid, site_ceiling=10.0)
+
+    captive = env.captive_energy_at(LOCATION, Year(2028))
+    prices = _operating_prices(env, captive, range(2032, 2041))
+
+    steps = [later["electricity"] - earlier["electricity"] for earlier, later in zip(prices, prices[1:])]
+    assert steps == pytest.approx([0.15 * 0.005] * 8)
+    assert [p["hydrogen"] for p in prices] == pytest.approx(
+        [(0.05 * 1000 * (0.85 * 0.048 + 0.15 * grid[y]) + 1.0) * 1000 for y in range(2032, 2041)]
+    )
+
+
+def test_captive_score_series_differs_from_the_site_price_scaled_from_the_selection_year(tmp_path: Path) -> None:
+    """The NPV's score series priced from the stack equals the scores of the stack's prices, not of today's price."""
+    env = _make_captive_env(tmp_path, {y: 0.08 for y in range(2025, 2041)}, site_ceiling=10.0)
+    env.initiate_dynamic_feedstocks(
+        [_feedstock("natural_gas", {"natural_gas": 10.0}), _feedstock("hydrogen", {"hydrogen": 0.055})]
+    )
+    env.initiate_technology_emission_factors([_ef("natural_gas", 1.4), _ef("hydrogen", 0.1)])
+    env.carbon_costs = {"AAA": {Year(y): 300.0 for y in range(2025, 2041)}}  # hydrogen wins, so its price counts
+    captive = env.captive_energy_at(LOCATION, Year(2028))
+
+    series = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2032), Year(2040), captive=captive)
+
+    assert series.picks == ["hydrogen"] * 8
+    assert series.scores == _reference_series(env, LOCATION, "DRI", SHARES, 2032, 2040, captive=captive)[0]
+    selection_price = 0.85 * 0.060 + 0.15 * 0.08
+    scaled = env.reductant_score_series(
+        LOCATION,
+        "DRI",
+        SHARES,
+        Year(2032),
+        Year(2040),
+        overrides={"electricity": selection_price, "hydrogen": (0.05 * 1000 * selection_price + 1.0) * 1000},
+        override_reference_year=Year(2025),
+    )
+    assert series.scores != pytest.approx(scaled.scores)
+
+
+def test_captive_stack_raises_for_a_cell_without_a_finite_lcoe(tmp_path: Path) -> None:
+    """A site whose cell has no finite LCOE in its lock year cannot lock its power cost and stops the run."""
+    env = _make_captive_env(tmp_path, {y: 0.08 for y in range(2025, 2041)}, site_ceiling=10.0)
+    assert env.baseload_lcoe_grid is not None
+    env.baseload_lcoe_grid.values[1, 0, 0] = np.nan
+
+    with pytest.raises(ValueError, match="No finite baseload LCOE"):
+        env.captive_energy_at(LOCATION, Year(2028))
+
+
+def test_captive_stack_raises_for_a_site_without_an_electrolyser_cost_row(tmp_path: Path) -> None:
+    """A site whose geo key and country have no electrolyser cost row stops the run."""
+    env = _make_captive_env(tmp_path, {y: 0.08 for y in range(2025, 2041)}, site_ceiling=10.0)
+    env.hydrogen_capex_opex = {"BBB": env.hydrogen_capex_opex["AAA"]}
+
+    with pytest.raises(ValueError, match="No electrolyser cost row"):
+        env.captive_energy_at(LOCATION, Year(2028))
+
+
+def test_captive_stack_holds_the_last_data_year_past_the_horizon(tmp_path: Path) -> None:
+    """A lock year past the electrolyser, LCOE and ceiling data takes their last year's values."""
+    env = _make_captive_env(tmp_path, {y: 0.08 for y in range(2025, 2041)}, site_ceiling=10.0)
+
+    assert env.captive_energy_at(LOCATION, Year(2043)) == CaptiveEnergy(Year(2043), 0.85, 0.040, 0.045, 0.7, None)
+
+
+def test_captive_stack_under_grid_only_has_no_baseload_share(tmp_path: Path) -> None:
+    """Under "Grid only" the stack carries coverage 0 and LCOE 0, so the site pays the grid for its power."""
+    env = _make_env(tmp_path)
+    env.initiate_site_hydrogen_ceilings({year: {"TestRegion": 10.0} for year in YEARS}, {"AAA": "TestRegion"})
+
+    captive = env.captive_energy_at(LOCATION, Year(2027))
+
+    assert (captive.coverage, captive.lcoe) == (0.0, 0.0)
+    assert captive.electricity(0.07) == pytest.approx(0.07)

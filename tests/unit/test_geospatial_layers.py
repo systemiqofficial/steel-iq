@@ -612,6 +612,7 @@ class TestGeospatialLayers:
                 baseload_coverage=0.85,
                 geo_config=mock_geo_config,
                 geo_paths=mock_geo_paths,
+                hydrogen_ceiling={"Western Europe": 8.0, "United Kingdom": 9.0, "Eastern Europe": 7.0},
             )
 
         # Check output variable in dataset

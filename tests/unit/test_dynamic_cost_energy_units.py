@@ -4,6 +4,7 @@ from datetime import date
 from steelo.domain.commands import UpdateDynamicCosts
 from steelo.domain.constants import T_TO_KG, Volumes, Year
 from steelo.domain.models import (
+    CaptiveEnergy,
     FurnaceGroup,
     Location,
     Plant,
@@ -13,6 +14,18 @@ from steelo.domain.models import (
     Technology,
     TimeFrame,
 )
+
+
+def _stack_at(location, year):
+    """The stack the re-valuation locks: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 class FakeDataArray:
@@ -123,6 +136,7 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.01,
         avg_utilization={},
+        captive_energy_at=_stack_at,
         capex_subsidies={},
         debt_subsidies={},
     )

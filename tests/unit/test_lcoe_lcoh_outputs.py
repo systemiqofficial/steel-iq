@@ -318,7 +318,7 @@ def test_ceiling_is_empty_for_an_area_spanning_two_trade_regions(tmp_path):
 
 
 def test_cell_ceiling_is_the_value_each_cell_is_capped_against():
-    """apply_hydrogen_price_cap stores the trade-adjusted ceiling per cell."""
+    """apply_hydrogen_price_cap stores the trade-adjusted ceiling effective_hydrogen_ceilings gives per cell."""
     ds = xr.Dataset(
         {
             "lcoh": (("lat", "lon"), np.array([[2.0, 6.0, 5.0]])),
@@ -332,7 +332,9 @@ def test_cell_ceiling_is_the_value_each_cell_is_capped_against():
         long_dist_pipeline_transport_cost=0.5,
     )
 
-    result = geospatial_calculations.apply_hydrogen_price_cap(ds, {"A": 4.0, "B": 3.0}, config)
+    result = geospatial_calculations.apply_hydrogen_price_cap(
+        ds, geospatial_calculations.effective_hydrogen_ceilings({"A": 4.0, "B": 3.0}, config)
+    )
 
     np.testing.assert_allclose(result["hydrogen_ceiling"].values, [[3.5, 3.5, 3.0]])  # A: min(4, 3 + 0.5)
     np.testing.assert_allclose(result["capped_lcoh"].values, [[2.0, 3.5, 3.0]])

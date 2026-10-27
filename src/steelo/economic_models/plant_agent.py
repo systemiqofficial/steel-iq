@@ -216,6 +216,7 @@ class GeospatialModel:
                     iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                     global_risk_free_rate=bus.env.config.global_risk_free_rate,
                     avg_utilization=bus.env.avg_utilization,
+                    captive_energy_at=bus.env.captive_energy_at,
                     capex_subsidies=bus.env.capex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
                     energy_subsidies=bus.env.energy_subsidies,
@@ -292,6 +293,7 @@ class GeospatialModel:
                 dynamic_feedstocks=bus.env.dynamic_feedstocks,
                 get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                 reductant_score_series=bus.env.reductant_score_series,
+                captive_energy_at=bus.env.captive_energy_at,
                 global_risk_free_rate=bus.env.config.global_risk_free_rate,
                 tech_to_product={
                     tech: product

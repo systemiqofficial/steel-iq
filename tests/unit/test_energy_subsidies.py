@@ -2,8 +2,20 @@
 
 import pytest
 from steelo.domain import calculate_costs
-from steelo.domain.models import Subsidy, Year
+from steelo.domain.models import CaptiveEnergy, Subsidy, Year
 from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def _stub_series(location, tech, output_shares, start, end, **kwargs):
@@ -808,6 +820,7 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
         plant_lifetime=20,
         construction_time=2,
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.03,
         capex_subsidies={},
@@ -1001,6 +1014,7 @@ def test_prepare_cost_data_filters_energy_subsidies_at_operating_start_year():
         plant_lifetime=20,
         construction_time=2,
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         iso3_to_region_map={"USA": "Americas"},
         global_risk_free_rate=0.03,
         capex_subsidies={},

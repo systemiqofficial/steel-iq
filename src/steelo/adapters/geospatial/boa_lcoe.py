@@ -172,17 +172,73 @@ def lcoe_for_year(ds: xr.Dataset, year: int) -> xr.DataArray:
         The LCOE (lat, lon) in USD per MWh delivered, without a ``year`` coordinate.
 
     Notes:
-        A year in the file is read as it is; a year between two of the file's years is interpolated
-        linearly; a year outside the file's span takes the nearest year's values, with one warning.
+        The year rule is ``_lcoe_of_year``'s; a year outside the file's span logs one warning.
     """
     logger = logging.getLogger(f"{__name__}.lcoe_for_year")
     years = [int(y) for y in ds["year"].values]
     effective_year = min(max(year, min(years)), max(years))
     if effective_year != year:
         logger.warning(f"[BOA LCOE] The LCOE file covers {min(years)} to {max(years)}; {year} reuses {effective_year}.")
+    return _lcoe_of_year(ds["lcoe"], year)
+
+
+def load_lcoe_grid(path: Path, coverage: float) -> xr.DataArray:
+    """
+    Every year's LCOE grid of a promoted file, read into memory.
+
+    Args:
+        path: The file, as ``pick_lcoe_file`` returns it.
+        coverage: The baseload coverage being priced.
+
+    Returns:
+        The ``lcoe`` variable (year, lat, lon) in USD per MWh delivered, loaded, with the file closed.
+
+    Raises:
+        ValueError: As ``open_lcoe_file``.
+    """
+    with open_lcoe_file(path, coverage) as ds:
+        return ds["lcoe"].load()
+
+
+def lcoe_at_cell(grid: xr.DataArray, lat: float, lon: float, year: int) -> float:
+    """
+    The LCOE of one cell for a system built in a year.
+
+    Args:
+        grid: The LCOE (year, lat, lon) in USD per MWh delivered, as ``load_lcoe_grid`` returns it.
+        lat: The cell's latitude, one of the grid's.
+        lon: The cell's longitude, one of the grid's.
+        year: Investment year.
+
+    Returns:
+        The cell's LCOE in USD per MWh delivered, by ``lcoe_for_year``'s year rule.
+
+    Raises:
+        KeyError: If the grid has no cell at exactly (lat, lon).
+
+    Notes:
+        Logs nothing for a year outside the file's span; the yearly raster already warns for it.
+    """
+    return float(_lcoe_of_year(grid.sel(lat=lat, lon=lon), year))
+
+
+def _lcoe_of_year(lcoe: xr.DataArray, year: int) -> xr.DataArray:
+    """
+    The LCOE of a year from an array with a ``year`` dimension.
+
+    Args:
+        lcoe: LCOE with a ``year`` dimension, a whole grid or one cell.
+        year: Investment year.
+
+    Returns:
+        ``lcoe`` without its ``year`` coordinate: a year it holds as it is, a year between two of its years
+        interpolated linearly, a year outside its span at the nearest year.
+    """
+    years = [int(y) for y in lcoe["year"].values]
+    effective_year = min(max(year, min(years)), max(years))
     if effective_year in years:
-        return ds["lcoe"].sel(year=effective_year).drop_vars("year")
-    return ds["lcoe"].interp(year=effective_year, method="linear").drop_vars("year")
+        return lcoe.sel(year=effective_year).drop_vars("year")
+    return lcoe.interp(year=effective_year, method="linear").drop_vars("year")
 
 
 def _attr(attrs: dict, name: str) -> str:

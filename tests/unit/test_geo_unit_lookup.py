@@ -12,7 +12,19 @@ import geopandas
 from shapely.geometry import box
 
 from steelo.adapters.geospatial import geo_unit_lookup
-from steelo.domain.models import PlantGroup
+from steelo.domain.models import CaptiveEnergy, PlantGroup
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def _write_fixtures(tmp_path):
@@ -134,6 +146,7 @@ def _minimal_cost_data(site_id, tech):
                     "railway_cost": 0.0,
                     "energy_costs": {"electricity": 0.05},
                     "output_shares": {"scrap": 1.0},
+                    "captive_energy": _stack_at(None, 2028),
                 },
             },
         },

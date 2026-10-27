@@ -4,6 +4,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 from steelo.domain.models import (
+    CaptiveEnergy,
     Environment,
     BiomassAvailability,
     ProductionThreshold,
@@ -18,6 +19,18 @@ from steelo.domain import calculate_costs
 import pytest
 from steelo.domain.constants import Volumes
 from steelo.simulation import SimulationConfig
+
+
+def _stack_at(location, year):
+    """The stack the re-valuation locks: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def create_test_environment(tech_switches_csv=None):
@@ -282,6 +295,7 @@ def test_update_dynamic_costs_power_price_not_scaled():
         iso3_to_region_map={"USA": "NAM"},
         global_risk_free_rate=0.03,
         avg_utilization={},
+        captive_energy_at=_stack_at,
     )
 
     assert update_cmds, "Expected an UpdateDynamicCosts command to be enqueued."

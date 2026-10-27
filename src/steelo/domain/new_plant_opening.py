@@ -4,7 +4,7 @@ import random
 import numpy as np
 from typing import Any, Callable, TypedDict
 
-from steelo.domain.models import Location, Subsidy, compose_geo_key
+from steelo.domain.models import CaptiveEnergy, Location, Subsidy, compose_geo_key
 from steelo.domain.constants import Year, T_TO_KG
 from steelo.utilities import energy_trace
 
@@ -131,6 +131,7 @@ def prepare_cost_data_for_business_opportunity(
         tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
     ],
     reductant_score_series: Callable[..., Any],
+    captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
     iso3_to_region_map: dict[str, str],
     global_risk_free_rate: float,
     capex_subsidies: dict[str, dict[str, list[Subsidy]]],
@@ -162,6 +163,10 @@ def prepare_cost_data_for_business_opportunity(
         fopex_all_locs_techs: Nested dictionary with fixed OPEX values per country and technology (iso3 -> tech -> fopex)
         steel_plant_capacity: Capacity of the steel plant in tons per year
         get_bom_from_avg_boms: Function to retrieve the bill of materials and utilization rate for a given technology and energy costs
+        reductant_score_series: ``Environment.reductant_score_series``, the year-wise score the NPV is built on
+        captive_energy_at: ``(location, lock year) -> CaptiveEnergy`` (``Environment.captive_energy_at``): the
+            site's power and electrolyser stack locked at ``target_year``, which prices the site's electricity and
+            hydrogen in every operating year of the NPV
         iso3_to_region_map: Mapping from ISO3 country codes to regions for CAPEX lookup
         global_risk_free_rate: Global risk-free rate used in debt subsidy calculations
         capex_subsidies: Nested dictionary with CAPEX subsidies per geography and technology (geo_key -> tech -> list
@@ -181,6 +186,7 @@ def prepare_cost_data_for_business_opportunity(
             tech -> cost_type -> cost) with:
             - railway_cost: railway cost for location
             - energy_costs: dict with energy costs for location. Electricity and hydrogen costs are taken from the own power parc.
+            - captive_energy: the site's stack locked at target_year, which the NPV prices the site with
             - cost_of_equity: cost of equity for location (with subsidies, if applicable)
             - cost_of_debt: cost of debt for location (with subsidies, if applicable)
             - capex: CAPEX for location and technology (with subsidies, if applicable)
@@ -249,13 +255,14 @@ def prepare_cost_data_for_business_opportunity(
                 for carrier in energy_costs_site:
                     if not carrier.startswith("co2"):
                         energy_costs_site[carrier] = abs(energy_costs_site[carrier])
+                captive = captive_energy_at(site_location, target_year)
                 energy_trace.greenfield_select(
                     current_year,
                     site,
-                    site_geo_key,
+                    site_location,
                     energy_costs_site,
                     year_costs_for_site,
-                    target_year,
+                    captive,
                     construction_time,
                 )
 
@@ -326,6 +333,7 @@ def prepare_cost_data_for_business_opportunity(
                 cost_data[prod][site_id][tech]["output_costs"] = output_costs_tech  # type: ignore[assignment]
                 cost_data[prod][site_id][tech]["no_subsidy_prices"] = no_subsidy_prices_tech  # type: ignore[assignment]
                 cost_data[prod][site_id][tech]["cost_of_equity"] = cost_of_equity  # type: ignore[assignment]
+                cost_data[prod][site_id][tech]["captive_energy"] = captive  # type: ignore[assignment]
 
                 # Add average BOM and utilization rate per technology if available
                 bom_result = get_bom_from_avg_boms(
@@ -345,22 +353,15 @@ def prepare_cost_data_for_business_opportunity(
                     missing_critical_fields.append("reductant")
 
                 if bill_of_materials is not None and reductant is not None:
-                    # Year-wise reductant-optimised score at the site; the site's own pixel
-                    # power/hydrogen prices are trajectory-scaled from the country series.
-                    # TODO: temporary — extract the exact geo point's own year series from
-                    # the rasters instead of ratio-scaling the current-year pixel prices.
-                    site_overrides = {
-                        "electricity": site["power_price"],
-                        "hydrogen": site["capped_lcoh"] * T_TO_KG,
-                    }
+                    # Year-wise reductant-optimised score at the site, priced as a system built at its
+                    # construction start
                     score_series = reductant_score_series(
                         site_location,
                         tech,
                         output_shares,
                         Year(target_year + construction_time),
                         Year(target_year + construction_time + plant_lifetime),
-                        overrides=site_overrides,
-                        override_reference_year=current_year,
+                        captive=captive,
                     )
                     committed_reductant = score_series.picks[0] if score_series.picks else ""
                     if committed_reductant != reductant:
@@ -488,6 +489,7 @@ def validate_and_clean_cost_data(
             "no_subsidy_prices",
             "bom",
             "output_shares",
+            "captive_energy",
         ]
     )
 
@@ -587,6 +589,10 @@ def validate_and_clean_cost_data(
                                         raise ValueError(
                                             f"bom['{bom_item}']['{sub_key}'] must be float or dict, got {type(sub_value).__name__}: {sub_value}"
                                         )
+                        if not isinstance(tech_data["captive_energy"], CaptiveEnergy):
+                            raise ValueError(
+                                f"captive_energy must be CaptiveEnergy, got {type(tech_data['captive_energy']).__name__}"
+                            )
                         # Store complete and valid tech data
                         complete_techs[tech] = tech_data
                     # Raise ValueError for invalid data types

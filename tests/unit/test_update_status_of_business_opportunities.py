@@ -2,10 +2,20 @@
 
 import pytest
 from unittest.mock import patch
-from steelo.domain.models import Subsidy, Location, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Subsidy, Location, PlantGroup
 from steelo.domain.commands import UpdateFurnaceGroupStatus
 from steelo.devdata import get_furnace_group, get_plant, PointInTime, TimeFrame, Year
 from steelo.domain.calculate_costs import ReductantScoreSeries
+
+# The stack an opportunity's NPV is priced with
+SITE_STACK = CaptiveEnergy(
+    lock_year=Year(2028),
+    coverage=0.85,
+    lcoe=0.04,
+    electrolyser_use=0.05,
+    electrolyser_cost=1.0,
+    hydrogen_contract=None,
+)
 
 
 def _stub_series(location, tech, output_shares, start, end, **kwargs):
@@ -53,7 +63,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of positive NPV already
         fg.historical_npv_business_opportunities = {
@@ -106,7 +116,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of positive NPV
         fg.historical_npv_business_opportunities = {
@@ -156,7 +166,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of negative NPV
         fg.historical_npv_business_opportunities = {
@@ -207,7 +217,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with mixed NPVs
         fg.historical_npv_business_opportunities = {
@@ -255,7 +265,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with only 1 year (need 3 for consideration_time=3)
         fg.historical_npv_business_opportunities = {
@@ -302,7 +312,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of data
         fg.historical_npv_business_opportunities = {
@@ -350,7 +360,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
         fg.bill_of_materials = None  # Missing BOM
 
         # Initialize with 2 years of data
@@ -399,7 +409,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of data
         fg.historical_npv_business_opportunities = {
@@ -449,7 +459,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of positive NPV
         fg.historical_npv_business_opportunities = {
@@ -512,7 +522,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with empty historical NPVs (should trigger error)
         fg.historical_npv_business_opportunities = {}
@@ -554,7 +564,7 @@ class TestTrackBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
 
         # Set to None
         fg.historical_npv_business_opportunities = None
@@ -945,7 +955,7 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
         fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_considered", furnace_groups=[fg])
@@ -1039,7 +1049,7 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg_considered.railway_cost = 0.0
         fg_considered.chosen_reductant = "scrap"
         fg_considered.output_shares = {"scrap": 1.0}
-        fg_considered.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg_considered.captive_energy = SITE_STACK
         fg_considered.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_both", furnace_groups=[fg_announced, fg_considered])
@@ -1247,7 +1257,7 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
         fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_test", furnace_groups=[fg])
@@ -1323,7 +1333,7 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
         fg.output_shares = {"scrap": 1.0}
-        fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+        fg.captive_energy = SITE_STACK
         fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_subsidy", furnace_groups=[fg])

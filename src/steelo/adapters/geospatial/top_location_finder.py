@@ -15,12 +15,13 @@ from steelo.adapters.geospatial.geospatial_layers import (
     add_feasibility_mask,
     add_power_price,
     add_capped_hydrogen_price,
+    site_hydrogen_ceilings,
     add_capex_proxy_for_steel_and_iron_making_tech,
     add_cost_of_infrastructure,
     add_transportation_costs,
     add_landtype_factor,
 )
-from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
+from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage, tiam_ucl_region_by_iso3
 from steelo.adapters.geospatial.priority_kpi import calculate_priority_location_kpi
 
 
@@ -67,6 +68,8 @@ def get_candidate_locations_for_opening_new_plants(
           which is independent from the user input.
         - Per-year, input-independent: geo_key, the cell's sub-national geo unit where geo_hierarchy.json declares
           one, else its iso3; grid prices and electrolyser costs resolve at it.
+        - Once, in the first year: each region's effective hydrogen ceiling for every year a new site can lock
+          (``Environment.site_hydrogen_ceilings``), which each year's hydrogen price is capped at.
         - Dynamic, PAM-independent: power price (both baseload and grid), hydrogen price, and some transportation costs
           (iron feedstock and steel demand). The hydrogen price is not used for the priority location KPI, but needed
           for the full NPV calculation later on.
@@ -106,6 +109,24 @@ def get_candidate_locations_for_opening_new_plants(
         # Sub-national geo units, so grid prices and electrolyser costs resolve where the master has rows
         global_ds["geo_key"] = hydrogen_lcoe.build_geo_key_grid(global_ds["iso3"], geo_paths)
 
+    with time_step("site_hydrogen_ceilings", geo_timer_logger, skip=bool(env.site_hydrogen_ceilings)):
+        # Once, in the first step: the ceiling of every year a new site can lock, which every yearly raster caps at
+        if not env.site_hydrogen_ceilings:
+            env.initiate_site_hydrogen_ceilings(
+                site_hydrogen_ceilings(
+                    global_ds,
+                    env.site_hydrogen_ceiling_years(),
+                    env.input_costs,
+                    baseload_coverage,
+                    env.baseload_lcoe_grid,
+                    env.hydrogen_efficiency,
+                    env.hydrogen_capex_opex,
+                    env.country_mappings,
+                    geo_config,
+                ),
+                tiam_ucl_region_by_iso3(env.country_mappings),
+            )
+
     with time_step("add_feasibility_mask", geo_timer_logger):
         # Always added; required as a basis for other layers
         global_ds = add_feasibility_mask(global_ds, geo_config, geo_paths=geo_paths)
@@ -135,6 +156,7 @@ def get_candidate_locations_for_opening_new_plants(
             baseload_coverage,
             geo_config,
             geo_paths=geo_paths,
+            hydrogen_ceiling=env.site_hydrogen_ceilings_for_year(env.year),
             start_year=int(env.config.start_year),
             end_year=int(env.config.end_year),
         )

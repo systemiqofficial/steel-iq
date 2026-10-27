@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain.commands import UpdateDynamicCosts
+from steelo.domain.models import CaptiveEnergy, Year
 from steelo.service_layer.handlers import update_dynamic_costs
 
 
@@ -29,10 +30,18 @@ class _FakeUnitOfWork:
 
 
 def test_handler_applies_all_command_fields_to_furnace_group():
-    """Costs, energy dicts and utilisation all land on the targeted furnace group."""
+    """Costs, energy dicts, utilisation and the stack all land on the targeted furnace group."""
     fg = get_furnace_group(fg_id="fg_dyn", tech_name="EAF", capacity=100, utilization_rate=0.7)
     plant = get_plant(plant_id="plant_dyn", furnace_groups=[fg])
     uow = _FakeUnitOfWork(plant)
+    stack = CaptiveEnergy(
+        lock_year=Year(2029),
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
     cmd = UpdateDynamicCosts(
         plant_id="plant_dyn",
@@ -45,6 +54,7 @@ def test_handler_applies_all_command_fields_to_furnace_group():
         new_output_energy_costs={"electricity": 46.0},
         new_energy_costs_no_subsidy={"electricity": 50.0},
         new_utilization_rate=0.85,
+        new_captive_energy=stack,
     )
 
     update_dynamic_costs(cmd, uow, env=MagicMock())
@@ -57,4 +67,5 @@ def test_handler_applies_all_command_fields_to_furnace_group():
     assert fg.output_energy_costs == {"electricity": 46.0}
     assert fg.energy_costs_no_subsidy == {"electricity": 50.0}
     assert fg.utilization_rate == 0.85
+    assert fg.captive_energy is stack
     assert uow.committed
