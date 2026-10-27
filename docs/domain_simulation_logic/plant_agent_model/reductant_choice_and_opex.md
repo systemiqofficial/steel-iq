@@ -76,11 +76,11 @@ The series lets an NPV follow changing prices over the asset life. A DRI plant c
 
 ### Site prices for geospatial sites
 
-Sites from the geospatial model own their power system and electrolyser, so their power and hydrogen prices differ from the country average. A new-plant opportunity's NPV, at selection and at each yearly re-valuation, prices the site as a system built at its expected construction start b. The series takes the site's stack (`CaptiveEnergy`, built by `Environment.captive_energy_at`): the coverage c of the power mix, the LCOE L of the site's cell for a system built in b, the electrolyser's electricity use e(b) and cost k(b), and the region's hydrogen ceiling of b as a contract when the site's own price in b is above it. Each year t then reads the grid price g(t) at the site's geo key:
+Sites from the geospatial model own their power system and electrolyser, so their power and hydrogen prices differ from the country average. A new-plant opportunity's NPV, at selection and at each yearly re-valuation, prices the site as a system built at its expected construction start b. The series takes the site's stack (`CaptiveEnergy`, built by `Environment.captive_energy_at`): the coverage c of the power mix, the LCOE L of the site's cell for a system built in b, the electrolyser's electricity use e(b) in MWh/kg and cost k(b) in USD/kg, and the region's hydrogen ceiling of b as a contract when the site's own price in b is above it. Each year t then reads the grid price g(t) at the site's geo key:
 
 ```
 electricity in year t = c × L(site, b) + (1 − c) × g(t)
-hydrogen in year t    = e(b) × electricity in year t + k(b), or the contract price, flat
+hydrogen in year t    = e(b) × 1,000 × electricity in year t + k(b), or the contract price, flat
 ```
 
 The grid share follows the grid; nothing else moves after b. Candidate subsidies for year t apply after these prices. The memo keys a site's entries on its stack, so two stacks never share one.

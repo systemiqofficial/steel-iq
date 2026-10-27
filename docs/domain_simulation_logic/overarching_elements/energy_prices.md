@@ -8,6 +8,7 @@ LCOE below is the levelised cost of electricity of a site's own baseload supply,
 
 - **Electricity**: USD/kWh in the site rasters and in furnace groups. The baseload LCOE files hold USD/MWh and are converted on reading.
 - **Hydrogen**: USD/kg in the site raster and in the country series; USD/t in furnace groups and in the cost data of business opportunities, which multiply the USD/kg price by 1,000.
+- **Electrolyser use**: MWh/kg (the master's `Hydrogen efficiency`), so a price per kWh is multiplied by 1,000 to give the power cost per kg. The electrolyser's capital and operating cost is in USD/kg.
 
 ## Existing Plants
 
@@ -52,13 +53,13 @@ The priority location key performance indicator (KPI) ranks cells by an outgoing
 
 - **Power:** the coverage c of the power mix and the LCOE of the site's cell for a system built in b, read from the LCOE file, which bootstrap loads into memory once (`boa_lcoe.load_lcoe_grid`), by the year rule of the raster (`boa_lcoe.lcoe_at_cell`). Under "Grid only" and "Not included", c and the LCOE are 0.
 - **Electrolyser:** its electricity use e(b) and its capital and operating cost k(b) at the site's geo key, else its country.
-- **Contract:** the region's stored ceiling of b (step 1), held as a contract when the site's own hydrogen price in b, e(b) × (c × L + (1 − c) × g(b)) + k(b), is above it.
+- **Contract:** the region's stored ceiling of b (step 1), held as a contract when the site's own hydrogen price in b, e(b) × 1,000 × (c × L + (1 − c) × g(b)) + k(b) in USD/kg, is above it.
 
 The year-wise reductant score series prices every operating year y from the stack and the grid price g(y) at the site's geo key (`Environment.site_energy_costs_for_year`):
 
 ```
 electricity(y) = c × L(site, b) + (1 − c) × g(y)
-hydrogen(y)    = (e(b) × electricity(y) + k(b)) × 1,000, or the contract × 1,000
+hydrogen(y)    = (e(b) × 1,000 × electricity(y) + k(b)) × 1,000, or the contract × 1,000
 ```
 
 Each candidate technology's energy subsidies of year y apply on top. See [Site prices for geospatial sites](../plant_agent_model/reductant_choice_and_opex.md#site-prices-for-geospatial-sites). The site's three price dicts keep the cell's `power_price` and `capped_lcoh` × 1,000 of the current year, which the creation bill of materials reads, and the furnace group keeps the stack (`FurnaceGroup.captive_energy`). A cell without a finite LCOE in b, or a site without an electrolyser cost row, stops the run. The electrolyser inputs and the ceiling of a year past their data take the last data year's values.
@@ -89,7 +90,7 @@ The furnace group is no longer re-valued. At the end of each year, `Environment.
 
 ```
 electricity = c × L + (1 − c) × g
-hydrogen    = (e × electricity + k) × 1,000, or the contract × 1,000
+hydrogen    = (e × 1,000 × electricity + k) × 1,000, or the contract × 1,000
 ```
 
 The grid share follows the grid every year; the LCOE, the electrolyser and the contract stay those of the lock year: the construction-start year, or the start of the latest renovation, switch or expansion. Every other carrier comes from the input costs. A considered or announced opportunity keeps its stored electricity and hydrogen, which the next re-valuation replaces. Any other new-site furnace group without a stack stops the run, since every build, switch, renovation and expansion locks one. The year-start hydrogen refresh skips new sites.

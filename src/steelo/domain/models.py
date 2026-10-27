@@ -5231,8 +5231,8 @@ class Plant:
             for each furnace group of an existing plant.
 
         Notes:
-            A new site (``parent_gem_id`` starting with ``indi``) is left unchanged: it keeps its own
-            hydrogen price, set at construction start, as it already keeps its electricity.
+            A new site (``parent_gem_id`` starting with ``indi``) is left unchanged: the year-end refresh
+            prices its electricity and hydrogen from its stack (``set_input_cost_in_furnace_groups``).
             Raises ValueError if an existing plant's geo key is not found in the capped_hydrogen_cost_dict.
         """
         if self.parent_gem_id.lower().startswith("indi"):
@@ -8757,7 +8757,8 @@ class Environment:
         1. **At Bootstrap** (before simulation years start): Initializes all furnace groups with input costs
            from the Excel "Input costs" tab. At this point, furnace groups have empty energy_costs dictionaries.
         2. **At Each Year End** (``finalise_iteration`` step 6c, after the year advances): Sets the new year's
-           input costs before the year-start hydrogen refresh, while keeping the stored hydrogen prices.
+           input costs before the year-start hydrogen refresh, keeping existing plants' stored hydrogen prices
+           and pricing a new site's electricity and hydrogen from its stack.
 
         Process:
             1. Retrieve country-specific input costs (electricity, hydrogen, coke, pci, natural_gas, coal, bio_pci)
@@ -8783,8 +8784,8 @@ class Environment:
               (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
               fg.energy_costs["hydrogen"] with them for existing plants; new sites keep the price this
               method set
-            - This method, at the year end: keeps each furnace group's stored hydrogen instead of Excel's static
-              values, until the year-start refresh replaces it for existing plants
+            - This method, at the year end: keeps existing plants' stored hydrogen instead of Excel's static
+              values, until the year-start refresh replaces it, and prices a new site's from its stack
 
         Args:
             world_plants (list[Plant]): All plants in the simulation to update.
