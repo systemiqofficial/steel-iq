@@ -700,3 +700,123 @@ def test_cli_credit_validity_years_lands_on_the_policy_config(
 
         config = mock_create_runner.call_args[0][0]
         assert config.capacity_policy.credit_validity_years == expected
+
+
+def write_prepared_data(data_dir: Path) -> Path:
+    """A prepared data folder holding what the CLI checks before a run: the plants and both BAU scenarios."""
+    fixtures = data_dir / "fixtures"
+    fixtures.mkdir(parents=True)
+    for name in ("plants", "demand_centers", "suppliers", "country_mappings", "railway_costs"):
+        (fixtures / f"{name}.json").write_text("[]")
+    (fixtures / "scenarios.json").write_text(
+        json.dumps({"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}),
+    )
+    return data_dir
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_boa_run_folder_sets_both_fields_on_a_fresh_preparation(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+):
+    """``--boa-run`` with a folder records the folder and its name, in the config and in simulation_config.json."""
+    stub_cli_dependencies(tmp_path / "stubs", mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    run_dir = tmp_path / "anywhere" / "my_run"
+    run_dir.mkdir(parents=True)
+    argv = ["run_simulation", "--end-year", "2026", "--steelo-home", str(tmp_path / "home"), "--boa-run", str(run_dir)]
+
+    with patch.object(sys, "argv", argv):
+        run_full_simulation()
+
+    mock_data_prep_service_class.return_value.prepare_data.assert_called_once()
+    config = mock_create_runner.call_args[0][0]
+    assert config.boa_run_dir == run_dir
+    assert config.boa_run == "my_run"
+    saved = json.loads((config.output_dir / "simulation_config.json").read_text())
+    assert saved["boa_run_dir"] == str(run_dir)
+    assert saved["boa_run"] == "my_run"
+
+
+@pytest.mark.parametrize(
+    ("boa_argv", "expected_name"),
+    [(["--boa-run", "default_49e8"], "default_49e8"), ([], None)],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_boa_run_name_sets_both_fields_on_a_cached_preparation(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+    monkeypatch,
+    boa_argv,
+    expected_name,
+):
+    """A run name resolves under $BOA_DATA_ROOT/lcoe-only/; without the flag both fields stay empty."""
+    stub_cli_dependencies(tmp_path / "stubs", mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path / "boa"))
+    run_dir = tmp_path / "boa" / "lcoe-only" / "default_49e8"
+    run_dir.mkdir(parents=True)
+    prepared = write_prepared_data(tmp_path / "prepared")
+    monkeypatch.setattr(DataPreparationCache, "get_cached_preparation", lambda cache, master: prepared)
+    argv = ["run_simulation", "--end-year", "2026", "--steelo-home", str(tmp_path / "home"), *boa_argv]
+
+    with patch.object(sys, "argv", argv):
+        run_full_simulation()
+
+    mock_data_prep_service_class.return_value.prepare_data.assert_not_called()
+    config = mock_create_runner.call_args[0][0]
+    assert config.boa_run == expected_name
+    assert config.boa_run_dir == (run_dir if expected_name else None)
+
+
+@patch("steelo.data.DataPreparationService")
+def test_cli_unknown_boa_run_exits_before_the_home_or_any_preparation(
+    mock_data_prep_service_class,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """An unknown run name exits 1 listing the runs there, before the home, the cache or a preparation exists."""
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path / "boa"))
+    (tmp_path / "boa" / "lcoe-only" / "default_49e8").mkdir(parents=True)
+    home = tmp_path / "fresh_home"
+    argv = ["run_simulation", "--steelo-home", str(home), "--boa-run", "no_such_run"]
+
+    with patch.object(sys, "argv", argv):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 1
+    mock_data_prep_service_class.assert_not_called()
+    assert not home.exists()
+    printed = capsys.readouterr().out
+    assert "no_such_run" in printed
+    assert "default_49e8" in printed
+
+
+def test_cli_baseload_power_sim_dir_flag_is_refused_at_parse_time(capsys):
+    """``--baseload-power-sim-dir`` never reached a run's prices, so the flag no longer exists and stops the run at parsing."""
+    with patch.object(sys, "argv", ["run_simulation", "--baseload-power-sim-dir", "x"]):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 2
+    assert "--baseload-power-sim-dir" in capsys.readouterr().err

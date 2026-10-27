@@ -21,7 +21,8 @@ def get_baseload_coverage(included_power_mix: str) -> float:
     Get baseload power coverage percentage based on power mix type.
 
     Args:
-        included_power_mix: Power mix type (e.g., "Grid only", "85% baseload + 15% grid", "95% baseload + 5% grid", "Not included")
+        included_power_mix: Power mix type ("Grid only", "85% baseload + 15% grid", "90% baseload + 10% grid",
+            "95% baseload + 5% grid" or "Not included")
 
     Returns:
         Baseload coverage percentage as a float (0.0 to 1.0)
@@ -29,9 +30,26 @@ def get_baseload_coverage(included_power_mix: str) -> float:
     if included_power_mix not in POWER_MIX_TO_COVERAGE_MAP:
         raise ValueError(
             f"Invalid value for included_power_mix: {included_power_mix}. "
-            "Choose from 'Grid only', '85% baseload + 15% grid', '95% baseload + 5% grid', or 'Not included'."
+            "Choose from 'Grid only', '85% baseload + 15% grid', '90% baseload + 10% grid', "
+            "'95% baseload + 5% grid', or 'Not included'."
         )
     return POWER_MIX_TO_COVERAGE_MAP[included_power_mix]
+
+
+def coverage_to_percentile(coverage: float) -> int:
+    """
+    The percentage of demand the grid covers for a baseload coverage, as plot names and labels show it.
+
+    Args:
+        coverage: Baseload coverage as a fraction, e.g. 0.9.
+
+    Returns:
+        ``round((1 - coverage) * 100)``: 10 for 0.9, 15 for 0.85.
+
+    Notes:
+        Rounds rather than truncates: ``(1 - 0.9) * 100`` is 9.999... in floating point.
+    """
+    return round((1 - coverage) * 100)
 
 
 # -----------------------------------------  Hydrogen ------------------------------------------------------

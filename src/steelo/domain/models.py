@@ -41,6 +41,7 @@ from steelo.utilities.utils import normalize_name
 from steelo.domain.carbon_cost import CarbonCost, CarbonCostService
 from steelo.domain import diagnostics as diag
 from steelo.utilities.utils import merge_two_dictionaries
+from steelo.utilities import energy_trace
 from steelo.core.parse import normalize_code
 from steelo.simulation_types import TechSettingsMap
 
@@ -358,7 +359,7 @@ class GeoDataPaths:
     disputed_areas_shapefile_dir: Path
 
     # Output paths for different analyses
-    baseload_power_sim_dir: Path
+    baseload_lcoe_dir: Path  # Folder of the promoted BOA LCOE files: the named run's, else the prepared data's
     static_layers_dir: (
         Path  # Directory for static geospatial layers (feasibility_mask.nc, rail_cost.nc, global_grid_with_iso3.nc)
     )
@@ -6960,6 +6961,9 @@ class PlantGroup:
                         new_energy_costs = dict(base_costs)
                         new_output_energy_costs = dict(base_costs)
                         new_energy_costs_no_subsidy = dict(base_costs)
+                    energy_trace.greenfield_revalue(
+                        plant, fg, current_year, raw_power_price, raw_hydrogen_price, new_energy_costs_no_subsidy
+                    )
 
                     # Refresh the expected utilisation from the current fleet average
                     if fg.status == "considered":
@@ -8781,6 +8785,9 @@ class Environment:
         )
 
         logger.info(f"Calculated capped hydrogen prices for {len(capped_hydrogen_prices)} countries")
+        energy_trace.country_hydrogen(
+            target_year, lcoh_by_geo_key, regional_ceilings, country_to_region, capped_hydrogen_prices
+        )
         return capped_hydrogen_prices
 
     def initiate_capped_hydrogen_costs_by_year(self) -> None:

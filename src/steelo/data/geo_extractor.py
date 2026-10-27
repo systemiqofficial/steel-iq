@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from .manager import DataManager
+from .path_resolver import GEO_DATA_VERSION_FILE
 import logging
 
 
@@ -28,6 +29,10 @@ class GeoDataExtractor:
 
         Returns:
             Dictionary mapping file descriptions to their extracted paths
+
+        Notes:
+            Also writes the package's version to ``geo_data_version.txt`` in ``target_dir``, which each run records
+            as ``geo_data_version``.
         """
         # Get the geo-data package path, downloading if necessary
         try:
@@ -119,30 +124,10 @@ class GeoDataExtractor:
                 target_dir / "ne_10m_admin_1_states_provinces" / f"ne_10m_admin_1_states_provinces.{ext}"
             )
 
-        # Also extract baseload power simulation files
-        # Note: p5 files are in GLOBAL subdirectory to match BOA output structure
-        # Years absent from the package are skipped with a warning; the LCOE lookup then holds
-        # the last available snapshot flat (see add_baseload_power_price).
-        for year in [2025, 2030, 2035, 2040, 2045, 2050, 2055, 2060]:
-            # p5 files are now in p5/GLOBAL/ in the archive (fixed in v1.2.0)
-            file_mappings[f"outputs/GEO/baseload_power_simulation/p5/GLOBAL/optimal_sol_GLOBAL_{year}_p5.nc"] = (
-                target_dir
-                / "outputs"
-                / "GEO"
-                / "baseload_power_simulation"
-                / "p5"
-                / "GLOBAL"
-                / f"optimal_sol_GLOBAL_{year}_p5.nc"
-            )
-            file_mappings[f"outputs/GEO/baseload_power_simulation/p15/GLOBAL/optimal_sol_GLOBAL_{year}_p15.nc"] = (
-                target_dir
-                / "outputs"
-                / "GEO"
-                / "baseload_power_simulation"
-                / "p15"
-                / "GLOBAL"
-                / f"optimal_sol_GLOBAL_{year}_p15.nc"
-            )
+        # The default promoted BOA LCOE files, one per coverage, read when a run names no BOA run
+        for token in ("0p85", "0p9", "0p95"):
+            name = f"optimal_lcoe_wy2024_01MWkm2_cov{token}_2025_2060.nc"
+            file_mappings[f"outputs/GEO/baseload_lcoe/{name}"] = target_dir / "outputs" / "GEO" / "baseload_lcoe" / name
 
         # Copy files to their expected locations
         for source_name, target_path in file_mappings.items():
@@ -158,5 +143,9 @@ class GeoDataExtractor:
                 logging.info(f"Extracted {source_name} to {target_path}")
             else:
                 logging.warning(f"Warning: {source_name} not found in geo-data package")
+
+        package = self.data_manager.manifest.get_package("geo-data", version)
+        assert package is not None  # get_package_path found it above
+        (target_dir / GEO_DATA_VERSION_FILE).write_text(package.version)
 
         return extracted_files

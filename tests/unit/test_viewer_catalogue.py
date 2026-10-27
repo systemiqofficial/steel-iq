@@ -103,6 +103,61 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
     assert "default" not in settings["sim_1"][percentile]
 
 
+def test_runs_differing_only_in_the_baseload_lcoe_run_are_told_apart_and_labelled(tmp_path):
+    """
+    Tests that two runs differing only in their BOA run give one filter, labelled as the baseload LCOE run, whose
+    values are the run's name and, for a run that named none, the geo-data default; the run folder adds no filter.
+    """
+    runs = [
+        write_run(tmp_path / "sim_1", "default", "2026-10-20T10:00:00"),
+        write_run(
+            tmp_path / "sim_2",
+            "named",
+            "2026-10-20T10:01:00",
+            boa_run_dir=tmp_path / "boa" / "lcoe-only" / "default_49e8",
+            boa_run="default_49e8",
+        ),
+    ]
+
+    local = catalogue.build_manifest(runs, with_made_in=False)["sets"][0]
+
+    dimensions = {dimension["key"]: dimension for dimension in local["dimensions"]}
+    assert "boa_run_dir" not in dimensions
+    assert dimensions["boa_run"]["label"] == "Baseload LCOE run"
+    assert set(dimensions["boa_run"]["values"]) == {"geo-data default", "default_49e8"}
+    assert {run["dir"]: run["dims"]["boa_run"] for run in local["runs"]} == {
+        "sim_1": "geo-data default",
+        "sim_2": "default_49e8",
+    }
+
+
+def test_runs_differing_only_in_the_geo_data_version_are_told_apart_and_labelled(tmp_path):
+    """
+    Tests that a run on geo-data 3.0.0 and a run written before runs recorded the version give one filter, labelled as
+    the geo-data version, whose values are the version and, for the older run, none; a recorded version is never
+    flagged as changed from a default.
+    """
+    runs = [
+        write_run(tmp_path / "sim_1", "older", "2026-10-20T10:00:00"),
+        write_run(tmp_path / "sim_2", "recorded", "2026-10-20T10:01:00", geo_data_version="3.0.0"),
+    ]
+    config_path = tmp_path / "sim_1" / "simulation_config.json"
+    config = json.loads(config_path.read_text())
+    del config["geo_data_version"]
+    config_path.write_text(json.dumps(config))
+
+    local = catalogue.build_manifest(runs, with_made_in=False)["sets"][0]
+
+    dimensions = {dimension["key"]: dimension for dimension in local["dimensions"]}
+    assert dimensions["geo_data_version"]["label"] == "Geo-data version"
+    assert {run["dir"]: run["dims"]["geo_data_version"] for run in local["runs"]} == {
+        "sim_1": "none",
+        "sim_2": "3.0.0",
+    }
+    recorded = {s["key"]: s for s in next(run for run in local["runs"] if run["dir"] == "sim_2")["settings"]}
+    assert recorded["geo_data_version"]["changed"] is None
+
+
 def test_input_data_is_one_value_per_master_content(tmp_path):
     """
     Tests that an app run and a CLI run of one master's bytes under different names give one input data value, the
@@ -246,8 +301,8 @@ def test_ordered_values_puts_numbers_with_units_in_numeric_order():
 def test_excluded_settings_name_only_real_config_fields():
     """
     Tests that every entry of the exclude list is a SimulationConfig, GeoConfig or CapacityPolicyConfig field,
-    so a renamed or removed field cannot leave a stale entry behind. The one exception is the removed
-    scrap_generation_scenario, which older runs' configs still carry.
+    so a renamed or removed field cannot leave a stale entry behind. The exceptions are the removed
+    scrap_generation_scenario and baseload_power_sim_dir, which older runs' configs still carry.
     """
     real = (
         {f.name for f in dataclasses.fields(SimulationConfig)}
@@ -255,7 +310,7 @@ def test_excluded_settings_name_only_real_config_fields():
         | {f"capacity_policy.{f.name}" for f in dataclasses.fields(CapacityPolicyConfig)}
     )
 
-    assert catalogue.EXCLUDED_SETTINGS - {"scrap_generation_scenario"} <= real
+    assert catalogue.EXCLUDED_SETTINGS - {"scrap_generation_scenario", "baseload_power_sim_dir"} <= real
 
 
 def test_discover_runs_names_each_skipped_folder_in_one_warning_only(tmp_path, caplog):

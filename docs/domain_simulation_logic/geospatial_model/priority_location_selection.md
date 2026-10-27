@@ -42,7 +42,7 @@ Not all locations are suitable for building steel plants. The feasibility mask f
 
 ### Power Prices
 Electricity costs vary by location and depend on the user-configured power mix. Three options are available:
-- **Baseload renewable** (85% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
+- **Baseload renewable** (85%, 90% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
 `power_price = baseload_coverage × lcoe_baseload + (1 - baseload_coverage) × grid_price`
 - **Grid only**: Uses country-level grid electricity prices from input data
 - **Not included**: Sets power price to zero. This is only valid for the selection of best locations. New plant energy costs are set to the grid power price in this case since they cannot be zero.
@@ -283,7 +283,7 @@ Required file paths:
 | `terrain_nc_path` | NetCDF file with land-sea mask, altitude, slope |
 | `lulc_nc_path` | NetCDF file with land cover classifications |
 | `shp_countries_path` | Shapefile with country boundaries (for ISO3 codes) |
-| `baseload_power_sim_dir` | Directory with pre-calculated renewable LCOE files - see baseload power documentation to modify |
+| `baseload_lcoe_dir` | Folder of the promoted BOA LCOE files: the run `--boa-run` names, else the prepared data's `outputs/GEO/baseload_lcoe/` - see the baseload power documentation |
 | `geo_plots_dir` | Output directory for plots |
 
 ### Output Format
@@ -352,5 +352,6 @@ The outgoing cashflow proxy is based on the geospatial indicators we consider th
 ## Related Documentation
 
 - [New Plant Opening Logic](new_plant_opening.md) - How candidate locations are used to create new plants
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - Where the site power and hydrogen prices go after selection
 - [Baseload Power Optimization](baseload_optimization_atlas.md) - Details on renewable LCOE calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

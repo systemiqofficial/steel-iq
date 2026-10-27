@@ -44,7 +44,8 @@ def prepared_data_directory(tmp_path):
 
     Returns:
         ``<tmp_path>/prepared``, whose ``data/fixtures/technology_emission_factors.json`` offers the class default
-        emissions boundary and whose ``data/fixtures/scenarios.json`` the class default demand and scrap scenarios.
+        emissions boundary, whose ``data/fixtures/scenarios.json`` the class default demand and scrap scenarios, and
+        whose ``data/outputs/GEO/baseload_lcoe/`` holds a default LCOE file, as geo-data 3.0.0 preparations do.
     """
     fixtures = tmp_path / "prepared" / "data" / "fixtures"
     fixtures.mkdir(parents=True)
@@ -57,6 +58,9 @@ def prepared_data_directory(tmp_path):
             },
         ),
     )
+    lcoe_dir = tmp_path / "prepared" / "data" / "outputs" / "GEO" / "baseload_lcoe"
+    lcoe_dir.mkdir(parents=True)
+    (lcoe_dir / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc").write_bytes(b"")
     return tmp_path / "prepared"
 
 

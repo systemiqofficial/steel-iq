@@ -13,6 +13,7 @@ from .adapters.repositories import JsonRepository, InMemoryRepository, Repositor
 from .capacity_policy.bootstrap import configure_capacity_policy
 from .data.path_resolver import DataPathResolver, resolve_scenario_fixtures
 from .motions import bind_global_motions
+from .utilities import energy_trace
 
 if TYPE_CHECKING:
     from .simulation import SimulationConfig, SimulationRunner
@@ -270,6 +271,40 @@ def apply_supplier_cost_config(suppliers: list[Supplier], config: "SimulationCon
             supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
 
 
+def check_baseload_lcoe_file(config: "SimulationConfig", lcoe_dir: Path) -> Optional[Path]:
+    """
+    Pick and open the baseload LCOE file a run's power mix needs, once, before the first year.
+
+    Args:
+        config: The run's configuration; ``boa_run_dir`` says whether ``lcoe_dir`` is a named run.
+        lcoe_dir: The folder the run reads LCOE files from.
+
+    Returns:
+        The file, or None when the power mix has no baseload share and needs none.
+
+    Raises:
+        FileNotFoundError, ValueError: As ``boa_lcoe.pick_lcoe_file`` and ``boa_lcoe.open_lcoe_file``, so a
+            missing or refused file stops the run before its first year.
+
+    Notes:
+        Logs the file with its BOA run and version at INFO, and traces it as the ``lcoe_source`` stage.
+    """
+    from .adapters.geospatial import boa_lcoe
+    from .adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+    baseload_coverage = get_baseload_coverage(config.geo_config.included_power_mix)
+    if baseload_coverage == 0:
+        return None
+    lcoe_file = boa_lcoe.pick_lcoe_file(lcoe_dir, baseload_coverage, default_folder=config.boa_run_dir is None)
+    with boa_lcoe.open_lcoe_file(lcoe_file, baseload_coverage) as lcoe_ds:
+        logger.info(
+            f"Baseload LCOE: {lcoe_file} (run {lcoe_ds.attrs.get('run', 'not stated')}, "
+            f"BOA {lcoe_ds.attrs.get('boa_version', 'not stated')})"
+        )
+        energy_trace.lcoe_source(config.start_year, lcoe_file, lcoe_ds)
+    return lcoe_file
+
+
 def bootstrap_simulation(
     config: "SimulationConfig",
     repository: Optional[Repository] = None,  # Allow injecting a repository for testing
@@ -289,6 +324,13 @@ def bootstrap_simulation(
         LoggingConfig.configure_from_yaml(str(yaml_path), config.log_level)
     else:
         LoggingConfig.configure_base_loggers()
+    # Once per run, so a second run in the same process keeps nothing of the first
+    energy_trace.configure(
+        LoggingConfig.ENERGY_TRACE,
+        LoggingConfig.ENERGY_TRACE_COUNTRIES,
+        LoggingConfig.ENERGY_TRACE_PLANTS,
+        config.output_dir,
+    )
 
     # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
     random.seed(config.random_seed)
@@ -534,14 +576,13 @@ def bootstrap_simulation(
             countries_shapefile_dir=path_resolver.countries_shapefile_dir,
             disputed_areas_shapefile_dir=config.data_dir / "ne_10m_admin_0_disputed_areas",
             admin1_shapefile_dir=path_resolver.admin1_shapefile_dir,
-            baseload_power_sim_dir=path_resolver.baseload_power_sim_dir
-            if path_resolver.baseload_power_sim_dir.exists()
-            else config.data_dir / "baseload_power_sim",
+            baseload_lcoe_dir=config.boa_run_dir if config.boa_run_dir is not None else path_resolver.baseload_lcoe_dir,
             static_layers_dir=config.data_dir / "outputs" / "GEO",  # Use outputs/GEO for static layers
             landtype_percentage_path=path_resolver.landtype_percentage_nc_path
             if path_resolver.landtype_percentage_nc_path.exists()
             else config.data_dir / "landtype_percentage.nc",
         )
+        check_baseload_lcoe_file(config, env.geo_paths.baseload_lcoe_dir)
 
     # Calculate initial state using Environment methods
     env.calculate_demand()

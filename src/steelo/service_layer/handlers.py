@@ -13,6 +13,7 @@ from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
 from steelo.domain.calculate_costs import collect_subsidies_for_geo, filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
 from steelo.capacity_policy import handlers as capacity_policy_handlers
+from steelo.utilities import energy_trace
 import logging
 
 if TYPE_CHECKING:
@@ -735,6 +736,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                         ),
                         plant_lifetime=env.config.plant_lifetime,
                     )
+                    energy_trace.greenfield_build(plant, fg, year, env)
 
                     # New plants start at 0% utilization, will be ramped up by trade module
                     fg.utilization_rate = 0.0

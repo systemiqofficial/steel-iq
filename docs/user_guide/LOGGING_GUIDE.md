@@ -122,6 +122,7 @@ global_level: WARNING
 features:
   furnace_group_breakdown: true  # Show detailed furnace-level logs
   dump_failed_lp: false          # Write TM/trade_lp_failed_<year>.mps (large) when the trade LP does not solve optimally
+  energy_trace: false            # Trace electricity and hydrogen prices (see Energy-Price Trace below)
 
 modules:
   geo: DEBUG   # Enables DEBUG for GeospatialModel
@@ -195,6 +196,82 @@ modules:
 function_overrides:
   the_function_to_debug: DEBUG
 ```
+
+---
+
+## Energy-Price Trace
+
+The energy-price trace follows electricity and hydrogen prices from the site price rasters and the country hydrogen series to what plants pay, and checks each price against a value it computes independently. LCOE below is the levelised cost of electricity of a site's own baseload supply, and LCOH the levelised cost of hydrogen. The trace changes no price and no result. [Energy Prices of Existing and New Plants](../domain_simulation_logic/overarching_elements/energy_prices.md) describes the price path it watches.
+
+### Switch and lists
+
+```yaml
+features:
+  energy_trace: true
+
+energy_trace:
+  countries: [CHN, IND, USA, JPN, RUS, IRN, DEU, BRA, SAU, AUS]
+  plants:
+    - P100000120219
+    - P100000120085
+```
+
+- **`features.energy_trace`**: off in the shipped file. When it is off, every trace call returns before reading its arguments.
+- **`energy_trace.countries`**: ISO3 codes. The raster stages write one summary per listed country, and the existing-plant checks cover every active furnace group in these countries.
+- **`energy_trace.plants`**: plant IDs. Every active furnace group of a listed plant gets a log line and CSV rows, wherever the plant is.
+
+New sites, the plants the model opens (`parent_gem_id` starting with `indi`), are always traced, since their IDs only exist at run time.
+
+### Output
+
+- **Log lines**: one INFO line `[ENERGY TRACE] stage=<stage> year=<year> ...` per traced entity, and summary lines per stage and year (`checked n, failed m`). INFO lines need `--log-level INFO` or lower.
+- **Warnings**: a failed check writes one WARNING `[ENERGY CHECK] ...`, which shows at any CLI level. The logger is `steelo.utilities.energy_trace`, so `function_overrides: {energy_trace: WARNING}` keeps the warnings and drops the INFO lines.
+- **CSV**: `energy_trace.csv` in the run folder, one row per stage, year, entity and quantity, appended as each stage runs so a stopped run keeps its rows. It is written whatever the log level, and not at all when a run has no output folder.
+
+### Stages
+
+| Stage | When | Rows | Check |
+|-------|------|------|-------|
+| `lcoe_source` | At bootstrap, once the baseload LCOE file is accepted, and each year as the LCOE is read | The file, and per listed country | None: a file that breaks the contract is refused before it is read |
+| `site_power` | Each year, once the site power price raster is built | Per listed country and `ALL` | Every priced cell equals `(1 - c) × grid + c × LCOE` for an LCOE file priced per MWh delivered, else `(1 - c) × grid + LCOE`, where c is the baseload coverage |
+| `site_hydrogen` | Each year, once the site hydrogen price is capped | Per listed country and `ALL` | Every priced cell stays within its region's ceiling |
+| `country_hydrogen` | At bootstrap, once per year of the precomputed series | Every geo key | The capped price stays within `min(LCOH, region's ceiling)` |
+| `brownfield` | Each year, before the trade model | Listed plants' active furnace groups; other furnace groups in listed countries only when a check fails | No-subsidy electricity equals the geo key's input cost for the year; no-subsidy hydrogen equals the geo key's capped price × 1,000 |
+| `greenfield_select` | Each year, per candidate site | Every candidate site | None |
+| `greenfield_revalue` | Each year, per considered or announced new site | Every such site | The no-subsidy hydrogen written equals the site's capped LCOH × 1,000 |
+| `greenfield_build` | When a new site enters construction | Every such site | None: it freezes the site's last re-valued raster prices as the reference |
+| `greenfield_operating` | Each year, before the trade model | Every operating new site | No-subsidy electricity and hydrogen equal the references frozen at construction |
+
+With the hydrogen ceiling percentile at 100 and intraregional trade off, as by default, neither hydrogen cap check (`site_hydrogen`, `country_hydrogen`) can fail. On the current code the `greenfield_revalue` and `greenfield_operating` hydrogen checks fail for every new site; the energy prices page explains why.
+
+The year-end summary lines also give, per listed country, the candidate sites, their median site prices and how many have a power price outside 0.1 to 10 times the country's; the re-valuation checks; and the sites built, with how many had no reference.
+
+### CSV columns
+
+| Column | Content |
+|--------|---------|
+| `year`, `stage` | The year the prices belong to and the stage |
+| `plant_id`, `furnace_group_id` | Empty for raster summaries, geo keys and candidate sites |
+| `iso3`, `geo_key` | Country (`ALL` for every cell) and finest geo key, for example `CHN:CN-LN` |
+| `lat`, `lon` | Position of a plant or candidate site |
+| `technology`, `status` | The furnace group's |
+| `new_site` | 1 for a new site, 0 for an existing plant |
+| `quantity`, `value`, `unit` | One quantity per row, in the unit the code holds it in |
+| `expected` | The independent value of a checked quantity, else empty |
+| `check_failed` | 1 when the check failed, else 0 |
+
+### Quantities and units
+
+| Stage | Quantities |
+|-------|------------|
+| `lcoe_source` | `file`, `run`, `boa_version` and `lcoe_basis` (text); `coverage_fraction`; `schema_version`; per listed country, `median_lcoe` (USD/MWh) |
+| `site_power` | `coverage` (fraction); `median_grid_price`, `median_lcoe` and `median_power_price` (USD/kWh); `cells_checked`; `cells_off_blend` (checked, expected 0) |
+| `site_hydrogen` | `median_lcoh`, `ceiling` and `median_capped_lcoh` (USD/kg); `share_capped`, the fraction of checked cells priced below their LCOH; `cells_checked`; `cells_above_ceiling` (checked, expected 0); `cells_nan_lcoh_priced`, cells with no LCOH that still carry a price |
+| `country_hydrogen` | `lcoh`, `ceiling` and `capped` (USD/kg, `capped` checked) |
+| `brownfield`, `greenfield_operating` | `electricity` (USD/kWh) and `hydrogen` (USD/t) without subsidy, checked; `electricity_paid` and `hydrogen_paid` with subsidy |
+| `greenfield_select` | `site_electricity` (USD/kWh); `site_hydrogen` (USD/t); `country_electricity` (USD/kWh); `country_hydrogen` (USD/t, the master's input cost); `override_reference_year`; `operating_start_year` |
+| `greenfield_revalue` | `electricity` and `hydrogen` as written without subsidy (`hydrogen` checked); `site_power_price` (USD/kWh); `site_hydrogen` (USD/t) |
+| `greenfield_build` | `electricity` and `hydrogen` as stored; `reference_electricity` (USD/kWh) and `reference_hydrogen` (USD/t), or `reference` reading `missing`; `regional_hydrogen` (USD/t, the geo key's capped price that year, recorded for reading only); `operating_start_year` |
 
 ---
 

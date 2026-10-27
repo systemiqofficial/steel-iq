@@ -555,6 +555,11 @@ def ready_data_preparation(db, tmp_path):
     }
     (fixtures_dir / "scenarios.json").write_text(json.dumps(scenario_index))
 
+    # The run form accepts a baseload power mix only on a preparation holding the default LCOE files
+    lcoe_dir = data_dir / "data" / "outputs" / "GEO" / "baseload_lcoe"
+    lcoe_dir.mkdir(parents=True)
+    (lcoe_dir / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc").write_bytes(b"")
+
     # Create required data packages
     core_package, _ = DataPackage.objects.get_or_create(
         name=DataPackage.PackageType.CORE_DATA,
