@@ -389,7 +389,7 @@ Shared columns, `hydrogen_ceiling_pct`, `intraregional_trade_allowed`, `price_ty
 | `price_type` = `capped` | `min(uncapped, ceiling)`: what a new plant pays for hydrogen |
 | `ceiling_usd_per_kg` | Effective ceiling applied to the area's cells, trade-adjusted when trade is allowed. Empty when the area's cells span several hydrogen trade regions, as World and most IRENA rows do |
 
-A cell whose geo unit and country both lack an electrolyser CAPEX/OPEX row has no uncapped price but is still priced at its region's ceiling on the `capped` row. `n_grid_points` counts it on both rows, and the `uncapped` statistics skip it. No cell is in this case with the current master data.
+A cell whose geo unit and country both lack an electrolyser CAPEX/OPEX row has no uncapped price and so no capped price either: it counts in no row. No cell is in this case with the current master data.
 
 ### `lcoh_existing_plants.csv`
 

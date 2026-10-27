@@ -229,7 +229,9 @@ def apply_hydrogen_price_cap(
 
     Notes:
         The effective ceiling is the region's ceiling, lowered to the best trade partner's ceiling plus the
-        pipeline cost when intraregional trade is allowed. Cells outside every region keep NaN in both.
+        pipeline cost when intraregional trade is allowed. Cells outside every region keep NaN in both. A cell
+        without an LCOH (no power price or no electrolyser cost row) keeps a NaN capped price, so it drops out of
+        the candidate sites instead of being priced at the ceiling.
     """
     ds["capped_lcoh"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
     ds["hydrogen_ceiling"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
@@ -247,11 +249,7 @@ def apply_hydrogen_price_cap(
             ceiling_value = regional_ceiling[region]
 
         ds["hydrogen_ceiling"].values[mask] = ceiling_value
-        ds["capped_lcoh"].values[mask] = np.where(
-            ds["lcoh"].values[mask] < ceiling_value,
-            ds["lcoh"].values[mask],
-            ceiling_value,
-        )
+        ds["capped_lcoh"].values[mask] = np.minimum(ds["lcoh"].values[mask], ceiling_value)
 
     return ds
 
