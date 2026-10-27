@@ -9,6 +9,7 @@ Steel-iq reads it without importing BOA.
 
 import logging
 import math
+import numbers
 import os
 from pathlib import Path
 
@@ -45,18 +46,18 @@ def resolve_boa_run(value: str) -> Path:
         The folder: ``value`` itself when it is an existing folder, else the run of that name.
 
     Raises:
-        FileNotFoundError: If neither is a folder. The message names both places tried and lists
-            every run under ``<boa root>/lcoe-only/`` with its files.
+        FileNotFoundError: If neither is a folder. The message names the places tried and lists every
+            run under ``<boa root>/lcoe-only/`` with its files, whatever form ``value`` takes.
     """
     given = Path(value).expanduser().absolute()
     if given.is_dir():
         return given
-    named = boa_root() / LCOE_ONLY / value
+    lcoe_only = boa_root() / LCOE_ONLY
+    named = lcoe_only / value
     if named.is_dir():
         return named
-    raise FileNotFoundError(
-        f"BOA run '{value}' not found: neither {given} nor {named} is a folder.\n{_list_runs(named.parent)}"
-    )
+    tried = " or ".join(dict.fromkeys(str(path) for path in (given, named)))
+    raise FileNotFoundError(f"BOA run '{value}' not found: no folder at {tried}.\n{_list_runs(lcoe_only)}")
 
 
 def coverage_token(coverage: float) -> str:
@@ -136,7 +137,8 @@ def open_lcoe_file(path: Path, coverage: float) -> xr.Dataset:
 
     Raises:
         ValueError: If ``schema_version`` is not 1, ``lcoe_basis`` is not ``per_mwh_delivered`` or
-            ``coverage_fraction`` is not ``coverage``. A missing attribute is refused like a wrong one.
+            ``coverage_fraction`` is not the number ``coverage``. A missing attribute is refused like a
+            wrong one.
             The message names the file and the attribute.
     """
     ds = xr.open_dataset(path)
@@ -146,8 +148,10 @@ def open_lcoe_file(path: Path, coverage: float) -> xr.Dataset:
         refusal = f"schema_version {_attr(attrs, 'schema_version')}; steel-iq reads schema version {SCHEMA_VERSION}"
     elif "lcoe_basis" not in attrs or attrs["lcoe_basis"] != LCOE_BASIS:
         refusal = f"lcoe_basis {_attr(attrs, 'lcoe_basis')}; steel-iq prices LCOE {LCOE_BASIS}"
-    elif "coverage_fraction" not in attrs or not math.isclose(
-        float(attrs["coverage_fraction"]), coverage, rel_tol=1e-9
+    elif (
+        "coverage_fraction" not in attrs
+        or not isinstance(attrs["coverage_fraction"], numbers.Real)
+        or not math.isclose(float(attrs["coverage_fraction"]), coverage, rel_tol=1e-9)
     ):
         refusal = f"coverage_fraction {_attr(attrs, 'coverage_fraction')}; the power mix prices coverage {coverage:g}"
     if refusal is not None:

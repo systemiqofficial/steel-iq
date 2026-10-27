@@ -84,6 +84,24 @@ def test_resolve_boa_run_lists_the_runs_for_an_unknown_name(tmp_path, monkeypatc
     assert "default_49e8: optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc" in message
 
 
+@pytest.mark.parametrize("relative", [False, True])
+def test_resolve_boa_run_with_an_unknown_path_lists_the_runs_under_the_root(tmp_path, monkeypatch, relative):
+    """A path that is no folder, absolute or relative, still lists the runs under <root>/lcoe-only/."""
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path / "boa"))
+    monkeypatch.chdir(tmp_path)
+    write_lcoe_file(tmp_path / "boa" / "lcoe-only" / "default_49e8", "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc")
+    value = "runs/default_49e8" if relative else str(tmp_path / "nowhere" / "default_49e8")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        boa_lcoe.resolve_boa_run(value)
+
+    message = str(excinfo.value)
+    if not relative:
+        assert f"no folder at {tmp_path / 'nowhere' / 'default_49e8'}.\n" in message
+    assert f"Promoted BOA runs under {tmp_path / 'boa' / 'lcoe-only'}:" in message
+    assert "default_49e8: optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc" in message
+
+
 def test_resolve_boa_run_says_when_the_root_has_no_runs(tmp_path, monkeypatch):
     """With no lcoe-only folder at all, the error says there are no runs."""
     monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path / "boa"))
@@ -193,6 +211,7 @@ def test_open_lcoe_file_accepts_a_file_stating_the_contract(tmp_path):
         ("lcoe_basis", "per_mwh_generated", "lcoe_basis 'per_mwh_generated'"),
         ("lcoe_basis", None, "lcoe_basis missing"),
         ("coverage_fraction", 0.9, "coverage_fraction 0.9"),
+        ("coverage_fraction", "abc", "coverage_fraction 'abc'"),
         ("coverage_fraction", None, "coverage_fraction missing"),
     ],
 )
