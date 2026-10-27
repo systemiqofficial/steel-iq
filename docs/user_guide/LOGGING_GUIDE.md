@@ -233,9 +233,11 @@ New sites, the plants the model opens (`parent_gem_id` starting with `indi`), ar
 | Stage | When | Rows | Check |
 |-------|------|------|-------|
 | `lcoe_source` | At bootstrap, once the baseload LCOE file is accepted, and each year as the LCOE is read | The file, and per listed country | None: a file that breaks the contract is refused before it is read |
+| `site_grid` | Each year, once the site grid price raster is built | Per listed country, per geo unit of a listed country and `ALL` | `cells_off_grid`: every cell whose geo key or country has an input cost holds its geo key's electricity price, else its country's; `cells_off_fallback`: every cell with neither holds the highest country-level price, never a province's |
 | `site_power` | Each year, once the site power price raster is built | Per listed country and `ALL` | Every priced cell equals `(1 - c) × grid + c × LCOE` for an LCOE file priced per MWh delivered, else `(1 - c) × grid + LCOE`, where c is the baseload coverage |
-| `site_hydrogen` | Each year, once the site hydrogen price is capped | Per listed country and `ALL` | Every priced cell stays within its region's ceiling |
-| `country_hydrogen` | At bootstrap, once per year of the precomputed series | Every geo key | The capped price stays within `min(LCOH, region's ceiling)` |
+| `site_hydrogen` | Each year, once the site hydrogen price is capped | Per listed country and `ALL` | Every priced cell stays within its region's ceiling; `cells_off_lcoh`: every cell with a power price and an electrolyser cost row holds the electrolyser's kWh per kg × its power price + the capital and operating cost per kg at its geo key, else its country |
+| `hydrogen_lcoe` | At bootstrap, once per year of the precomputed series, with a baseload power mix | Every geo key | Each listed country's LCOE, unless priced from its nearest cells, equals the `hydrogen_lcoe_percentile` of the year's finite LCOE over the cells whose iso3 is the country, within a relative 1e-6 |
+| `country_hydrogen` | At bootstrap, once per year of the precomputed series | Every geo key | The recorded electricity equals `(1 - c) × grid + c × LCOE` from the input-cost grid price and the LCOE series, or the grid price without a baseload share; the LCOH the cap used equals the electrolyser's kWh per kg × that electricity + its capital and operating cost per kg, at the geo key else its country; the capped price stays within `min(LCOH, region's ceiling)` |
 | `brownfield` | Each year, before the trade model | Listed plants' active furnace groups; other furnace groups in listed countries only when a check fails | No-subsidy electricity equals the geo key's input cost for the year; no-subsidy hydrogen equals the geo key's capped price × 1,000 |
 | `greenfield_select` | Each year, per candidate site | Every candidate site | None |
 | `greenfield_revalue` | Each year, per considered or announced new site | Every such site | The no-subsidy hydrogen written equals the site's capped LCOH × 1,000 |
@@ -265,9 +267,11 @@ The year-end summary lines also give, per listed country, the candidate sites, t
 | Stage | Quantities |
 |-------|------------|
 | `lcoe_source` | `file`, `run`, `boa_version` and `lcoe_basis` (text); `coverage_fraction`; `schema_version`; per listed country, `median_lcoe` (USD/MWh) |
+| `site_grid` | Over feasible cells: `median_grid_price` (USD/kWh); `cells_subnational`, the cells priced at a province row; `cells_grid_fallback`, the cells with neither a province nor a country price. Over every cell: `cells_off_grid` and `cells_off_fallback` (checked, expected 0) |
 | `site_power` | `coverage` (fraction); `median_grid_price`, `median_lcoe` and `median_power_price` (USD/kWh); `cells_checked`; `cells_off_blend` (checked, expected 0) |
-| `site_hydrogen` | `median_lcoh`, `ceiling` and `median_capped_lcoh` (USD/kg); `share_capped`, the fraction of checked cells priced below their LCOH; `cells_checked`; `cells_above_ceiling` (checked, expected 0); `cells_nan_lcoh_priced`, cells with no LCOH that still carry a price |
-| `country_hydrogen` | `lcoh`, `ceiling` and `capped` (USD/kg, `capped` checked) |
+| `site_hydrogen` | `median_lcoh`, `ceiling` and `median_capped_lcoh` (USD/kg); `share_capped`, the fraction of checked cells priced below their LCOH; `cells_checked`; `cells_above_ceiling` and `cells_off_lcoh` (checked, expected 0); `cells_nan_lcoh_priced`, cells with no LCOH that still carry a price, 0 since the cap leaves such cells unpriced |
+| `hydrogen_lcoe` | `lcoe` (USD/MWh, checked for listed countries not priced from their nearest cells); `from_neighbours`, 1 for a geo key priced from its nearest cells |
+| `country_hydrogen` | `coverage` (fraction); `grid`, `lcoe` (with a baseload share only) and `electricity` (USD/kWh, `electricity` checked); `lcoh`, `ceiling` and `capped` (USD/kg, `lcoh` and `capped` checked) |
 | `brownfield`, `greenfield_operating` | `electricity` (USD/kWh) and `hydrogen` (USD/t) without subsidy, checked; `electricity_paid` and `hydrogen_paid` with subsidy |
 | `greenfield_select` | `site_electricity` (USD/kWh); `site_hydrogen` (USD/t); `country_electricity` (USD/kWh); `country_hydrogen` (USD/t, the master's input cost); `override_reference_year`; `operating_start_year` |
 | `greenfield_revalue` | `electricity` and `hydrogen` as written without subsidy (`hydrogen` checked); `site_power_price` (USD/kWh); `site_hydrogen` (USD/t) |

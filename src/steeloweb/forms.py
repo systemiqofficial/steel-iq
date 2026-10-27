@@ -165,10 +165,9 @@ FIELD_EXPLANATIONS: dict[str, str] = {
         "Caps the levelised cost of hydrogen in each region of the master's country mapping at this percentile of the "
         "region's costs: across its countries for operating plants, and across its grid cells for new plant sites. "
         "Costs above the cap fall to it, so lower values make hydrogen cheaper in a region's dearest places. 100 "
-        "leaves national and grid-cell costs uncapped unless intraregional trade is allowed, which can lower the cap "
-        "to a linked region's cap plus the pipeline transport cost. A sub-national price row is capped at its region's "
-        "ceiling too, which is taken over national costs only, so even at 100 one dearer than its region's dearest "
-        "country falls to that country's cost."
+        "leaves national, sub-national and grid-cell costs uncapped unless intraregional trade is allowed, which can "
+        "lower the cap to a linked region's cap plus the pipeline transport cost. Below 100, a sub-national price row "
+        "is capped at its region's ceiling too, which is taken over national costs only."
     ),
     "geographical_clustering_scope": (
         "With clustering on, the trade allocation merges furnace groups of one technology and feedstock; this scope "

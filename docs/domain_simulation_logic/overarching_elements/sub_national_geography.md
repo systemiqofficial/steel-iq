@@ -25,15 +25,19 @@ Geo-keyed inputs use the same form in the master workbook: a bare country code f
 | Input | Rule |
 |---|---|
 | Input costs (energy and material prices) | **Province first**, then country, through `Location.resolve()` |
-| Hydrogen CAPEX/OPEX component | A province row overrides the country row for that province, so a province gets its own LCOH from its own electricity price and its own hydrogen CAPEX/OPEX |
+| Hydrogen CAPEX/OPEX component | A province row overrides the country row for that province, so a province gets its own LCOH from its own electricity price and its own hydrogen CAPEX/OPEX. With a baseload power mix, a province's electricity price for hydrogen blends its own grid price with the LCOE of its own cells |
 | Grid emissivity | **Province first**, then country |
 | Subsidies (CAPEX, OPEX, cost of debt, energy) | **Additive**: a country row applies to every plant in the country, province-tagged plants included; a province row applies only to plants inside that province and never replaces a country row |
 | Carbon price | National only |
 | Cost of capital | National only |
 | Fixed OPEX | National only |
-| Hydrogen price ceiling | Built from country-level LCOH only; a province inherits its country's regional ceiling |
+| Hydrogen price ceiling | Built from country-level LCOH; a province inherits its country's regional ceiling. At the 100th percentile the ceiling also counts the region's provinces, so no province is capped by it |
 
 `Location.resolve()` logs at INFO when a province has no value and the country value is used, and at DEBUG when the province value is used.
+
+### Cells of the site rasters
+
+The geospatial model prices candidate sites on a global grid. Every cell gets a geo key from the province it lies in, by point-in-polygon against the admin-1 layer for the provinces `geo_hierarchy.json` declares (`hydrogen_lcoe.build_geo_key_grid`). A cell's grid electricity price and its electrolyser CAPEX/OPEX resolve at its province row, else its country row. Unlike a new plant's location, a cell whose centre lies outside every province polygon, such as some coastal cells, gets no nearest-province fallback and stays at country level. A cell's hydrogen ceiling is a percentile of its region's cells, not of country prices.
 
 ### Per-commodity fallback in input costs
 

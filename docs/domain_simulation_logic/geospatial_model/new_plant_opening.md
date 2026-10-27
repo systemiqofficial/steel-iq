@@ -242,6 +242,7 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
   - `output_energy_costs`: subsidised output prices (increased by subsidy for physical carriers) — used for by-product revenue
   - `energy_costs_no_subsidy`: original unsubsidised prices — used as baseline for yearly refresh
 - Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
+  - Site grid prices and electrolyser CAPEX/OPEX resolve per geo unit where the master has sub-national rows, otherwise per country
 - Energy subsidies are collected for the plant's geography (country and province rows apply additively) and filtered at the operating start year (construction start + construction time), matching opportunity creation and the plant agent model
 - Bill of materials (updated with new subsidised input energy prices)
 - Expected utilisation, refreshed from `Environment.avg_utilization` (the operating fleet's average for the technology, with the same 0.6 fallback as opportunity creation) — CONSIDERED opportunities only. ANNOUNCED ones keep their value: the build decision is already taken, and utilisation is reset to 0 at construction start. A fleet average of zero flows into the zero-utilisation guard in the NPV re-valuation (−inf → discard).

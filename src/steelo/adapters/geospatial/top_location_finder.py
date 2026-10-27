@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from steelo.domain.models import GeoDataPaths
 
 from steelo.domain.constants import GEO_RESOLUTION
+from steelo.adapters.geospatial import hydrogen_lcoe
 from steelo.adapters.geospatial.geospatial_layers import (
     add_iso3_codes,
     add_feasibility_mask,
@@ -64,6 +65,8 @@ def get_candidate_locations_for_opening_new_plants(
           The first three layers are saved to temp files in the first simulation year and reused in subsequent years to
           reduce runtime - temp files are cleaned up after simulation. The landtype factor only pre-calculates a part
           which is independent from the user input.
+        - Per-year, input-independent: geo_key, the cell's sub-national geo unit where geo_hierarchy.json declares
+          one, else its iso3; grid prices and electrolyser costs resolve at it.
         - Dynamic, PAM-independent: power price (both baseload and grid), hydrogen price, and some transportation costs
           (iron feedstock and steel demand). The hydrogen price is not used for the priority location KPI, but needed
           for the full NPV calculation later on.
@@ -78,7 +81,9 @@ def get_candidate_locations_for_opening_new_plants(
     Returns:
         top_locations: Dictionary with the top X% locations for steel and iron production, their (lat,lon) coordinates
             and the corresponding railway cost, LCOE, and LCOH (required to calculate the NPV).
-        energy_prices: Dataset with the power price and LCOH for the given year for all locations.
+        energy_prices: Dataset with the power price and LCOH for the given year for all locations, and what the
+            LCOE and LCOH output files need: geo_key, grid price, baseload LCOE (with a baseload mix), uncapped
+            LCOH, the effective hydrogen ceiling and the hydrogen trade region.
 
     Note:
         Even if the power price and railway cost are not selected for the priority location KPI, they are still
@@ -96,6 +101,10 @@ def get_candidate_locations_for_opening_new_plants(
     with time_step("add_iso3_codes", geo_timer_logger):
         # Always added; required as a basis for other layers
         global_ds = add_iso3_codes(resolution=GEO_RESOLUTION, geo_paths=geo_paths)
+
+    with time_step("build_geo_key_grid", geo_timer_logger):
+        # Sub-national geo units, so grid prices and electrolyser costs resolve where the master has rows
+        global_ds["geo_key"] = hydrogen_lcoe.build_geo_key_grid(global_ds["iso3"], geo_paths)
 
     with time_step("add_feasibility_mask", geo_timer_logger):
         # Always added; required as a basis for other layers
@@ -172,10 +181,22 @@ def get_candidate_locations_for_opening_new_plants(
             end_year=int(env.config.end_year),
         )
 
-    # Extract energy prices for all locations; needed for NPV calculation later on
-    # Include iso3 codes for country-level aggregation
+    # Extract energy prices for all locations; needed for NPV calculation later on, and the area keys,
+    # price components and ceilings the LCOE and LCOH output files read
     with time_step("extract_energy_prices", geo_timer_logger):
-        energy_prices = global_ds[["iso3", "power_price", "capped_lcoh"]]
+        fields_to_extract = [
+            "iso3",
+            "geo_key",
+            "grid_price",
+            "power_price",
+            "lcoh",
+            "capped_lcoh",
+            "hydrogen_ceiling",
+            "tiam_ucl_region",
+        ]
+        if baseload_coverage > 0:
+            fields_to_extract.append("lcoe")
+        energy_prices = global_ds[fields_to_extract]
 
     # Show time taken
     end = time.time()

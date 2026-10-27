@@ -110,6 +110,10 @@ def write_minimal_data(data_dir: Path) -> Path:
 
     Returns:
         ``data_dir``.
+
+    Notes:
+        Its iso3 grid lies on the LCOE fixture's lattice with every cell in DEU, so a baseload mix prices
+        existing plants' hydrogen from the file's cells.
     """
     fixtures = data_dir / "fixtures"
     fixtures.mkdir(parents=True)
@@ -174,6 +178,14 @@ def write_minimal_data(data_dir: Path) -> Path:
         ),
     )
     (data_dir / "railway_costs.json").write_text('{"root": []}')
+    geo_dir = data_dir / "outputs" / "GEO"
+    geo_dir.mkdir(parents=True)
+    xr.DataArray(
+        np.full((2, 2), "DEU", dtype=object),
+        coords={"lat": [0.0, 0.25], "lon": [0.0, 0.25]},
+        dims=("lat", "lon"),
+        name="iso3",
+    ).to_netcdf(geo_dir / "global_grid_with_iso3.nc")
     return data_dir
 
 
@@ -193,4 +205,39 @@ def test_bootstrap_reads_the_lcoe_folder_the_run_names_else_the_prepared_data(tm
 
     runner = bootstrap.bootstrap_simulation(config)
 
-    assert runner.bus.env.geo_paths.baseload_lcoe_dir == expected
+    env = runner.bus.env
+    assert env.geo_paths.baseload_lcoe_dir == expected
+    assert env.baseload_lcoe_by_geo_key[Year(2025)] == {"DEU": pytest.approx(0.06)}
+    inputs = env.hydrogen_price_inputs_by_year[Year(2025)]["DEU"]
+    assert inputs["electricity"] == pytest.approx(0.15 * 0.05 + 0.85 * 0.06)
+    existing_plants = (config.output_dir / "data" / "LCOH" / "lcoh_existing_plants.csv").read_text().splitlines()
+    assert [line.split(",")[:4] for line in existing_plants[1:]] == [
+        ["country", "DEU", "", "2025"],
+        ["country", "DEU", "", "2026"],
+    ]
+
+
+def test_bootstrap_on_grid_only_builds_no_lcoe_series(tmp_path):
+    """Grid only reads no LCOE file and prices existing plants' hydrogen at the grid price."""
+    data_dir = write_minimal_data(tmp_path / "data")
+    config = make_config(tmp_path, "Grid only")
+    config.data_dir = data_dir
+
+    runner = bootstrap.bootstrap_simulation(config)
+
+    env = runner.bus.env
+    assert env.baseload_lcoe_by_geo_key == {}
+    inputs = env.hydrogen_price_inputs_by_year[Year(2025)]["DEU"]
+    assert inputs["lcoe"] is None
+    assert inputs["electricity"] == 0.05
+    assert env.capped_hydrogen_costs_by_year[Year(2025)]["DEU"] == pytest.approx(50.0 * 0.05 + 1.0)
+
+
+def test_bootstrap_on_a_baseload_mix_without_a_data_folder_stops(tmp_path, monkeypatch):
+    """Without config.data_dir there is no LCOE file to price existing plants' hydrogen from, so bootstrap stops."""
+    monkeypatch.chdir(tmp_path)
+    write_minimal_data(tmp_path / "data")
+    config = make_config(tmp_path, "85% baseload + 15% grid")
+
+    with pytest.raises(ValueError, match="needs config.data_dir"):
+        bootstrap.bootstrap_simulation(config)

@@ -32,7 +32,6 @@ from .adapters.dataprocessing.postprocessing.post_process_datacollection import 
     extract_and_process_stored_dataCollection,
 )
 from .adapters.dataprocessing.postprocessing.generate_post_run_plots import generate_post_run_cap_prod_plots
-from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .viewer.extract import write_viewer_files
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T, INITIAL_SCRAP_PRODUCTION_COST
@@ -170,6 +169,7 @@ class GeoConfig:
     # === Power and Hydrogen ===
     included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "90% baseload + 10% grid", "95% baseload + 5% grid", "Not included", "Grid only"
     hydrogen_ceiling_percentile: float = 100.0  # Percentile of a region's LCOH capping its hydrogen price; 100 = no cap
+    hydrogen_lcoe_percentile: float = 50.0  # Percentile of an area's LCOE cells in existing plants' hydrogen price
     intraregional_trade_allowed: bool = False  # Whether linked regions (e.g., Africa and Western Europe) trade hydrogen
     long_dist_pipeline_transport_cost: float = 1.0  # USD/kgH2
     # Which regions trade with which ones? (to[from])
@@ -1825,9 +1825,6 @@ class SimulationRunner:
                 if fixtures_dir and self.config.capacity_policy.enabled
                 else None,
             )
-
-        # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
-        aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)
 
         write_viewer_files_after_run(self.config.output_dir)
 

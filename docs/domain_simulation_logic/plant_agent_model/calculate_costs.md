@@ -202,14 +202,14 @@ The module supports:
 
 The capped LCOH series is computed once at bootstrap for every year of the input-cost data (`Environment.initiate_capped_hydrogen_costs_by_year()`), not each simulation year. See [Data Checks at Load Time](reductant_choice_and_opex.md#data-checks-at-load-time).
 
-**Note:** This LCOH calculation is analogous to the one used in the geospatial model, but based on grid power prices instead of custom renewable energy costs. Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations. See [Priority Location Selection](../geospatial_model/priority_location_selection.md) for more details on ceilings and trade.
+**Note:** This LCOH calculation is analogous to the one used in the geospatial model. Existing plants pay `(1 - c) × grid + c × lcoe` for electrolysis power, where `c` is the baseload coverage of the power mix and `lcoe` the area's `hydrogen_lcoe_percentile` (default: the median) of its BOA cell LCOEs. Grid prices, LCOE and CAPEX/OPEX resolve per geo_unit where the master has a sub-national row, otherwise per country. The ceiling percentile is taken across the region's country-level prices, not cells, and a geo_unit inherits its country's ceiling; at the 100th percentile the ceiling is the highest price over the region's countries and geo_units, so nothing is capped by its own region. See [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) for the price step by step, and [Priority Location Selection](../geospatial_model/priority_location_selection.md) for more details on ceilings and trade.
 
 **Functions:**
 - `calculate_lcoh_from_electricity_country_level()` - LCOH per country from electricity prices
 - `calculate_regional_hydrogen_ceiling_country_level()` - Regional hydrogen price ceilings (percentile-based)
 - `apply_hydrogen_price_cap_country_level()` - Applies price caps with intraregional trade options
 
-**Note:** Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations.
+**Note:** `geospatial_calculations.py` holds the cell-level counterparts that price new sites' hydrogen. Both share the LCOH formula and resolve the electrolyser cost at the geo unit, then the country, so a change to either belongs in both. The ceilings differ: there a percentile of a region's cells, here of its countries' prices, with a geo unit taking its country's ceiling.
 
 ### Energy and Reductant Selection
 Scores each (metallic charge, reductant) combination on total cost and picks the reductant. See [Reductant Choice and Investment OPEX](reductant_choice_and_opex.md) for how the annual pick and the investment NPVs use them.

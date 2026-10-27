@@ -53,9 +53,10 @@ def coverage_to_percentile(coverage: float) -> int:
 
 
 # -----------------------------------------  Hydrogen ------------------------------------------------------
-# Note: A country-level version of the functions below  can be found in calculate_costs.py and is used by the
-# PlantAgentsModel to follow the same logic to get hydrogen costs from electricity prices. For consistency,
-# any changes to the logic below should be reflected in there as well.
+# Note: calculate_costs.py holds the country-level counterparts that price existing plants' hydrogen. Both share
+# the LCOH formula and resolve the electrolyser cost at the geo key, then the country, so a change to either
+# belongs in both. The ceilings differ: here a percentile of a region's cells, there of its countries' prices,
+# with a province taking its country's ceiling.
 
 
 def calculate_lcoh_from_power_price(
@@ -68,16 +69,22 @@ def calculate_lcoh_from_power_price(
     Calculate the LCOH (Levelized Cost of Hydrogen) from the power price for the given year.
 
     Formula: LCOH (USD/kg) = electrolyser energy consumption (MWh/kg) * power price (USD/kWh) + CAPEX and OPEX
-    components for each country and year (USD/kg)
+    components for the cell's geo unit where the master has a row, else its country, and year (USD/kg)
 
     Args:
-        ds: Dataset with power prices (baseload and grid combined)
+        ds: Dataset with power prices (baseload and grid combined), 'iso3' and optionally 'geo_key'
         year: Simulation year
         hydrogen_efficiency: Dictionary mapping years to efficiency values (MWh/kg)
-        hydrogen_capex_opex: Dictionary mapping country codes to year->value dictionaries for CAPEX and OPEX (USD/kg)
+        hydrogen_capex_opex: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to
+            year->value dictionaries for CAPEX and OPEX (USD/kg)
 
     Returns:
         Dataset with added 'lcoh' variable containing levelized cost of hydrogen for each grid point
+
+    Notes:
+        CAPEX/OPEX resolves at the cell's geo key, then its iso3: the rule
+        ``calculate_lcoh_from_electricity_country_level`` applies to existing plants. Without a 'geo_key'
+        variable every cell resolves at its iso3. A cell with neither row gets no LCOH.
     """
     logger = logging.getLogger(f"{__name__}.calculate_lcoh_from_power_price")
     logger.info("[GEO LAYERS] Calculating LCOH from power price.")
@@ -118,11 +125,21 @@ def calculate_lcoh_from_power_price(
             .sel(lat=xr.DataArray(valid_lats, dims="z"), lon=xr.DataArray(valid_lons, dims="z"), method="nearest")
             .values
         )
+        geo_key_vals = (
+            ds["geo_key"]
+            .sel(lat=xr.DataArray(valid_lats, dims="z"), lon=xr.DataArray(valid_lons, dims="z"), method="nearest")
+            .values
+            if "geo_key" in ds
+            else iso3_vals
+        )
         result = np.full_like(power_price_vals, np.nan, dtype=float)
-        for idx, (power_price_pixel, iso3_pixel) in enumerate(zip(power_price_vals, iso3_vals)):
+        for idx, (power_price_pixel, iso3_pixel, geo_key_pixel) in enumerate(
+            zip(power_price_vals, iso3_vals, geo_key_vals)
+        ):
             if iso3_pixel == "nan" or pd.isna(power_price_pixel) or pd.isna(iso3_pixel):
                 continue
-            lcoh_capex_opex_component_pixel = country_lcoh.get(iso3_pixel)
+            capex_opex_key = geo_key_pixel if geo_key_pixel in country_lcoh else iso3_pixel
+            lcoh_capex_opex_component_pixel = country_lcoh.get(capex_opex_key)
             if lcoh_capex_opex_component_pixel is None or pd.isna(lcoh_capex_opex_component_pixel):
                 continue
             result[idx] = energy_consumption_kwh * power_price_pixel + lcoh_capex_opex_component_pixel
@@ -207,9 +224,17 @@ def apply_hydrogen_price_cap(
         geo_config: Configuration object containing trade settings and transport costs
 
     Returns:
-        Dataset with added 'capped_lcoh' variable
+        Dataset with added 'capped_lcoh' variable and 'hydrogen_ceiling', the effective ceiling (USD/kg) each
+        cell is capped against
+
+    Notes:
+        The effective ceiling is the region's ceiling, lowered to the best trade partner's ceiling plus the
+        pipeline cost when intraregional trade is allowed. Cells outside every region keep NaN in both. A cell
+        without an LCOH (no power price or no electrolyser cost row) keeps a NaN capped price, so it drops out of
+        the candidate sites instead of being priced at the ceiling.
     """
     ds["capped_lcoh"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
+    ds["hydrogen_ceiling"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
 
     for region in regional_ceiling.keys():
         mask = ds["tiam_ucl_region"] == region
@@ -223,11 +248,8 @@ def apply_hydrogen_price_cap(
         else:
             ceiling_value = regional_ceiling[region]
 
-        ds["capped_lcoh"].values[mask] = np.where(
-            ds["lcoh"].values[mask] < ceiling_value,
-            ds["lcoh"].values[mask],
-            ceiling_value,
-        )
+        ds["hydrogen_ceiling"].values[mask] = ceiling_value
+        ds["capped_lcoh"].values[mask] = np.minimum(ds["lcoh"].values[mask], ceiling_value)
 
     return ds
 
