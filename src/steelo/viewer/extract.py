@@ -1311,16 +1311,29 @@ def missing_inputs(run_dir: Path, master_excel: Path | None = None) -> list[Path
     Returns:
         The missing paths: the post-processed CSV (as its glob), ``simulation_config.json``,
         ``preparation_metadata.json``, the master (``preparation_metadata.json:master_excel`` when
-        the metadata records none) and ``emissions.html``, which ``geo.json`` needs. Empty when the
-        run has every one.
+        the metadata records none) and ``emissions.html``, which ``geo.json`` needs. A config
+        written before the viewer adds ``simulation_config.json:<key>`` for ``run_name`` or
+        ``chosen_scrap_scenario`` when absent, and for ``geo_config`` when not an object. Empty
+        when the run has every one.
 
     Notes:
         The recorded master is checked only when ``preparation_metadata.json`` exists. The other
         plot pages are optional: a missing one skips its file with a warning, as at run end.
     """
+    config_path = run_dir / "simulation_config.json"
     metadata_path = run_dir / "preparation_metadata.json"
     missing = [] if any(run_dir.glob("post_processed_*.csv")) else [run_dir / "post_processed_*.csv"]
-    missing += [p for p in (run_dir / "simulation_config.json", metadata_path) if not p.exists()]
+    missing += [p for p in (config_path, metadata_path) if not p.exists()]
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+        # A run made before the viewer lacks these keys or stores its nested settings as repr strings
+        missing += [
+            run_dir / f"simulation_config.json:{key}"
+            for key in ("run_name", "chosen_scrap_scenario")
+            if key not in config
+        ]
+        if not isinstance(config.get("geo_config"), dict):
+            missing.append(run_dir / "simulation_config.json:geo_config")
     if master_excel is None and metadata_path.exists():
         recorded = json.loads(metadata_path.read_text())["master_excel"]
         # The app records null for a run without a ready data preparation

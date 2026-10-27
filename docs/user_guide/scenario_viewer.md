@@ -148,6 +148,8 @@ is missing when:
 - it stopped with an error before its end;
 - its viewer step failed: the run itself still finishes, its log says "viewer files incomplete for this run", and
   `steelo-viewer regenerate` writes the files again;
+- it was made by an earlier version of steel-iq: `steelo-viewer regenerate` refuses it and names what its
+  `simulation_config.json` lacks;
 - in the app: it is an app run that has not finished, or a command-line run whose folder is named like an app run's
   (`run_<id>`).
 
