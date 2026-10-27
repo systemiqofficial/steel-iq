@@ -426,7 +426,7 @@ def test_existing_plant_file_leaves_the_lcoe_empty_without_baseload(tmp_path):
 
 def test_existing_plant_ceiling_is_the_cap_applied_and_a_province_inherits_it(tmp_path):
     """HydrogenPriceInputs.ceiling is the value each price was capped against, inherited by a province."""
-    env = make_env(tmp_path, "Grid only")
+    env = make_env(tmp_path, "Grid only")  # no baseload series needed for this check
     env.config.geo_config.hydrogen_ceiling_percentile = 0.0
 
     env.initiate_capped_hydrogen_costs_by_year()
@@ -440,7 +440,7 @@ def test_existing_plant_ceiling_is_the_cap_applied_and_a_province_inherits_it(tm
 
 def test_existing_plant_file_keeps_only_the_simulated_years(tmp_path):
     """The precompute runs to the last input-cost year; the file stops at the end year."""
-    env = make_env(tmp_path, "Grid only")
+    env = make_env(tmp_path, "Grid only")  # no baseload series needed for this check
     for year_costs in env.input_costs.values():
         year_costs[Year(2026)] = year_costs[Year(2025)]
     env.hydrogen_efficiency[Year(2026)] = 0.05
