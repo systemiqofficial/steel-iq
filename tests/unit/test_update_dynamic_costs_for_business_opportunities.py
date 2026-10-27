@@ -759,7 +759,7 @@ def test_considered_plant_with_historical_npv(
         scenario_name="test",
         iso3="USA",
         start_year=Year(2026),
-        end_year=Year(2027),
+        end_year=Year(2026),
         technology_name="EAF",
         cost_item="capex",
         subsidy_type="relative",
