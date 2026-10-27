@@ -785,8 +785,8 @@ def test_considered_plant_with_historical_npv(
 
     # Execute with consideration_time=3
     # For considered plant with 2 years already considered:
-    # year = current_year + consideration_time + 1 - years_already_considered
-    # year = 2025 + 3 + 1 - 2 = 2027
+    # year = current_year + consideration_time - years_already_considered
+    # year = 2025 + 3 - 2 = 2026
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
@@ -801,7 +801,7 @@ def test_considered_plant_with_historical_npv(
         debt_subsidies={},
     )
 
-    # Verify - should use subsidy from year 2027 (50% reduction)
+    # Verify - should use subsidy from year 2026 (50% reduction)
     assert len(commands) == 1
     cmd = commands[0]
     assert cmd.new_capex_no_subsidy == 1000.0
@@ -1233,7 +1233,7 @@ def test_considered_target_year_is_floored_at_next_year(
 
     Notes:
         With consideration_time=3 and 5 years of NPV history, the raw formula
-        [current + consideration_time + 1 - years_considered] gives 2024 - a year already gone.
+        [current + consideration_time - years_considered] gives 2023 - a year already gone.
         The floor pins it to 2026, the soonest path still open (announce now, construct next year),
         matching track_business_opportunities. Asserted on CAPEX, which is filtered at that year
         itself; an energy subsidy would be filtered four years later and could not pin the floor.

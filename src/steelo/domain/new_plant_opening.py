@@ -62,7 +62,7 @@ def get_list_of_allowed_techs_for_target_year(
     Args:
         allowed_techs: Dictionary mapping years to lists of allowed technology names
         tech_to_product: Dictionary mapping technology names to product types
-        target_year: Earliest possible construction start year (current year + consideration time + 1 year announcement lag)
+        target_year: Earliest possible construction start year (current year + max(consideration time, 2))
 
     Returns:
         Dictionary mapping products (steel, iron) to lists of allowed technologies
@@ -75,7 +75,7 @@ def get_list_of_allowed_techs_for_target_year(
 
     Notes:
         - Business opportunities only allowed if technology is permitted in target year
-        - Target year: earliest possible construction start year (current year + consideration time + 1 year announcement lag)
+        - Target year: earliest possible construction start year (current year + max(consideration time, 2))
         - Technologies about to be banned are poor investments even if currently discussed
     """
     # No allowed techs are defined for the target year; raise error.
@@ -151,7 +151,8 @@ def prepare_cost_data_for_business_opportunity(
         best_locations_subset: Dictionary of best locations per product with necessary site data (product -> list of dicts with lat,
             lon, iso3, power price, hydrogen price, railway cost)
         current_year: The current simulation year.
-        target_year: The year when the plant would start operation (current year + consideration time + 1 year announcement lag)
+        target_year: Earliest possible construction start year (current year + max(consideration time, 2)); the plant
+            would start operation construction_time years later
         energy_costs: Nested dictionary with energy costs per geography and year (geo_key -> year ->
             energy carrier -> cost); sub-national rows (``"ISO3:unit"``) win over country rows for
             sites whose derived geo_unit matches

@@ -197,8 +197,8 @@ FIELD_EXPLANATIONS: dict[str, str] = {
     "consideration_time": (
         "A considered new plant has its NPV recalculated every year; once its last N NPVs are all positive it enters "
         "the announcement draw, and once they are all negative it is dropped, while mixed results keep it under "
-        "consideration. The technologies on offer are those allowed N + 1 years ahead. Higher values slow the uptake "
-        "of new plants and filter out one-off good years."
+        "consideration. The technologies on offer are those allowed N years ahead (2 when N is 1). Higher values slow "
+        "the uptake of new plants and filter out one-off good years."
     ),
     "new_capacity_share_from_new_plants": (
         "Splits each year's iron and steel capacity limits: a new plant starts construction only if it fits within "

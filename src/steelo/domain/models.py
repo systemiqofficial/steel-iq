@@ -3129,7 +3129,9 @@ class FurnaceGroup:
             1. Re-value the opportunity (status: considered) each year with the same metric used at
                creation: materials-only variable OPEX plus fixed OPEX (scaled to production terms)
                plus the year-wise reductant score over the earliest possible operating window.
-               Energy, carbon and by-products enter through the score; the series re-optimises the
+               It starts construction_time years after the earliest construction start,
+               [year + consideration_time - years considered] floored at [year + 1]. Energy,
+               carbon and by-products enter through the score; the series re-optimises the
                reductant per year by design, while the committed ``chosen_reductant`` stays what
                conversion uses. The site's own pixel electricity/hydrogen prices (refreshed each
                year by ``update_dynamic_costs_for_business_opportunities``) enter as overrides on
@@ -3234,10 +3236,10 @@ class FurnaceGroup:
             years_already_considered = len(self.historical_npv_business_opportunities)
             earliest_operation_start_year = Year(
                 max(
-                    year + consideration_time + construction_time + 1 - years_already_considered,
+                    year + consideration_time + construction_time - years_already_considered,
                     year + 1 + construction_time,
                 )
-            )  # 1 year of announcement time
+            )
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
             # Get OPEX (with subsidies) for the years the plant would be operational
@@ -6534,7 +6536,8 @@ class PlantGroup:
         Identifies new business opportunities for plants at given locations with specific technologies.
 
         Steps:
-            1. Find allowed technologies for the target year.
+            1. Find allowed technologies for the target year, the earliest construction start the
+               opportunity can reach: current_year + max(consideration_time, 2).
             2. Randomly select a subset of top locations for a more in-depth assessment to reduce runtime.
             3. Prepare all required inputs (input costs with electricity and hydrogen costs from own parc,
                capex and cost of debt with subsidies, cost of equity, fixed OPEX, market price of product,
@@ -6642,8 +6645,9 @@ class PlantGroup:
         for product, value in initial_counts.items():
             candidate_stats[f"input_sites_{product}"] = value
 
-        # Set target year for technology filtering
-        target_year = Year(current_year + consideration_time + 1)
+        # Earliest construction start: announcement once the consideration window's NPVs exist,
+        # no sooner than next year, then construction the year after
+        target_year = Year(current_year + max(consideration_time, 2))
 
         # Step 1: Find allowed technologies for the target year
         product_to_tech = get_list_of_allowed_techs_for_target_year(
@@ -6821,9 +6825,9 @@ class PlantGroup:
               current year. Hydrogen is the site's ``capped_lcoh`` (USD/kg) × ``T_TO_KG``, in USD/t
               as every energy cost dict holds it and as opportunity creation writes it; a site with
               no raster value keeps its stored no-subsidy price.
-            - CAPEX and debt subsidies: set to the construction start year, which is the [current year
-              + consideration time + announcement time - years considered] for considered BOs and
-              [current year + 1] for announced BOs, floored at [current year + 1].
+            - CAPEX and debt subsidies: set to the construction start year, which is the earliest
+              one a considered BO can reach, [current year + consideration time - years considered]
+              floored at [current year + 1], and [current year + 1] for announced BOs.
             - Energy subsidies: set to the operating start year [construction start + construction
               time], since subsidised carrier prices are what the plant pays once running. This matches
               opportunity creation, PAM and the window the score series prices.
@@ -6910,9 +6914,7 @@ class PlantGroup:
                             years_already_considered = 0
                         # Floored at the soonest path still open to a considered opportunity:
                         # announce now, construct from next year (mirrors track_business_opportunities)
-                        year = Year(
-                            max(current_year + consideration_time + 1 - years_already_considered, current_year + 1)
-                        )  # announcement_time = 1
+                        year = Year(max(current_year + consideration_time - years_already_considered, current_year + 1))
                     operating_start_year = Year(year + construction_time)
 
                     selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
@@ -11603,8 +11605,8 @@ class Environment:
         allowed_by_year: dict[Year, list[str]] = {}
 
         # Generate for FULL simulation range (not from current year!)
-        # Note: add extra [+ consideration_time + 2] to be able to consider new plants until the end of the simulation
-        # 1st +1 beacuse of fixed 1y announcement time and 2nd +1 because range is exclusive at the end
+        # Runs to end_year + consideration_time + 1 (the range's end is exclusive), which covers the latest
+        # opportunity target year, end_year + max(consideration_time, 2), so new plants are considered to the end
         for year in range(self.config.start_year, self.config.end_year + self.config.consideration_time + 2):
             allowed_techs = []
 

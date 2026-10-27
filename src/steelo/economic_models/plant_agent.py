@@ -92,7 +92,7 @@ class GeospatialModel:
             1. Produces all geospatial input layers (LCOE, transport costs, etc.) and calculates outgoing cashflow proxies
             to select the best locations globally and per country.
             2. Identifies new business opportunities in top locations for technologies that will be allowed at the earliest possible
-            construction start (current year + consideration time + announcement time). These are marked as 'considered'.
+            construction start (current year + consideration time, at least 2 years ahead). These are marked as 'considered'.
             3. Updates dynamic costs (e.g., grid cell-specific power and hydrogen prices, CAPEX, cost of debt, and subsidies) for all
             business opportunities yearly (status: considered and announced).
             4. Updates the NPV of all potential business opportunities each year with new costs (status: considered).
@@ -141,7 +141,8 @@ class GeospatialModel:
                 input_costs_converted[iso3] = {Year(year): costs for year, costs in year_costs.items()}
         ## Make a price series for COSA and NPV calculations, anchored at the current year.
         ## Extended by consideration_time + 1 so the opportunity paths can re-anchor it at
-        ## their construction start (up to target_year) and still cover the operating window.
+        ## their construction start (up to target_year, current year + max(consideration_time, 2))
+        ## and still cover the operating window.
         future_price_series: dict[str, list[float]] = {}
         start_year = bus.env.year
         end_year = (
