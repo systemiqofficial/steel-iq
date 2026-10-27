@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -9,7 +11,9 @@ import pytest
 import xarray as xr
 
 from steelo.adapters.geospatial import geospatial_calculations, geospatial_statistics
-from steelo.simulation import GeoConfig
+from steelo.domain.models import CountryMapping, Environment, Year
+from steelo.economic_models import plant_agent
+from steelo.simulation import GeoConfig, SimulationConfig
 
 # Two rows of four cells: AAA (IRENA Europe) with two geo units in different Natural Earth regions and one cell
 # outside both; BBB (IRENA Asia) in another hydrogen trade region; one cell without a country and one BBB cell
@@ -347,3 +351,67 @@ def test_only_the_new_files_are_written(tmp_path):
     ]
     assert not hasattr(geospatial_statistics, "export_lcoe_lcoh_statistics_by_country")
     assert not hasattr(geospatial_statistics, "aggregate_lcoe_lcoh_statistics")
+
+
+def test_geospatial_step_hands_the_writer_the_held_existing_plant_prices_and_stops_on_its_error(
+    tmp_path,
+    monkeypatch,
+):
+    """
+    Past the input-cost horizon the writer gets existing plants' prices of the last covered year, as plants pay
+    them, and an error from the writer stops the geospatial step instead of being logged and passed over.
+    """
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2027),
+        master_excel_path=Path("test.xlsx"),
+        output_dir=tmp_path,
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # no baseload series needed for this check
+    )
+    tech_switches_csv = tmp_path / "tech_switches_allowed.csv"
+    tech_switches_csv.write_text("origin,BF\nBF,YES\n", encoding="utf-8")
+    env = Environment(config=config, tech_switches_csv=tech_switches_csv)
+    env.input_costs = {"AAA": {Year(2025): {"electricity": 0.05}, Year(2026): {"electricity": 0.04}}}
+    env.hydrogen_efficiency = {Year(2025): 0.05, Year(2026): 0.05}
+    env.hydrogen_capex_opex = {"AAA": {Year(2025): 1.0, Year(2026): 1.0}}
+    env.initiate_country_mappings(
+        country_mappings=[
+            CountryMapping(
+                country="Aland",
+                iso2="AA",
+                iso3="AAA",
+                irena_name="Aland",
+                region_for_outputs="TestRegion",
+                ssp_region="TestRegion",
+                tiam_ucl_region="TestRegion",
+            ),
+        ],
+    )
+    env.initiate_capped_hydrogen_costs_by_year()
+    env.year = Year(2027)
+    env.geo_paths = Mock(data_dir=tmp_path)
+    env.virgin_iron_demand = Mock(get_demand=lambda year: 0.0)
+    monkeypatch.setattr(env, "extract_price_from_costcurve", lambda **kwargs: 500.0)
+    bus = SimpleNamespace(env=env, uow=Mock())
+    bus.uow.plant_groups.list.return_value = []
+    cells = energy_prices(0.0)
+    monkeypatch.setattr(
+        plant_agent,
+        "get_candidate_locations_for_opening_new_plants",
+        lambda *args: ({"iron": [{}], "steel": [{}]}, cells),
+    )
+    received: dict[str, object] = {}
+
+    def failing_writer(**arguments: object) -> None:
+        received.update(arguments)
+        raise RuntimeError("could not write the LCOE and LCOH files")
+
+    monkeypatch.setattr(plant_agent, "export_lcoe_lcoh_outputs", failing_writer)
+
+    with pytest.raises(RuntimeError, match="could not write the LCOE and LCOH files"):
+        plant_agent.GeospatialModel.run(bus)  # type: ignore[arg-type]
+
+    assert received["energy_prices"] is cells
+    assert received["year"] == 2027
+    assert received["existing_plant_lcoh"] == env.capped_hydrogen_costs_by_year[Year(2026)]
+    assert received["existing_plant_lcoh"] != env.capped_hydrogen_costs_by_year[Year(2025)]
