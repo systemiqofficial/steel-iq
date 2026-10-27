@@ -1104,10 +1104,14 @@ class ModelRun(models.Model):
         """Restore the run to a pristine CREATED state so it can be queued again.
 
         Notes:
-            Also removes the previous attempt's outputs: the output folder, the result CSV and the plot rows.
+            Also removes the previous attempt's outputs: the output folder, the result CSV file and the plot rows
+            with their image files.
             ``output_directory`` is cleared so the next run recreates the folder structure.
         """
         self.cleanup_output_directory()
+        self.result_csv.delete(save=False)
+        for plot in self.simulation_plots.all():
+            plot.image.delete(save=False)
         self.simulation_plots.all().delete()
         self.state = self.RunState.CREATED
         self.error_message = ""

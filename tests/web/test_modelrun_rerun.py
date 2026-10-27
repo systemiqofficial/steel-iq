@@ -121,7 +121,10 @@ def test_rerun_from_cancelled_resets_and_enqueues(client, monkeypatch):
 
 @pytest.mark.django_db
 def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
-    """A reset removes the output folder, result CSV and plot rows, so a rerun shows only its own results."""
+    """
+    A reset removes the output folder, the result CSV file and the plot rows with their image files, so a rerun
+    shows only its own results and leaves no stale files under MEDIA_ROOT.
+    """
     output_dir = Path(temp_media_root) / "model_outputs" / "run_old"
     output_dir.mkdir(parents=True)
     (output_dir / "old.csv").write_text("stale")
@@ -130,12 +133,14 @@ def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
         output_directory=str(output_dir),
         result_csv=ContentFile(b"stale", name="old_results.csv"),
     )
-    SimulationPlot.objects.create(
+    plot = SimulationPlot.objects.create(
         modelrun=modelrun,
         plot_type=SimulationPlot.PlotType.OTHER,
         title="Old plot",
         image=ContentFile(b"png", name="old.png"),
     )
+    csv_file = Path(modelrun.result_csv.path)
+    image_file = Path(plot.image.path)
 
     modelrun.reset_for_rerun()
 
@@ -144,6 +149,8 @@ def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
     assert modelrun.output_directory == ""
     assert not output_dir.exists()
     assert not modelrun.simulation_plots.exists()
+    assert not csv_file.exists()
+    assert not image_file.exists()
 
 
 @pytest.mark.django_db
