@@ -365,7 +365,7 @@ Shared columns, `price_type`, then `<stat>_usd_per_mwh` (USD/MWh), then `n_grid_
 |---|---|
 | `pure_lcoe` | BOA LCOE of the optimal renewable system at the cell, in USD per MWh delivered by that system, interpolated to the year. Not written when the coverage is 0 |
 | `grid` | Grid electricity price at the cell: the master's `Input costs` electricity for the cell's geo unit where it has a row, otherwise for its country |
-| `grid_mix` | Price of 1 MWh of a new site's electricity demand: `grid_share × grid + coverage × pure_lcoe`. New plants pay this for electricity and for electrolysis power. Equals `grid` when the coverage is 0 |
+| `grid_mix` | Price of 1 MWh of a new site's electricity demand: `grid_share × grid + coverage × pure_lcoe`. The cell's own price, which a new site's NPV at selection uses for electricity and electrolysis power; operating new sites pay the existing-plant series for hydrogen (see [Energy Prices](energy_prices.md), step 8). Equals `grid` when the coverage is 0 |
 
 ### `lcoe_summary.csv`
 
@@ -386,7 +386,7 @@ Shared columns, `hydrogen_ceiling_pct`, `intraregional_trade_allowed`, `price_ty
 | `hydrogen_ceiling_pct` | Percentile of hydrogen costs within each hydrogen trade region (TIAM-UCL) used as that region's price ceiling. For new sites the percentile is taken across the region's cells. 100 means no ceiling |
 | `intraregional_trade_allowed` | `True` if a region may import hydrogen from linked regions at their ceiling plus the long-distance pipeline cost |
 | `price_type` = `uncapped` | Electrolyser energy (kWh/kg) × the cell's `grid_mix` price + electrolyser CAPEX/OPEX for the cell's geo unit, otherwise its country |
-| `price_type` = `capped` | `min(uncapped, ceiling)`: what a new plant pays for hydrogen |
+| `price_type` = `capped` | `min(uncapped, ceiling)`: the cell's own price, which a new site's NPV at selection uses; operating new sites pay the existing-plant series for hydrogen (see [Energy Prices](energy_prices.md), step 8) |
 | `ceiling_usd_per_kg` | Effective ceiling applied to the area's cells, trade-adjusted when trade is allowed. Empty when the area's cells span several hydrogen trade regions, as World and most IRENA rows do |
 
 A cell whose geo unit and country both lack an electrolyser CAPEX/OPEX row has no uncapped price and so no capped price either: it counts in no row. No cell is in this case with the current master data.
