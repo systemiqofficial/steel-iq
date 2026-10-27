@@ -1,10 +1,13 @@
 """Run-end step that writes the viewer files."""
 
+import json
 import logging
 import os
 from datetime import datetime
 
 from steelo import simulation
+from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
+from steelo.simulation import SimulationConfig
 from steelo.viewer import extract
 
 
@@ -37,3 +40,30 @@ def test_start_time_carries_its_utc_offset_and_round_trips_to_the_config_file_ti
 
     assert started == "2026-10-21T12:51:01+00:00"
     assert datetime.fromisoformat(started).timestamp() == config_path.stat().st_mtime
+
+
+def test_regenerate_refuses_a_run_made_before_the_viewer_and_writes_nothing(tmp_path):
+    """
+    Tests that regenerate exits 1 and writes no viewer/ for a run whose simulation_config.json lacks run_name and
+    chosen_scrap_scenario and stores geo_config as a repr string, naming each, and that a current config passes.
+    """
+    master = tmp_path / "master_input.xlsx"
+    master.write_bytes(b"")
+    run_dir = tmp_path / "sim_old"
+    (run_dir / "plots" / "interactive").mkdir(parents=True)
+    (run_dir / "plots" / "interactive" / "emissions.html").write_text("")
+    (run_dir / "post_processed_2026.csv").write_text("")
+    (run_dir / "preparation_metadata.json").write_text(json.dumps({"master_excel": str(master)}))
+    (run_dir / "simulation_config.json").write_text(json.dumps({"geo_config": "GeoConfig(max_altitude=1500.0)"}))
+
+    assert extract.regenerate([str(run_dir)]) == 1
+    assert not (run_dir / "viewer").exists()
+    assert extract.missing_inputs(run_dir) == [
+        run_dir / "simulation_config.json:run_name",
+        run_dir / "simulation_config.json:chosen_scrap_scenario",
+        run_dir / "simulation_config.json:geo_config",
+    ]
+
+    config = SimulationConfig.for_testing(InMemoryRepository(), output_dir=run_dir)
+    (run_dir / "simulation_config.json").write_text(json.dumps(simulation.config_as_json_dict(config)))
+    assert extract.missing_inputs(run_dir) == []

@@ -4,6 +4,8 @@ import dataclasses
 import hashlib
 import json
 
+import pytest
+
 from steelo import simulation
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.capacity_policy.config import CapacityPolicyConfig
@@ -285,3 +287,32 @@ def test_discover_runs_names_each_skipped_folder_in_one_warning_only(tmp_path, c
         f"skipped, no viewer/run.json: {tmp_path / 'sim_3'}",
         f"skipped, no viewer/run.json: {tmp_path / 'sim_2'}",
     ]
+
+
+def test_run_files_symlinked_outside_their_run_folder_are_not_read(tmp_path):
+    """
+    Tests that a run whose viewer/run.json or simulation_config.json is a symlink leaving its folder is not listed,
+    that geo.json falls back to an older run when the newest run's is such a symlink, and that the View data pane
+    refuses an inputs.json that is one, naming the file.
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"topics": []}')
+    older = write_run(output / "sim_1", "older", "2026-10-20T10:00:00")
+    newer = write_run(output / "sim_2", "newer", "2026-10-20T10:01:00")
+    (older / "viewer" / "geo.json").write_text("{}")
+    (older / "viewer" / "inputs.json").write_text('{"topics": []}')
+    (newer / "viewer" / "geo.json").symlink_to(outside)
+    (newer / "viewer" / "inputs.json").symlink_to(outside)
+    for folder, linked in (("sim_3", "viewer/run.json"), ("sim_4", "simulation_config.json")):
+        run_dir = write_run(output / folder, folder, "2026-10-20T10:02:00")
+        (run_dir / linked).unlink()
+        (run_dir / linked).symlink_to(outside)
+
+    runs = catalogue.discover_runs(output, [])
+
+    assert runs == [older, newer]
+    assert catalogue.geo_path(runs) == older / "viewer" / "geo.json"
+    with pytest.raises(ValueError, match="sim_2/viewer/inputs.json: resolves outside its run folder"):
+        catalogue.build_inputs(runs, catalogue.build_manifest(runs, with_made_in=False))

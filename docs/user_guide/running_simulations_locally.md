@@ -126,6 +126,10 @@ print(f"2030 steel price: {results['price'][2030]['steel']}")
 print(f"2030 production: {results['production'][2030]}")
 ```
 
+A run started this way gets no `viewer/` folder, so the [Scenario Viewer](scenario_viewer.md) does not list it: the
+viewer files need the `simulation_config.json` and `preparation_metadata.json` that only `run_simulation` and the app
+write.
+
 ### Custom Paths Example
 
 `SimulationConfig.from_data_directory()` accepts override kwargs that are forwarded to `SimulationConfig.__init__`. Use it to point at a non-default data directory and tweak any config field — including `plots_dir`, `start_year`/`end_year`, and so on:

@@ -1,7 +1,7 @@
 # Scenario viewer: developer note
 
-The offline scenario viewer: files written at the end of every run, a catalogue built from the runs on disk, and a
-browser app served by `steelo-viewer` or by the Django app. The user's view is
+The offline scenario viewer: files written at the end of every `run_simulation` and app run, a catalogue built from
+the runs on disk, and a browser app served by `steelo-viewer` or by the Django app. The user's view is
 `docs/user_guide/scenario_viewer.md`; the files' user view is the "Scenario viewer files" section of
 `docs/domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md`. This note is the code view.
 

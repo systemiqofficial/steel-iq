@@ -119,11 +119,8 @@ run_simulation --start-year 2025 --end-year 2027 --log-level INFO
 
 #### Using Custom Data
 ```bash
-# Prepare data with your own master Excel
-steelo-data-prepare --master-excel-file path/to/your/master_input.xlsx
-
-# Run simulation
-run_simulation
+# Prepare data from your own master Excel and run the simulation on it
+run_simulation --master-excel path/to/your/master_input.xlsx
 ```
 
 #### Web Interface

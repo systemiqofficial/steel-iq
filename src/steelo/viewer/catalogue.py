@@ -399,6 +399,19 @@ SETTINGS_LAYOUT: list[dict[str, Any]] = [
 WARNED_SKIPPED: set[Path] = set()
 
 
+def inside_run(run_dir: Path, path: Path) -> bool:
+    """Whether a file of a run folder stays inside it once symlinks are resolved.
+
+    Args:
+        run_dir: The run folder.
+        path: A path under ``run_dir``.
+
+    Returns:
+        True when ``path`` resolves under the resolved ``run_dir``.
+    """
+    return path.resolve().is_relative_to(run_dir.resolve())
+
+
 def read_run(run_dir: Path) -> dict[str, Any]:
     """One run's ``viewer/run.json``.
 
@@ -423,7 +436,8 @@ def discover_runs(output_base: Path | None, run_dirs: list[Path]) -> list[Path]:
         sorted by the run's ``started`` time.
 
     Notes:
-        Symlinked folders under ``output_base`` (``latest``) are skipped, so a run is listed once. A folder under
+        Symlinked folders under ``output_base`` (``latest``) are skipped, so a run is listed once, and so is a
+        folder whose ``viewer/run.json`` or ``simulation_config.json`` resolves outside it. A folder under
         ``output_base`` with ``simulation_config.json`` but no ``run.json`` (a run in progress, or one whose viewer
         step failed) and a named folder without ``run.json`` are named in one warning, once until the folder is
         listed again, since the server calls this with every set file.
@@ -432,7 +446,13 @@ def discover_runs(output_base: Path | None, run_dirs: list[Path]) -> list[Path]:
         [] if output_base is None else sorted(p for p in output_base.iterdir() if p.is_dir() and not p.is_symlink())
     )
     candidates = folders + run_dirs
-    runs = [folder for folder in candidates if (folder / VIEWER_DIR / RUN_NAME).is_file()]
+    runs = [
+        folder
+        for folder in candidates
+        if (folder / VIEWER_DIR / RUN_NAME).is_file()
+        and inside_run(folder, folder / VIEWER_DIR / RUN_NAME)
+        and inside_run(folder, folder / CONFIG_NAME)
+    ]
     WARNED_SKIPPED.difference_update(runs)
     skipped = [
         folder
@@ -963,8 +983,8 @@ def build_inputs(run_dirs: list[Path], manifest: dict[str, Any]) -> dict[str, An
         :func:`build_topic` writes them.
 
     Raises:
-        ValueError: If a run's ``inputs.json`` does not parse (naming the file), or a topic's runs do not share the
-            same value columns.
+        ValueError: If a run's ``inputs.json`` resolves outside its run folder or does not parse (naming the
+            file), or a topic's runs do not share the same value columns.
     """
     by_folder = {run_dir.name: run_dir for run_dir in run_dirs}
     local = manifest["sets"][0]
@@ -972,6 +992,8 @@ def build_inputs(run_dirs: list[Path], manifest: dict[str, Any]) -> dict[str, An
     per_run = []
     for run in runs:
         path = by_folder[run["dir"]] / VIEWER_DIR / INPUTS_NAME
+        if not inside_run(by_folder[run["dir"]], path):
+            raise ValueError(f"{path}: resolves outside its run folder")
         try:
             per_run.append(json.loads(path.read_text()))
         except json.JSONDecodeError as error:
@@ -1007,14 +1029,14 @@ def geo_path(run_dirs: list[Path]) -> Path | None:
         run_dirs: The run folders.
 
     Returns:
-        ``<run>/viewer/geo.json`` of the run with the latest ``started`` among those holding the file, or None
-        when no run holds one.
+        ``<run>/viewer/geo.json`` of the run with the latest ``started`` among those holding the file inside the
+        run folder, symlinks resolved, or None when no run holds one.
 
     Notes:
         Runs on different masters can differ here only in names and groupings.
     """
     for run_dir in sorted(run_dirs, key=lambda run_dir: read_run(run_dir)["started"], reverse=True):
         path = run_dir / VIEWER_DIR / GEO_NAME
-        if path.is_file():
+        if path.is_file() and inside_run(run_dir, path):
             return path
     return None
