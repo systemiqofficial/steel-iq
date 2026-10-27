@@ -3,11 +3,13 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from steelo.devdata import get_furnace_group, get_plant
-from steelo.domain import PointInTime, TimeFrame, Volumes, Year
+from steelo.domain import PointInTime, TimeFrame, Volumes
 from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain.commands import ChangeFurnaceGroupTechnology, RenovateFurnaceGroup
-from steelo.domain.models import CaptiveEnergy, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Environment, PlantGroup, Year
 from steelo.service_layer import handlers
 
 REGION_CAPEX = {"EAF": 400.0, "DRI": 600.0}
@@ -183,7 +185,11 @@ def test_new_site_renovating_in_2040_holds_the_stack_of_2040(mocker):
 
 
 def test_new_site_switching_from_2040_keeps_its_old_stack_until_the_switch_executes_in_2044(mocker):
-    """The switch decided in 2040 carries the stack of 2040, which replaces the old one only with the new technology."""
+    """The switch decided in 2040 carries the stack of 2040, which replaces the old one only with the new technology.
+
+    Notes:
+        While the new technology is built, the year-end refresh of 2042 still prices the old one from the 2028 stack.
+    """
     plant, plant_group = make_plant(new_site=True, cycle_start=2030)
     fg = plant.furnace_groups[0]
     mock_npvs(mocker, fg, {"EAF": 1_000.0, "DRI": 1_000_000.0})
@@ -195,10 +201,13 @@ def test_new_site_switching_from_2040_keeps_its_old_stack_until_the_switch_execu
 
     year_of_switch = DECISION_YEAR + CONSTRUCTION_TIME
     plant.change_furnace_group_status_to_switching_technology(fg.furnace_group_id, year_of_switch, command)
-    for year in range(DECISION_YEAR + 1, year_of_switch):
-        fg.lifetime.current = Year(year)
-        assert fg.captive_energy == stack_of(2028)
-        assert fg.technology.name == "EAF"
+    env = object.__new__(Environment)
+    env.year = Year(2042)
+    env.config = SimpleNamespace(disposal_cost_outputs=frozenset())
+    env.input_costs = {"USA": {Year(2042): {"electricity": 0.07}}}
+    env.set_input_cost_in_furnace_groups(world_plants=[plant])
+    assert fg.technology.name == "EAF"
+    assert fg.energy_costs_no_subsidy["electricity"] == pytest.approx(0.85 * LCOE[2028] + 0.15 * 0.07)
 
     fg.lifetime.current = Year(year_of_switch)
     handlers.execute_scheduled_technology_switch(

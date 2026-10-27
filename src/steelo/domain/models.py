@@ -8866,14 +8866,14 @@ class Environment:
         Returns:
             None.
 
+        Raises:
+            KeyError: If the furnace group holds no electricity or hydrogen price without subsidy.
+
         Notes:
             The prices without subsidy are carried, not the subsidised ones, so subsidies never compound.
         """
-        no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-        if "electricity" in no_sub:
-            fg_costs["electricity"] = no_sub["electricity"]
-        if "hydrogen" in no_sub:
-            fg_costs["hydrogen"] = no_sub["hydrogen"]
+        fg_costs["electricity"] = fg.energy_costs_no_subsidy["electricity"]
+        fg_costs["hydrogen"] = fg.energy_costs_no_subsidy["hydrogen"]
 
     def calculate_capped_hydrogen_costs_per_country(self, year: Year | None = None) -> dict[str, float]:
         """

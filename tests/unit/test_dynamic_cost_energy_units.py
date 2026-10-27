@@ -294,17 +294,13 @@ def test_year_end_refresh_raises_for_a_new_site_group_without_a_stack():
         refresh(year_end_environment({2033: 0.110}), plant, 2033)
 
 
-def test_year_end_refresh_gives_each_furnace_group_its_own_input_costs():
-    """An opportunity without a hydrogen price takes the input costs' hydrogen, not its sibling's locked price."""
+def test_year_end_refresh_raises_for_an_opportunity_without_its_stored_hydrogen():
+    """An opportunity missing its stored hydrogen without subsidy stops the run instead of taking another price."""
     locked = make_site_furnace_group("FG_LOCKED", "operating", LOCKED)
-    sibling = make_site_furnace_group("FG_SIBLING", "considered", LOCKED)
-    sibling.energy_costs = {"electricity": 0.06}
-    sibling.energy_costs_no_subsidy = {"electricity": 0.06}
-    plant = make_new_site(locked, sibling)
-    env = year_end_environment({2033: 0.110})
+    opportunity = make_site_furnace_group("FG_OPP", "considered", LOCKED)
+    opportunity.energy_costs = {"electricity": 0.06}
+    opportunity.energy_costs_no_subsidy = {"electricity": 0.06}
+    plant = make_new_site(locked, opportunity)
 
-    refresh(env, plant, 2033)
-
-    assert sibling.energy_costs_no_subsidy["hydrogen"] == 4000.0
-    assert sibling.energy_costs_no_subsidy["electricity"] == 0.06
-    assert locked.energy_costs_no_subsidy["hydrogen"] != 4000.0
+    with pytest.raises(KeyError, match="hydrogen"):
+        refresh(year_end_environment({2033: 0.110}), plant, 2033)

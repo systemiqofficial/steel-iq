@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from steelo.devdata import get_furnace_group, get_plant
-from steelo.domain import Volumes, Year
+from steelo.domain import Volumes
 from steelo.domain.commands import AddFurnaceGroup
-from steelo.domain.models import CaptiveEnergy, Environment
+from steelo.domain.models import CaptiveEnergy, Environment, Year
 from steelo.service_layer.handlers import add_furnace_group_to_plant
 
 
