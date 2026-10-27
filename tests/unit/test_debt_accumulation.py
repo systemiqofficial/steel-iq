@@ -76,6 +76,7 @@ def test_debt_accumulation_on_technology_switch():
         capex_no_subsidy=400.0,  # Same as capex if no subsidy
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
+        captive_energy=None,
         bom={"materials": {}, "energy": {}},
     )
 

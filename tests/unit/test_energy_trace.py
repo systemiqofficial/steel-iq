@@ -434,6 +434,7 @@ def test_stage_functions_touch_no_argument_when_off():
     energy_trace.greenfield_select(u, u, u, u, u, u, u)
     energy_trace.greenfield_revalue(u, u, u, u, u, u, u, u)
     energy_trace.greenfield_build(u, u, u, u)
+    energy_trace.greenfield_relock(u, u, u, u, u, u, u)
     energy_trace.greenfield_summary(u)
 
 
@@ -1105,6 +1106,80 @@ def test_greenfield_operating_expects_a_contract_site_at_the_ceiling_flat(tmp_pa
     rows = rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="hydrogen")
     assert [row["check_failed"] for row in rows] == ["0", "1"]
     assert all(float(row["expected"]) == pytest.approx(3000.0) for row in rows)
+
+
+def test_greenfield_relock_at_a_renovation_replaces_the_reference_with_the_new_stack(tmp_path, trace_log):
+    """A renovation in 2030 records old and new stacks, passes its checks, and the operating check expects the new one."""
+    plant, fg = built_new_site(tmp_path)
+    renewed = site_stack(lock_year=Year(2030), lcoe=0.048)
+    old = fg.captive_energy
+
+    energy_trace.greenfield_relock("renovation", plant, fg, 2030, old, renewed, 2030)
+    fg.captive_energy = renewed
+    electricity = 0.85 * 0.048 + 0.15 * 0.08
+    fg.energy_costs_no_subsidy = {"electricity": electricity, "hydrogen": (50 * electricity + 1.0) * 1000}
+    energy_trace.greenfield_operating(make_repository(plant), Year(2032), ACTIVE)
+    energy_trace.greenfield_summary(2032)
+
+    rows = {row["quantity"]: row for row in rows_for(read_rows(tmp_path), stage="greenfield_relock")}
+    assert rows["event"]["value"] == "renovation"
+    assert (rows["old_lock_year"]["value"], rows["old_lcoe"]["value"]) == ("2028", "0.056")
+    assert (rows["new_lock_year"]["value"], rows["new_lcoe"]["value"]) == ("2030", "0.048")
+    assert {rows[name]["check_failed"] for name in ("new_lock_year", "new_lcoe", "new_electrolyser_use")} == {"0"}
+    assert rows["new_electrolyser_cost"]["check_failed"] == "0"
+    assert rows["new_hydrogen_contract"]["value"] == "none"
+    operating = rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="electricity")
+    assert [row["check_failed"] for row in operating] == ["0"]
+    assert warnings_logged(trace_log) == []
+    assert "stage=greenfield_relock year=2032 relocked 1, failed 0" in trace_log.text
+
+
+def test_greenfield_relock_at_a_switch_decision_keeps_the_old_reference(tmp_path, trace_log):
+    """At a switch decision the old technology keeps its stack, so the operating check still expects the old one."""
+    plant, fg = built_new_site(tmp_path)
+
+    energy_trace.greenfield_relock(
+        "switch_decision", plant, fg, 2030, fg.captive_energy, site_stack(lock_year=Year(2030), lcoe=0.048), 2030
+    )
+    energy_trace.greenfield_operating(make_repository(plant), Year(2032), ACTIVE)
+
+    operating = rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="electricity")
+    assert [(row["check_failed"], float(row["expected"])) for row in operating] == [("0", pytest.approx(0.0596))]
+    assert warnings_logged(trace_log) == []
+
+
+def test_greenfield_relock_flags_a_stack_left_at_its_old_lock_year_and_lcoe(tmp_path, trace_log):
+    """A switch executed in 2034 must hold the stack of its decision year 2030; the construction year's stack fails."""
+    plant, fg = built_new_site(tmp_path)
+
+    energy_trace.greenfield_relock("switch_execution", plant, fg, 2034, fg.captive_energy, fg.captive_energy, 2030)
+
+    rows = {row["quantity"]: row for row in rows_for(read_rows(tmp_path), stage="greenfield_relock")}
+    assert (rows["new_lock_year"]["value"], rows["new_lock_year"]["expected"]) == ("2028", "2030")
+    assert rows["new_lock_year"]["check_failed"] == "1"
+    assert rows["new_lcoe"]["check_failed"] == "1"
+    assert float(rows["new_lcoe"]["expected"]) == pytest.approx(0.048)
+    assert len(warnings_logged(trace_log)) == 2
+
+
+def test_greenfield_relock_records_a_group_without_a_stack_and_skips_existing_plants(tmp_path, trace_log):
+    """A group without a stack is recorded with old_stack none; an existing plant's investment is not traced."""
+    energy_trace.configure(True, [], [], tmp_path)
+    energy_trace.attach_environment(captive_environment())
+    fg = make_furnace_group("indi_6_1", electricity=0.0596, hydrogen=3980.0)
+    plant = make_plant("indi_6", "CHN", [fg], parent_gem_id="indi_6")
+    existing_fg = make_furnace_group("P6_1", electricity=0.08, hydrogen=4500.0)
+    existing = make_plant("P6", "CHN", [existing_fg])
+
+    energy_trace.greenfield_relock("renovation", plant, fg, int(LOCK_YEAR), None, site_stack(), int(LOCK_YEAR))
+    energy_trace.greenfield_relock("renovation", existing, existing_fg, int(LOCK_YEAR), None, None, int(LOCK_YEAR))
+
+    rows = read_rows(tmp_path)
+    assert {row["plant_id"] for row in rows} == {"indi_6"}
+    (old_stack,) = rows_for(rows, quantity="old_stack")
+    assert old_stack["value"] == "none"
+    assert not rows_for(rows, quantity="old_lock_year")
+    assert warnings_logged(trace_log) == []
 
 
 def test_greenfield_build_without_reference_writes_a_missing_row(tmp_path, trace_log):

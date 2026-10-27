@@ -101,6 +101,11 @@ BOM = {
 }
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its evaluation must never ask for one."""
+    raise AssertionError("an existing plant's evaluation asked for a captive energy stack")
+
+
 def score_series_stub(picks_by_tech: dict[str, str] | None = None):
     """A real score-series provider; the ② gate classifies the new side by ``picks[0]``.
 
@@ -248,6 +253,7 @@ def evaluate(
         cost_of_equity_by_tech=EQUITY_RATES,
         get_bom_from_avg_boms=MagicMock(),
         reductant_score_series=score_series_stub() if score_series is None else score_series,
+        captive_energy_at=_no_stack,
         probabilistic_agents=probabilistic_agents,
         dynamic_business_cases={"EAF": [], "DRI": [], "MOE": []},
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -279,6 +285,7 @@ def apply_switch(plant, command):
         capex_no_subsidy=command.capex_no_subsidy,
         cost_of_debt=command.cost_of_debt,
         cost_of_debt_no_subsidy=command.cost_of_debt_no_subsidy,
+        captive_energy=command.captive_energy,
         capacity=command.capacity,
         capex_subsidies=command.capex_subsidies,
         debt_subsidies=command.debt_subsidies,
@@ -299,6 +306,7 @@ def apply_renovation(plant, command):
         capex_no_subsidy=command.capex_no_subsidy,
         cost_of_debt=command.cost_of_debt,
         cost_of_debt_no_subsidy=command.cost_of_debt_no_subsidy,
+        captive_energy=command.captive_energy,
         capex_subsidies=command.capex_subsidies,
         debt_subsidies=command.debt_subsidies,
     )

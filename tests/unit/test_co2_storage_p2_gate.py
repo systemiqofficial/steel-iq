@@ -34,6 +34,11 @@ from steelo.domain.models import (
 # ---- Fixtures ----
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its evaluation must never ask for one."""
+    raise AssertionError("an existing plant's evaluation asked for a captive energy stack")
+
+
 def _make_tech(name: str, reductant: str = "Coke+PCI") -> Technology:
     pf = PrimaryFeedstock(metallic_charge="IO_low", reductant=reductant, technology=name)
     return Technology(name=name, product="hot_metal", dynamic_business_case=[pf])
@@ -140,6 +145,7 @@ def _call_evaluate(
         cost_of_equity_by_tech={tech: 0.1 for tech in region_capex},
         get_bom_from_avg_boms=lambda *a, **k: (None, 0.0, "", {}),
         reductant_score_series=reductant_score_series or (lambda *a, **k: ReductantScoreSeries(scores=[], picks=[])),
+        captive_energy_at=_no_stack,
         probabilistic_agents=False,
         dynamic_business_cases={},
         chosen_emissions_boundary_for_carbon_costs="Scope 1",

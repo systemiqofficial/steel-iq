@@ -24,6 +24,7 @@ class RenovateFurnaceGroup(Command):
 
     ``capacity`` is the post-renovation capacity: the group's own, unless the
     capacity policy shrank the renovation as a penalised replacement.
+    ``captive_energy`` is the stack a new site locks in the renovation year, None for an existing plant.
     """
 
     plant_id: str
@@ -35,6 +36,7 @@ class RenovateFurnaceGroup(Command):
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    captive_energy: "CaptiveEnergy | None"
 
 
 @dataclass
@@ -43,6 +45,8 @@ class ChangeFurnaceGroupTechnology(Command):
 
     ``competing_npvs`` holds the finite NPVs ({technology: npv}) the selection
     draw ran over, the incumbent's included when renovation was allowed.
+    ``captive_energy`` is the stack a new site locks in the decision year, installed with the new
+    technology; None for an existing plant.
     """
 
     plant_id: str
@@ -62,6 +66,7 @@ class ChangeFurnaceGroupTechnology(Command):
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    captive_energy: "CaptiveEnergy | None"
     competing_npvs: dict[str, float] | None = None
 
 

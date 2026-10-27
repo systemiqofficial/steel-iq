@@ -887,6 +887,7 @@ class PlantAgentsModel:
                             capex_renovation_share=capex_renovation_share,
                             get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                             reductant_score_series=bus.env.reductant_score_series,
+                            captive_energy_at=bus.env.captive_energy_at,
                             allowed_furnace_transitions=bus.env.allowed_furnace_transitions,
                             dynamic_business_cases=bus.env.dynamic_feedstocks,
                             probabilistic_agents=bus.env.config.probabilistic_agents,

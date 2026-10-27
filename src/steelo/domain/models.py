@@ -3907,6 +3907,7 @@ class Plant:
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
+        captive_energy: CaptiveEnergy | None,
         capex_subsidies: list[Subsidy] = [],
         debt_subsidies: list[Subsidy] = [],
     ) -> None:
@@ -3933,13 +3934,16 @@ class Plant:
             capex_no_subsidy (float): Unsubsidized capital expenditure for the renovation.
             cost_of_debt (float): Subsidized cost of debt financing for the renovation.
             cost_of_debt_no_subsidy (float): Unsubsidized cost of debt financing for the renovation.
+            captive_energy (CaptiveEnergy | None): The stack a new site locks in the renovation year, which
+                replaces its old one; None for an existing plant.
             capex_subsidies (list[Subsidy], optional): List of subsidies applied to CAPEX. Defaults to empty list.
             debt_subsidies (list[Subsidy], optional): List of subsidies applied to debt financing. Defaults to empty
                 list.
 
         Side Effects:
             - Modifies the furnace group's last_renovation_date, lifetime, technology.capex_type, technology.capex,
-              technology.capex_no_subsidy, cost_of_debt, cost_of_debt_no_subsidy, and applied_subsidies.
+              technology.capex_no_subsidy, cost_of_debt, cost_of_debt_no_subsidy, captive_energy and
+              applied_subsidies.
             - Appends a FurnaceGroupRenovated event to the plant's event list.
 
         Note:
@@ -3975,6 +3979,7 @@ class Plant:
         furnace_group.technology.capex_no_subsidy = capex_no_subsidy
         furnace_group.cost_of_debt = cost_of_debt
         furnace_group.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
+        furnace_group.captive_energy = captive_energy
 
         # Track which subsidies were applied to this renovation for transparency and reporting
         furnace_group.applied_subsidies["capex"] = capex_subsidies
@@ -4039,6 +4044,7 @@ class Plant:
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
+        captive_energy: CaptiveEnergy | None,
         capex_subsidies: list[Subsidy] = [],
         debt_subsidies: list[Subsidy] = [],
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
@@ -4075,6 +4081,8 @@ class Plant:
             capex_no_subsidy (float): Capital expenditure without subsidies applied.
             cost_of_debt (float): Cost of debt percentage for the new technology (after subsidies).
             cost_of_debt_no_subsidy (float): Cost of debt percentage without subsidies applied.
+            captive_energy (CaptiveEnergy | None): The stack a new site locked when it decided the switch,
+                which replaces its old one with the new technology; None for an existing plant.
             capex_subsidies (list[Subsidy]): List of subsidies applied to capital expenditure. Defaults to [].
             debt_subsidies (list[Subsidy]): List of subsidies applied to debt costs. Defaults to [].
             dynamic_business_case (list[PrimaryFeedstock] | None): Dynamic business case feedstock options.
@@ -4087,7 +4095,8 @@ class Plant:
                 falls back to the current lifetime's remaining years (same-tick execution).
 
         Side Effects:
-            - Updates furnace group's technology, lifetime, status, utilization rate, and debt schedules.
+            - Updates furnace group's technology, lifetime, status, utilization rate, captive energy stack and
+              debt schedules.
             - Appends FurnaceGroupTechChanged event to the plant's event list.
             - Marks furnace group as created_by_PAM.
 
@@ -4151,6 +4160,7 @@ class Plant:
         # legacy-debt capture above, which must price the outgoing technology's remaining
         # debt on the old capacity; a shrink materialises only from here on
         furnace_group.technology = technology
+        furnace_group.captive_energy = captive_energy
         furnace_group.capacity = Volumes(capacity)
         if bom is not None:
             furnace_group.bill_of_materials = bom
@@ -4208,6 +4218,7 @@ class Plant:
             tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         probabilistic_agents: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         chosen_emissions_boundary_for_carbon_costs: str,
@@ -4267,6 +4278,11 @@ class Plant:
             cost_of_debt_by_tech: Interest rate for debt financing by technology (before subsidies), for this plant's country
             cost_of_equity_by_tech: Required return on equity by technology, for this plant's country
             get_bom_from_avg_boms: Function to retrieve bill of materials for technologies
+            reductant_score_series: ``Environment.reductant_score_series``, the year-wise score every candidate,
+                the CO2 gate and the capacity-policy pick are priced with
+            captive_energy_at: ``Environment.captive_energy_at``. A new site builds one stack for the current
+                year, the start of the investment, and every candidate is priced from it; the renovation and
+                switch commands carry it. An existing plant builds none.
             probabilistic_agents: Whether to use probabilistic (weighted random) decision making
             dynamic_business_cases: Technology-specific feedstock options mapping technology names to primary feedstocks
             chosen_emissions_boundary_for_carbon_costs: Emissions scope for carbon pricing (e.g., "Scope 1", "Scope 2")
@@ -4370,27 +4386,16 @@ class Plant:
         if not allowed_techs_in_year:
             raise ValueError(f"[FG STRATEGY] No allowed techs in {current_year}")
 
-        # Bind the score-series provider to this plant's location; GEO ("indi") sites keep
-        # their own power/hydrogen prices, trajectory-scaled from the current year
-        site_overrides: dict[str, float] | None = None
-        if self.parent_gem_id.lower().startswith("indi"):
-            site_prices = furnace_group.energy_costs_no_subsidy or furnace_group.energy_costs
-            site_overrides = {
-                carrier: site_prices[carrier] for carrier in ("electricity", "hydrogen") if carrier in site_prices
-            }
+        # Bind the score-series provider to this plant's location; a GEO ("indi") site invests now,
+        # so every candidate is priced from the stack it would lock this year
+        captive = (
+            captive_energy_at(self.location, current_year) if self.parent_gem_id.lower().startswith("indi") else None
+        )
 
         def score_series_for_tech(
             tech_name: str, output_shares: dict[str, float], start: Year, end: Year
         ) -> ReductantScoreSeries:
-            return reductant_score_series(
-                self.location,
-                tech_name,
-                output_shares,
-                start,
-                end,
-                overrides=site_overrides,
-                override_reference_year=current_year if site_overrides else None,
-            )
+            return reductant_score_series(self.location, tech_name, output_shares, start, end, captive=captive)
 
         # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom,
         # sized with the reductant that would actually be built (operating-start-year pick)
@@ -4606,6 +4611,7 @@ class Plant:
                 cost_of_debt_no_subsidy=incumbent_cost_of_debt,
                 capex_subsidies=incumbent_capex_subs,
                 debt_subsidies=incumbent_debt_subs,
+                captive_energy=captive,
             )
 
         # ===== STAGE 5: Check if any technology option is profitable =====
@@ -4889,6 +4895,7 @@ class Plant:
                 cost_of_debt_no_subsidy=cost_of_debt,
                 capex_subsidies=capex_subs,
                 debt_subsidies=debt_subs,
+                captive_energy=captive,
                 competing_npvs=dict(valid_techs),
             )
         else:

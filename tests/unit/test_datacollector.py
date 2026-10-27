@@ -512,6 +512,7 @@ def _switch_command(plant_id, fg_id, old_tech, new_tech, competing_npvs, capacit
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
         competing_npvs=competing_npvs,
     )
 

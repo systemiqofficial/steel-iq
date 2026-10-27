@@ -45,11 +45,13 @@ def renovate_furnace_group(cmd: commands.RenovateFurnaceGroup, uow: UnitOfWork, 
     Side Effects:
         - Updates the furnace group's lifetime, last_renovation_date, and financial parameters.
         - Changes the technology CAPEX type to "brownfield".
+        - Installs the new site's stack of the renovation year, traced as ``greenfield_relock``.
         - Logs a FurnaceGroupRenovated event.
         - Commits the changes to the repository.
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
         plant.renovate_furnace_group(
             cmd.furnace_group_id,
             env.config.plant_lifetime,
@@ -60,7 +62,10 @@ def renovate_furnace_group(cmd: commands.RenovateFurnaceGroup, uow: UnitOfWork, 
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
+            captive_energy=cmd.captive_energy,
         )
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        energy_trace.greenfield_relock("renovation", plant, fg, env.year, old_captive, cmd.captive_energy, env.year)
         uow.commit()
 
 
@@ -84,6 +89,7 @@ def change_furnace_group_status_to_switching_technology(
     Side Effects:
         - Changes the furnace group's status to 'operating switching technology'.
         - Stores the year_of_switch and embedded command for future execution.
+        - Traces a new site's stack locked for the switch as ``greenfield_relock``; the old one stays installed.
         - Tracks the switched capacity using the new technology name and capacity from the embedded command.
         - Commits the changes to the repository.
 
@@ -97,6 +103,10 @@ def change_furnace_group_status_to_switching_technology(
         fg = plant.get_furnace_group(cmd.furnace_group_id)
         old_reductant = fg.chosen_reductant
         plant.change_furnace_group_status_to_switching_technology(cmd.furnace_group_id, cmd.year_of_switch, cmd.cmd)
+        # The old technology keeps its stack until the switch executes
+        energy_trace.greenfield_relock(
+            "switch_decision", plant, fg, env.year, fg.captive_energy, cmd.cmd.captive_energy, env.year
+        )
 
         # Track the switched capacity - use the NEW technology name and capacity from the embedded command
         if cmd.cmd and hasattr(cmd.cmd, "technology_name") and hasattr(cmd.cmd, "capacity"):
@@ -127,6 +137,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
 
     Side Effects:
         - Changes the furnace group's technology and associated parameters.
+        - Installs a new site's stack carried by the command, traced as ``greenfield_relock``.
         - Updates the bill of materials and financial metrics.
         - Applies dynamic feedstock data if available for the new technology.
         - Logs a FurnaceGroupTechnologyChanged event.
@@ -150,6 +161,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
                 f"Empty BOM passed to technology change for {cmd.technology_name} "
                 f"(materials={len(bom_materials)}, energy={len(bom_energy)})"
             )
+        old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
         plant.change_furnace_group_technology(
             furnace_group_id=cmd.furnace_group_id,
             technology_name=cmd.technology_name,
@@ -166,9 +178,14 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+            captive_energy=cmd.captive_energy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
             legacy_years=cmd.remaining_lifetime,
+        )
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        energy_trace.greenfield_relock(
+            "switch_execution", plant, fg, env.year, old_captive, cmd.captive_energy, env.year
         )
         uow.commit()
 
@@ -405,7 +422,8 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
     Applies the stored ChangeFurnaceGroupTechnology command exactly as the direct
     handler would - in particular the evaluated reductant (C7) must land with the
     new technology instead of surfacing with the old one and waiting for the
-    year-start re-pick to correct it.
+    year-start re-pick to correct it. A new site installs the stack it locked in the
+    decision year, traced as ``greenfield_relock``.
 
     Args:
         cmd: The furnace group's stored future_switch_cmd.
@@ -415,6 +433,7 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
     if not isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
         return
     plant = uow.plants.get(cmd.plant_id)
+    old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
     plant.change_furnace_group_technology(
         furnace_group_id=cmd.furnace_group_id,
         technology_name=cmd.technology_name,
@@ -431,10 +450,21 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
         capex_no_subsidy=cmd.capex_no_subsidy,
         cost_of_debt=cmd.cost_of_debt,
         cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+        captive_energy=cmd.captive_energy,
         capex_subsidies=cmd.capex_subsidies,
         debt_subsidies=cmd.debt_subsidies,
         # Anchor the old technology's debt tail to the decision-time lifetime
         legacy_years=max(0, cmd.remaining_lifetime - env.config.construction_time),
+    )
+    # A new site installs the stack it locked when it decided the switch, construction_time years ago
+    energy_trace.greenfield_relock(
+        "switch_execution",
+        plant,
+        plant.get_furnace_group(cmd.furnace_group_id),
+        env.year,
+        old_captive,
+        cmd.captive_energy,
+        env.year - env.config.construction_time,
     )
 
 

@@ -12,6 +12,11 @@ from steelo.simulation_types import get_default_technology_settings
 from steelo.domain.calculate_costs import ReductantScoreSeries
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its evaluation must never ask for one."""
+    raise AssertionError("an existing plant's evaluation asked for a captive energy stack")
+
+
 def _stub_score_series(location, tech, output_shares, start, end, **kwargs):
     n = int(end) - int(start)
     return ReductantScoreSeries(scores=[0.0] * n, picks=[""] * n)
@@ -243,6 +248,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=mock_get_bom,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -306,6 +312,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=mock_get_bom,
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -405,6 +412,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=MagicMock(),
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -442,6 +450,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=MagicMock(),
         reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -494,6 +503,7 @@ def test_no_action_when_no_techs_allowed(mock_environment, plant_with_eaf, plant
             cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
             get_bom_from_avg_boms=MagicMock(),
             reductant_score_series=_stub_score_series,
+            captive_energy_at=_no_stack,
             probabilistic_agents=False,
             dynamic_business_cases=bus.env.dynamic_feedstocks,
             chosen_emissions_boundary_for_carbon_costs="scope_1",
