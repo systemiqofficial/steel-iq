@@ -244,7 +244,7 @@ New sites, the plants the model opens (`parent_gem_id` starting with `indi`), ar
 | `greenfield_build` | When a new site enters construction | Every such site | None: it freezes the site's last re-valued raster prices as the reference |
 | `greenfield_operating` | Each year, before the trade model | Every operating new site | No-subsidy electricity and hydrogen equal the references frozen at construction |
 
-With the hydrogen ceiling percentile at 100 and intraregional trade off, as by default, neither hydrogen cap check (`site_hydrogen`, `country_hydrogen`) can fail. On the current code the `greenfield_operating` hydrogen check fails for every operating new site; the energy prices page explains why.
+With the hydrogen ceiling percentile at 100 and intraregional trade off, as by default, neither hydrogen cap check (`site_hydrogen`, `country_hydrogen`) can fail.
 
 The year-end summary lines also give, per listed country, the candidate sites, their median site prices and how many have a power price outside 0.1 to 10 times the country's; the re-valuation checks; and the sites built, with how many had no reference.
 

@@ -5135,18 +5135,23 @@ class Plant:
 
     def update_furnace_hydrogen_costs(self, capped_hydrogen_cost_dict: dict[str, float]) -> None:
         """
-        Update hydrogen costs for all furnace groups in the plant using country-specific capped prices.
+        Update hydrogen costs for all furnace groups of an existing plant using country-specific capped prices.
 
         Args:
             capped_hydrogen_cost_dict (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
                 Prices are converted internally to USD/t before being written to `energy_costs`.
 
         Side Effects:
-            Updates the "hydrogen" entry in energy_costs dictionary for each furnace group in the plant.
+            Updates the "hydrogen" entry in energy_costs, output_energy_costs and energy_costs_no_subsidy
+            for each furnace group of an existing plant.
 
         Notes:
-            Raises ValueError if the plant's ISO3 code is not found in the capped_hydrogen_cost_dict.
+            A new site (``parent_gem_id`` starting with ``indi``) is left unchanged: it keeps its own
+            hydrogen price, set at construction start, as it already keeps its electricity.
+            Raises ValueError if an existing plant's geo key is not found in the capped_hydrogen_cost_dict.
         """
+        if self.parent_gem_id.lower().startswith("indi"):
+            return
         logger = logging.getLogger(f"{__name__}.Plant.update_furnace_hydrogen_costs")
         capped_lcoh_usd_per_kg = self.location.resolve(capped_hydrogen_cost_dict, what="hydrogen price")
         if capped_lcoh_usd_per_kg is None:
@@ -8653,7 +8658,7 @@ class Environment:
             - Bootstrap: Uses hydrogen from Excel input costs
             - Year Start: the year's capped prices are read from the series precomputed at bootstrap
               (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
-              fg.energy_costs["hydrogen"] with them
+              fg.energy_costs["hydrogen"] with them for existing plants; new sites keep their own price
             - This method: Preserves those capped prices instead of overwriting with Excel's static values
 
         Args:
