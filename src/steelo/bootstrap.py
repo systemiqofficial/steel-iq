@@ -425,6 +425,8 @@ def bootstrap_simulation(
     else:
         tech_switches_path = None
     env = Environment(config=config, tech_switches_csv=tech_switches_path)
+    # The new-site stages check prices against the run's inputs, which this environment holds
+    energy_trace.attach_environment(env)
 
     # Initialise GeoDataPaths if data_dir is available, before the data loads: the hydrogen precompute reads the
     # baseload LCOE file checked here
@@ -536,7 +538,7 @@ def bootstrap_simulation(
             )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
-        from .adapters.geospatial import hydrogen_lcoe
+        from .adapters.geospatial import boa_lcoe, hydrogen_lcoe
         from .adapters.geospatial.geospatial_calculations import get_baseload_coverage
 
         baseload_coverage = get_baseload_coverage(config.geo_config.included_power_mix)
@@ -546,6 +548,8 @@ def bootstrap_simulation(
                     f"Power mix '{config.geo_config.included_power_mix}' prices existing plants' hydrogen off the "
                     "baseload LCOE file, which needs config.data_dir"
                 )
+            # New sites lock the LCOE of their construction-start year, read from this grid
+            env.initiate_baseload_lcoe_grid(boa_lcoe.load_lcoe_grid(baseload_lcoe_file, baseload_coverage))
             env.initiate_baseload_lcoe_by_geo_key(
                 hydrogen_lcoe.baseload_lcoe_by_geo_key_series(
                     lcoe_file=baseload_lcoe_file,

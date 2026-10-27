@@ -23,6 +23,11 @@ TRANSITIONS = {"EAF": ["EAF", "DRI"]}
 RENOVATE_COST = 8_000.0
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its evaluation must never ask for one."""
+    raise AssertionError("an existing plant's evaluation asked for a captive energy stack")
+
+
 def make_plant_and_group(*, expired: bool, balance: float):
     """Build an EAF plant plus owning group; start year controls lifetime expiry in 2025."""
     fg = get_furnace_group(
@@ -77,6 +82,7 @@ def evaluate(plant, plant_group, *, probabilistic_agents: bool = True):
         cost_of_equity_by_tech={"EAF": 0.08, "DRI": 0.08},
         get_bom_from_avg_boms=MagicMock(),
         reductant_score_series=MagicMock(),
+        captive_energy_at=_no_stack,
         probabilistic_agents=probabilistic_agents,
         dynamic_business_cases={"EAF": [], "DRI": []},
         chosen_emissions_boundary_for_carbon_costs="scope_1",

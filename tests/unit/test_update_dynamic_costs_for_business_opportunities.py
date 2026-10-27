@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import MagicMock
-from steelo.domain.models import PlantGroup, Subsidy, Location
+from steelo.domain.models import CaptiveEnergy, PlantGroup, Subsidy, Location
 from steelo.domain.commands import UpdateDynamicCosts
 from steelo.devdata import get_furnace_group, get_plant, PointInTime, TimeFrame, Year
 
@@ -13,6 +13,18 @@ AVG_UTILIZATION = {
     "BOF": {"utilization_rate": 0.75},
     "DRI": {"utilization_rate": 0.7},
 }
+
+
+def _stack_at(location, year):
+    """The stack the re-valuation locks: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 @pytest.fixture
@@ -175,6 +187,7 @@ def test_update_costs_for_considered_plant_no_subsidies(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies={},
         debt_subsidies={},
     )
@@ -242,6 +255,7 @@ def test_update_costs_for_announced_plant_no_subsidies(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies={},
         debt_subsidies={},
     )
@@ -317,6 +331,7 @@ def test_update_costs_with_capex_subsidies(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies=capex_subsidies,
         debt_subsidies={},
     )
@@ -380,7 +395,7 @@ def test_update_costs_with_debt_subsidies(
         }
     }
 
-    # Execute - announced plant uses year = current_year + 1 = 2026
+    # Execute - announced plant uses year = current_year = 2025
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
@@ -391,6 +406,7 @@ def test_update_costs_with_debt_subsidies(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies={},
         debt_subsidies=debt_subsidies,
     )
@@ -436,6 +452,7 @@ def test_skip_operating_plants(mock_custom_energy_costs, capex_dict_all_locs, co
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     # Verify - should return empty list
@@ -520,6 +537,7 @@ def test_skip_plant_with_missing_cost_of_debt(mock_custom_energy_costs, capex_di
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     # Verify - should skip this plant
@@ -569,6 +587,7 @@ def test_skip_furnace_group_with_missing_capex(mock_custom_energy_costs, cost_de
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     # Verify - should skip this furnace group
@@ -583,8 +602,8 @@ def test_skip_furnace_group_with_no_cost_changes(
 ):
     """Test that furnace groups with no cost changes are skipped.
 
-    When all scalar costs, energy_costs, and output_energy_costs match,
-    no command should be emitted.
+    When all scalar costs, energy_costs, output_energy_costs and the stack locked at the
+    construction start (2028) match, no command should be emitted.
     """
     energy = {"electricity": 50.0, "hydrogen": 3_500.0}
     fg = get_furnace_group(
@@ -614,6 +633,7 @@ def test_skip_furnace_group_with_no_cost_changes(
         region="Americas",
         iso3="USA",
     )
+    fg.captive_energy = _stack_at(plant.location, Year(2028))
 
     plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
 
@@ -628,6 +648,7 @@ def test_skip_furnace_group_with_no_cost_changes(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     # Verify - no command emitted because all costs match
@@ -717,6 +738,7 @@ def test_multiple_plants_mixed_statuses(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     # Verify - should only process plants 1 and 2
@@ -797,6 +819,7 @@ def test_considered_plant_with_historical_npv(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies=capex_subsidies,
         debt_subsidies={},
     )
@@ -854,6 +877,7 @@ def test_furnace_group_without_bill_of_materials(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     # Verify - the cost refresh does not depend on a BOM being present
@@ -951,6 +975,7 @@ def test_update_costs_with_energy_subsidies(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies={},
         debt_subsidies={},
         energy_subsidies=energy_subsidies,
@@ -1055,6 +1080,7 @@ def test_update_costs_with_province_scoped_energy_subsidies(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies={},
         debt_subsidies={},
         energy_subsidies=energy_subsidies,
@@ -1153,9 +1179,9 @@ def test_energy_subsidies_filtered_at_operating_start_year(
     """Energy subsidies price what the plant pays once running, not at construction start.
 
     Notes:
-        Announced FG in 2025 with construction_time=4: construction starts 2026, the plant first
-        operates in 2030. A subsidy expiring in 2029 (during construction) must not move the energy
-        costs, while one starting in 2030 must - matching opportunity creation and PAM.
+        Announced FG in 2025 with construction_time=4: construction starts 2025, the plant first
+        operates in 2029. A subsidy expiring in 2028 (during construction) must not move the energy
+        costs, while one starting in 2029 must - matching opportunity creation and PAM.
     """
     kwargs = dict(
         current_year=Year(2025),
@@ -1167,17 +1193,18 @@ def test_energy_subsidies_filtered_at_operating_start_year(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     expires_during_construction = _dri_opportunity_plant_group(
         "announced"
-    ).update_dynamic_costs_for_business_opportunities(energy_subsidies=_hydrogen_subsidy(2026, 2029), **kwargs)
+    ).update_dynamic_costs_for_business_opportunities(energy_subsidies=_hydrogen_subsidy(2025, 2028), **kwargs)
     assert len(expires_during_construction) == 1
-    # Mock provides hydrogen=3.5 USD/kg; the subsidy is dead by 2030, so the site price of 3,500 USD/t stands
+    # Mock provides hydrogen=3.5 USD/kg; the subsidy is dead by 2029, so the site price of 3,500 USD/t stands
     assert expires_during_construction[0].new_energy_costs["hydrogen"] == pytest.approx(3_500.0)
 
     live_at_operating_start = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
-        energy_subsidies=_hydrogen_subsidy(2030, 2035), **kwargs
+        energy_subsidies=_hydrogen_subsidy(2029, 2034), **kwargs
     )
     assert len(live_at_operating_start) == 1
     # 1,000 USD/t absolute subsidy -> input 2,500, output 4,500
@@ -1194,8 +1221,8 @@ def test_capex_subsidies_stay_filtered_at_construction_start_year(
     """CAPEX is incurred at construction start, so its subsidies must not shift to the operating year.
 
     Notes:
-        Guards the energy-subsidy alignment against over-shifting: same 2026 construction start /
-        2030 operating start as the test above, with the opposite expectations.
+        Guards the energy-subsidy alignment against over-shifting: same 2025 construction start /
+        2029 operating start as the test above, with the opposite expectations.
     """
     kwargs = dict(
         current_year=Year(2025),
@@ -1207,20 +1234,141 @@ def test_capex_subsidies_stay_filtered_at_construction_start_year(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
     )
 
     live_at_construction_start = _dri_opportunity_plant_group(
         "announced"
-    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2026, 2026), **kwargs)
+    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2025, 2025), **kwargs)
     assert len(live_at_construction_start) == 1
     assert live_at_construction_start[0].new_capex_no_subsidy == 2000.0
     assert live_at_construction_start[0].new_capex == 1000.0  # 50% subsidy applied
 
     live_only_once_operating = _dri_opportunity_plant_group(
         "announced"
-    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2030, 2035), **kwargs)
+    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2029, 2034), **kwargs)
     assert len(live_only_once_operating) == 1
     assert live_only_once_operating[0].new_capex == 2000.0  # unsubsidised
+
+
+def test_announced_capex_subsidies_dated_at_the_year_construction_can_start(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """An announced opportunity's capex subsidies are those of the current year, not the next.
+
+    Notes:
+        The construction draw runs after the re-valuation in the same year, so an opportunity
+        announced in 2033 starts construction in 2033 at the earliest and keeps the capex written
+        that morning. A subsidy that starts in 2034 must not reach it; one that ends in 2033 must.
+    """
+    kwargs = dict(
+        current_year=Year(2033),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
+    )
+
+    starts_next_year = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
+        capex_subsidies=_capex_subsidy(2034, 2040),
+        **kwargs,
+    )
+    assert len(starts_next_year) == 1
+    assert starts_next_year[0].new_capex == 2000.0  # unsubsidised
+
+    ends_this_year = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
+        capex_subsidies=_capex_subsidy(2030, 2033),
+        **kwargs,
+    )
+    assert len(ends_this_year) == 1
+    assert ends_this_year[0].new_capex == 1000.0  # 50% subsidy applied
+
+
+def test_announced_opportunity_stores_each_years_stack_when_its_costs_repeat(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """An announced opportunity whose prices, capex and debt repeat last year's still locks this year's stack.
+
+    Notes:
+        After the 2028 re-valuation is applied, re-valuing 2028 again changes nothing and emits no command,
+        while 2029, with the same raster prices, capex and debt, emits one carrying the stack of 2029.
+    """
+    kwargs = dict(
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
+    )
+    plant_group = _dri_opportunity_plant_group("announced")
+    fg = plant_group.plants[0].furnace_groups[0]
+
+    (first,) = plant_group.update_dynamic_costs_for_business_opportunities(current_year=Year(2028), **kwargs)
+    fg.cost_of_debt = first.new_cost_of_debt
+    fg.technology.capex = first.new_capex
+    fg.energy_costs = first.new_energy_costs
+    fg.output_energy_costs = first.new_output_energy_costs
+    fg.energy_costs_no_subsidy = first.new_energy_costs_no_subsidy
+    fg.utilization_rate = first.new_utilization_rate
+    fg.captive_energy = first.new_captive_energy
+
+    assert plant_group.update_dynamic_costs_for_business_opportunities(current_year=Year(2028), **kwargs) == []
+    (second,) = plant_group.update_dynamic_costs_for_business_opportunities(current_year=Year(2029), **kwargs)
+
+    assert first.new_captive_energy.lock_year == 2028
+    assert second.new_captive_energy.lock_year == 2029
+    assert (second.new_capex, second.new_cost_of_debt, second.new_energy_costs_no_subsidy) == (
+        first.new_capex,
+        first.new_cost_of_debt,
+        first.new_energy_costs_no_subsidy,
+    )
+
+
+def test_considered_opportunity_locks_its_stack_at_its_construction_start(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """A considered opportunity with one year of NPVs, re-valued in 2026, locks the stack of 2028 at its location."""
+    asked = []
+
+    def recording_stack_at(location, year):
+        asked.append((location, year))
+        return _stack_at(location, year)
+
+    plant_group = _dri_opportunity_plant_group("considered", historical_npvs={2025: 1.0})
+
+    (command,) = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2026),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=recording_stack_at,
+    )
+
+    assert asked == [(plant_group.plants[0].location, Year(2028))]
+    assert command.new_captive_energy.lock_year == 2028
 
 
 def test_considered_target_year_is_floored_at_next_year(
@@ -1253,6 +1401,7 @@ def test_considered_target_year_is_floored_at_next_year(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization=AVG_UTILIZATION,
+        captive_energy_at=_stack_at,
         capex_subsidies=_capex_subsidy(2026, 2026),
     )
 
@@ -1306,6 +1455,7 @@ def test_considered_utilisation_refreshed_from_fleet_average(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization={"EAF": {"utilization_rate": 0.9}},
+        captive_energy_at=_stack_at,
     )
 
     # A utilisation-only change must not be swallowed by the no-change skip
@@ -1358,6 +1508,7 @@ def test_considered_utilisation_refreshed_to_zero(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization={"EAF": {"utilization_rate": 0.0}},
+        captive_energy_at=_stack_at,
     )
 
     assert len(commands) == 1
@@ -1409,6 +1560,7 @@ def test_considered_utilisation_missing_tech_falls_back_to_default(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization={},
+        captive_energy_at=_stack_at,
     )
 
     assert len(commands) == 1
@@ -1457,6 +1609,7 @@ def test_announced_utilisation_not_refreshed(
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
         avg_utilization={"BOF": {"utilization_rate": 0.2}},
+        captive_energy_at=_stack_at,
     )
 
     # Costs changed (debt 0.07->0.04, capex 1700->1600) so a command is emitted,

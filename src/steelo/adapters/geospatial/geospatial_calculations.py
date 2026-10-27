@@ -150,6 +150,57 @@ def calculate_lcoh_from_power_price(
     return ds
 
 
+def _tiam_ucl_regions(country_mappings: CountryMappingService) -> dict[str, list[str]]:
+    """
+    The interconnected hydrogen trade regions and their countries.
+
+    Args:
+        country_mappings: CountryMappingService with region mappings.
+
+    Returns:
+        TIAM-UCL region to the ISO3 codes mapped to it, in mapping order.
+    """
+    tiam_ucl_region_to_iso3: dict[str, list[str]] = {}
+    for mapping in country_mappings._mappings.values():
+        tiam_ucl_region_to_iso3.setdefault(mapping.tiam_ucl_region, []).append(mapping.iso3)
+    return tiam_ucl_region_to_iso3
+
+
+def tiam_ucl_region_by_iso3(country_mappings: CountryMappingService) -> dict[str, str]:
+    """
+    The interconnected hydrogen trade region of each country.
+
+    Args:
+        country_mappings: CountryMappingService with region mappings.
+
+    Returns:
+        ISO3 to TIAM-UCL region. A country listed under two regions keeps the last one, as in a
+        region-by-region overwrite.
+    """
+    return {iso3: region for region, iso3_list in _tiam_ucl_regions(country_mappings).items() for iso3 in iso3_list}
+
+
+def add_tiam_ucl_region(ds: xr.Dataset, country_mappings: CountryMappingService) -> xr.Dataset:
+    """
+    Add each cell's interconnected hydrogen trade region to the dataset.
+
+    Args:
+        ds: Dataset with 'iso3'.
+        country_mappings: CountryMappingService with region mappings.
+
+    Returns:
+        The dataset with 'tiam_ucl_region' (lat, lon); cells of an unmapped country hold NaN.
+
+    Notes:
+        One hash lookup over the grid; a np.isin pass per region sorts the million object strings each time.
+    """
+    region_by_iso3 = tiam_ucl_region_by_iso3(country_mappings)
+    iso3_values = ds["iso3"].values
+    region_values = pd.Series(iso3_values.ravel()).map(region_by_iso3).to_numpy(dtype=object)
+    ds["tiam_ucl_region"] = (("lat", "lon"), region_values.reshape(iso3_values.shape))
+    return ds
+
+
 def calculate_regional_hydrogen_ceiling(
     ds: xr.Dataset, country_mappings: CountryMappingService, hydrogen_ceiling_percentile: float
 ) -> dict[str, float]:
@@ -165,28 +216,17 @@ def calculate_regional_hydrogen_ceiling(
         Dictionary mapping region names to their hydrogen ceiling prices (USD/kg)
 
     Note:
-        If no LCOH data is available for a region, the ceiling is set to the global maximum LCOH (equivalent to no ceiling).
+        Adds the 'tiam_ucl_region' layer (``add_tiam_ucl_region``). If no LCOH data is available for a region,
+        the ceiling is set to the global maximum LCOH (equivalent to no ceiling).
     """
     logger = logging.getLogger(f"{__name__}.calculate_regional_hydrogen_ceiling")
     logger.info("[GEO LAYERS] Calculating regional hydrogen ceiling based on LCOH values.")
 
-    # Get connected regions for hydrogen trade and the countries within them
-    tiam_ucl_region_to_iso3: dict[str, list[str]] = {}
-    for mapping in country_mappings._mappings.values():
-        region = mapping.tiam_ucl_region
-        if region not in tiam_ucl_region_to_iso3:
-            tiam_ucl_region_to_iso3[region] = []
-        tiam_ucl_region_to_iso3[region].append(mapping.iso3)
-    # One hash lookup over the grid; a np.isin pass per region sorts the million object strings each time.
-    # A country listed under two regions keeps the last one, as in a region-by-region overwrite.
-    region_by_iso3 = {iso3: region for region, iso3_list in tiam_ucl_region_to_iso3.items() for iso3 in iso3_list}
-    iso3_values = ds["iso3"].values
-    region_values = pd.Series(iso3_values.ravel()).map(region_by_iso3).to_numpy(dtype=object)
-    ds["tiam_ucl_region"] = (("lat", "lon"), region_values.reshape(iso3_values.shape))
+    ds = add_tiam_ucl_region(ds, country_mappings)
 
     # Calculate hydrogen ceiling
     regional_ceiling_dict = {}
-    for region in tiam_ucl_region_to_iso3.keys():
+    for region in _tiam_ucl_regions(country_mappings):
         region_lcoh = ds["lcoh"].where(ds["tiam_ucl_region"] == region, drop=True)
         if region_lcoh.size == 0 or len(region_lcoh.values[~np.isnan(region_lcoh.values)]) == 0:
             if region != "Rest of World":  # Normal that RoW has no data
@@ -203,51 +243,60 @@ def calculate_regional_hydrogen_ceiling(
     return regional_ceiling_dict
 
 
-def apply_hydrogen_price_cap(
-    ds: xr.Dataset,
-    regional_ceiling: dict[str, float],
-    geo_config: "GeoConfig",
-) -> xr.Dataset:
+def effective_hydrogen_ceilings(regional_ceiling: dict[str, float], geo_config: "GeoConfig") -> dict[str, float]:
     """
-    Apply hydrogen price capping to the dataset based on regional ceilings and trade configuration.
+    Each region's effective hydrogen ceiling under the trade configuration.
 
     Options:
-        a) If intraregional trade is NOT allowed, choose the minimum of the LCOH and the regional ceiling.
+        a) If intraregional trade is NOT allowed, the effective ceiling is the regional ceiling.
         Interregional trade is always allowed (or indirectly ignored via a hydrogen ceiling of the 100th percentile).
-        b) If intraregional trade is allowed and there are regions to trade with, set the capped LCOH to the
-        minimum of the LCOH, the regional ceiling, and the minimum regional ceiling of ANY of the regions in
-        the cluster plus long distance transport costs per kg of hydrogen.
+        b) If intraregional trade is allowed and there are regions to trade with, it is the minimum of the
+        regional ceiling and the minimum regional ceiling of ANY of the regions in the cluster plus long
+        distance transport costs per kg of hydrogen.
+
+    Args:
+        regional_ceiling: Region to its hydrogen ceiling (USD/kg), as ``calculate_regional_hydrogen_ceiling``
+            returns it.
+        geo_config: Configuration object containing trade settings and transport costs.
+
+    Returns:
+        Region to its effective ceiling (USD/kg).
+    """
+    effective: dict[str, float] = {}
+    for region in regional_ceiling.keys():
+        trade_regions = geo_config.intraregional_trade_matrix[region]
+        if geo_config.intraregional_trade_allowed and trade_regions is not None:
+            best_intraregional_trade_value = (
+                min([regional_ceiling[r] for r in trade_regions]) + geo_config.long_dist_pipeline_transport_cost
+            )
+            effective[region] = min(best_intraregional_trade_value, regional_ceiling[region])
+        else:
+            effective[region] = regional_ceiling[region]
+    return effective
+
+
+def apply_hydrogen_price_cap(ds: xr.Dataset, hydrogen_ceiling: dict[str, float]) -> xr.Dataset:
+    """
+    Cap each cell's hydrogen price at its region's effective ceiling.
 
     Args:
         ds: Dataset with LCOH and tiam_ucl_region values
-        regional_ceiling: Dictionary mapping regions to their hydrogen ceiling prices
-        geo_config: Configuration object containing trade settings and transport costs
+        hydrogen_ceiling: Region to its effective ceiling (USD/kg), as ``effective_hydrogen_ceilings`` returns it
 
     Returns:
         Dataset with added 'capped_lcoh' variable and 'hydrogen_ceiling', the effective ceiling (USD/kg) each
         cell is capped against
 
     Notes:
-        The effective ceiling is the region's ceiling, lowered to the best trade partner's ceiling plus the
-        pipeline cost when intraregional trade is allowed. Cells outside every region keep NaN in both. A cell
-        without an LCOH (no power price or no electrolyser cost row) keeps a NaN capped price, so it drops out of
-        the candidate sites instead of being priced at the ceiling.
+        Cells outside every region keep NaN in both. A cell without an LCOH (no power price or no electrolyser
+        cost row) keeps a NaN capped price, so it drops out of the candidate sites instead of being priced at
+        the ceiling.
     """
     ds["capped_lcoh"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
     ds["hydrogen_ceiling"] = xr.full_like(ds["lcoh"], fill_value=float("nan"))
 
-    for region in regional_ceiling.keys():
+    for region, ceiling_value in hydrogen_ceiling.items():
         mask = ds["tiam_ucl_region"] == region
-        trade_regions = geo_config.intraregional_trade_matrix[region]
-
-        if geo_config.intraregional_trade_allowed and trade_regions is not None:
-            best_intraregional_trade_value = (
-                min([regional_ceiling[r] for r in trade_regions]) + geo_config.long_dist_pipeline_transport_cost
-            )
-            ceiling_value = min(best_intraregional_trade_value, regional_ceiling[region])
-        else:
-            ceiling_value = regional_ceiling[region]
-
         ds["hydrogen_ceiling"].values[mask] = ceiling_value
         ds["capped_lcoh"].values[mask] = np.minimum(ds["lcoh"].values[mask], ceiling_value)
 

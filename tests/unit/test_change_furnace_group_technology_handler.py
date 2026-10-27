@@ -48,6 +48,7 @@ def _make_command(bom: dict) -> ChangeFurnaceGroupTechnology:
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
 
 

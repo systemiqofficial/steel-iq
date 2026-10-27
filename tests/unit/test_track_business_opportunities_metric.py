@@ -17,12 +17,19 @@ from steelo.domain.calculate_costs import (
     scale_fopex_to_production,
 )
 from steelo.domain.commands import UpdateFurnaceGroupStatus
-from steelo.domain.models import Location
+from steelo.domain.models import CaptiveEnergy, Location
 from steelo.devdata import get_furnace_group, PointInTime, TimeFrame, Year
 
 LOCATION = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
 MARKET_PRICE = {"steel": [600.0] * 12, "iron": [400.0] * 12}
-SITE_PRICES = {"electricity": 0.05, "hydrogen": 3500.0}
+SITE_STACK = CaptiveEnergy(
+    lock_year=Year(2028),
+    coverage=0.85,
+    lcoe=0.04,
+    electrolyser_use=0.05,
+    electrolyser_cost=1.0,
+    hydrogen_contract=None,
+)
 BOM = {
     "materials": {
         "scrap": {
@@ -72,7 +79,7 @@ def _make_opportunity_fg(*, utilization_rate: float = 0.7):
     fg.chosen_reductant = "scrap"
     fg.bill_of_materials = BOM
     fg.output_shares = {"scrap": 1.0}
-    fg.energy_costs_no_subsidy = dict(SITE_PRICES)
+    fg.captive_energy = SITE_STACK
     return fg
 
 
@@ -171,8 +178,8 @@ def test_re_check_npv_equals_creation_npv():
     assert (call["start"], call["end"]) == (Year(2030), Year(2035))
     assert call["location"] is LOCATION
     assert call["output_shares"] == {"scrap": 1.0}
-    assert call["overrides"] == SITE_PRICES
-    assert call["override_reference_year"] == Year(2026)
+    assert call["captive"] is SITE_STACK
+    assert "overrides" not in call
 
 
 def test_opportunity_announced_at_earliest_moment_is_valued_from_year_after_announcement():

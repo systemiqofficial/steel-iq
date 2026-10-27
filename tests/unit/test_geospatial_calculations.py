@@ -1246,7 +1246,9 @@ def test_hydrogen_price_cap_leaves_a_cell_without_an_lcoh_unpriced():
     )
     config = GeoConfig(intraregional_trade_allowed=False, intraregional_trade_matrix={"A": None})
 
-    result = geospatial_calculations.apply_hydrogen_price_cap(ds, {"A": 4.0}, config)
+    result = geospatial_calculations.apply_hydrogen_price_cap(
+        ds, geospatial_calculations.effective_hydrogen_ceilings({"A": 4.0}, config)
+    )
 
     np.testing.assert_array_equal(result["capped_lcoh"].values, [[2.0, np.nan]])
     np.testing.assert_array_equal(result["hydrogen_ceiling"].values, [[4.0, 4.0]])

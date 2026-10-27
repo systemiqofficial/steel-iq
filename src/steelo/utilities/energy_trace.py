@@ -24,15 +24,16 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from steelo.domain.constants import MWH_TO_KWH, PERkWh_TO_PERMWh, T_TO_KG, Year
+from steelo.domain.constants import MWH_TO_KWH, PERMWh_TO_PERkWh, PERkWh_TO_PERMWh, T_TO_KG, Year
 from steelo.utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 
 if TYPE_CHECKING:
     import xarray as xr
 
     from steelo.adapters.repositories.interface import PlantRepository
-    from steelo.domain.models import Environment, FurnaceGroup, HydrogenPriceInputs, Plant
+    from steelo.domain.models import CaptiveEnergy, Environment, FurnaceGroup, HydrogenPriceInputs, Location, Plant
     from steelo.domain.new_plant_opening import NewPlantLocation
+    from steelo.simulation import GeoConfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,14 @@ FURNACE_GROUP_UNITS = {
     "electricity_paid": "USD/kWh",
     "hydrogen_paid": "USD/t",
 }
+CAPTIVE_UNITS = {
+    "lock_year": "year",
+    "coverage": "fraction",
+    "lcoe": "USD/kWh",
+    "electrolyser_use": "MWh/kg",
+    "electrolyser_cost": "USD/kg",
+    "hydrogen_contract": "USD/kg",
+}
 UNITS: dict[str, dict[str, str]] = {
     "lcoe_source": {
         "file": "",
@@ -102,6 +111,7 @@ UNITS: dict[str, dict[str, str]] = {
         "cells_above_ceiling": "cells",
         "cells_nan_lcoh_priced": "cells",
         "cells_off_lcoh": "cells",
+        "regions_off_ceiling": "regions",
     },
     "hydrogen_lcoe": {"lcoe": "USD/MWh", "from_neighbours": ""},
     "country_hydrogen": {
@@ -114,28 +124,40 @@ UNITS: dict[str, dict[str, str]] = {
         "capped": "USD/kg",
     },
     "brownfield": FURNACE_GROUP_UNITS,
-    "greenfield_operating": FURNACE_GROUP_UNITS,
+    "greenfield_operating": {**FURNACE_GROUP_UNITS, "grid": "USD/kWh"},
     "greenfield_select": {
         "site_electricity": "USD/kWh",
         "site_hydrogen": "USD/t",
         "country_electricity": "USD/kWh",
         "country_hydrogen": "USD/t",
-        "override_reference_year": "year",
         "operating_start_year": "year",
+        **CAPTIVE_UNITS,
+        "npv_electricity": "USD/kWh",
+        "npv_hydrogen": "USD/t",
     },
     "greenfield_revalue": {
         "electricity": "USD/kWh",
         "hydrogen": "USD/t",
         "site_power_price": "USD/kWh",
         "site_hydrogen": "USD/t",
+        **CAPTIVE_UNITS,
+        "lock_electricity": "USD/kWh",
+        "lock_hydrogen": "USD/t",
+    },
+    "greenfield_relock": {
+        "event": "",
+        "old_stack": "",
+        **{f"old_{quantity}": unit for quantity, unit in CAPTIVE_UNITS.items()},
+        **{f"new_{quantity}": unit for quantity, unit in CAPTIVE_UNITS.items()},
     },
     "greenfield_build": {
         "electricity": "USD/kWh",
         "hydrogen": "USD/t",
-        "reference_electricity": "USD/kWh",
-        "reference_hydrogen": "USD/t",
+        "cell_electricity": "USD/kWh",
+        "cell_hydrogen": "USD/t",
         "regional_hydrogen": "USD/t",
         "operating_start_year": "year",
+        **CAPTIVE_UNITS,
         "reference": "",
     },
 }
@@ -159,11 +181,16 @@ class _GreenfieldYear:
         default_factory=lambda: defaultdict(list)
     )
     outside_ratio_by_country: Counter[str] = field(default_factory=Counter)
+    select_checked: int = 0
+    select_failed: int = 0
     revalue_checked: int = 0
     revalue_failed: int = 0
     revalue_skipped: int = 0
+    revalue_lock_unchecked: int = 0
     built: int = 0
     built_without_reference: int = 0
+    relocked: int = 0
+    relock_failed: int = 0
 
 
 @dataclass
@@ -178,6 +205,7 @@ class _State:
     site_prices: dict[str, dict[str, float]] = field(default_factory=dict)
     references: dict[str, dict[str, float]] = field(default_factory=dict)
     greenfield: _GreenfieldYear = field(default_factory=_GreenfieldYear)
+    environment: "Environment | None" = None
 
 
 _state = _State()
@@ -213,6 +241,24 @@ def configure(enabled: bool, countries: Iterable[str], plants: Iterable[str], ou
             f"[ENERGY TRACE] on: {len(_state.countries)} countries, {len(_state.plants)} plants, "
             f"CSV {_state.csv_path if _state.csv_path is not None else 'not written (no output folder)'}"
         )
+
+
+def attach_environment(env: "Environment") -> None:
+    """
+    Give the new-site stages the run's environment, whose inputs their checks read.
+
+    Args:
+        env: The run's environment.
+
+    Returns:
+        None.
+
+    Notes:
+        Called by ``bootstrap_simulation`` after ``configure``, which forgets it. The stages read the LCOE
+        grid, the input costs, the electrolyser inputs and the stored site hydrogen ceilings from it, never
+        the code they check.
+    """
+    _state.environment = env
 
 
 def enabled() -> bool:
@@ -490,9 +536,10 @@ def site_power(ds: "xr.Dataset", year: int, coverage: float, lcoe_basis: str | N
 def site_hydrogen(
     ds: "xr.Dataset",
     year: int,
-    regional_ceiling: Mapping[str, float],
+    hydrogen_ceiling: Mapping[str, float],
     hydrogen_efficiency: Mapping[Year, float],
     hydrogen_capex_opex: Mapping[str, Mapping[Year, float]],
+    geo_config: "GeoConfig",
 ) -> None:
     """
     Trace and check the site hydrogen rasters of the year.
@@ -501,9 +548,11 @@ def site_hydrogen(
         ds: The global dataset with ``iso3``, ``tiam_ucl_region``, ``power_price`` (USD/kWh), ``lcoh`` and
             ``capped_lcoh`` (USD/kg) and, from the GEO pipeline, ``geo_key``.
         year: Simulation year.
-        regional_ceiling: Region to its hydrogen ceiling (USD/kg), before any trade option.
+        hydrogen_ceiling: Region to the effective ceiling of the year (USD/kg) the cells were capped at, the
+            stored ceilings new sites lock.
         hydrogen_efficiency: Year to the electrolyser's electricity use (MWh/kg).
         hydrogen_capex_opex: Geo key to year to the electrolyser's capital and operating cost (USD/kg).
+        geo_config: The ceiling percentile and the intraregional trade settings.
 
     Returns:
         None.
@@ -515,7 +564,10 @@ def site_hydrogen(
         check cannot fail. Every cell with a finite power price and an electrolyser cost row must hold
         ``lcoh`` = kWh per kg × power price + the capital and operating cost at its geo key, else its iso3
         (``cells_off_lcoh``), computed here on the rasters. Without ``geo_key`` the cost is expected at the
-        iso3.
+        iso3. Each region's stored ceiling must equal the one this year's raster implies: the percentile of
+        the region's finite cell LCOH (the highest LCOH anywhere for a region without any), lowered to the
+        best trade partner's plus the pipeline cost when intraregional trade is allowed
+        (``regions_off_ceiling``, one row for all cells, the regions named in the summary).
     """
     if not _state.enabled:
         return
@@ -525,7 +577,7 @@ def site_hydrogen(
         _raster(ds, name, dims) for name in ("lcoh", "capped_lcoh", "tiam_ucl_region", "iso3", "power_price")
     )
     geo_key = _raster(ds, "geo_key", dims) if "geo_key" in ds else iso3
-    ceiling = pd.Series(regions.ravel()).map(regional_ceiling).to_numpy(dtype=float).reshape(regions.shape)
+    ceiling = pd.Series(regions.ravel()).map(hydrogen_ceiling).to_numpy(dtype=float).reshape(regions.shape)
     capex_opex = {key: _nested(by_year, year) for key, by_year in hydrogen_capex_opex.items()}
     cost = (
         pd.Series(geo_key.ravel())
@@ -560,11 +612,26 @@ def site_hydrogen(
             "cells_off_lcoh": _Check(n_off_lcoh, 0, n_off_lcoh == 0),
         }
         _emit(stage, year, {"iso3": country}, values, checks, record=True, log=True)
+    raster_ceiling = _raster_hydrogen_ceilings(lcoh, regions, list(hydrogen_ceiling), geo_config)
+    off_regions = sorted(
+        region for region, stored in hydrogen_ceiling.items() if not _matches(stored, raster_ceiling[region])
+    )
+    _emit(
+        stage,
+        year,
+        {"iso3": ALL_CELLS},
+        {},
+        {"regions_off_ceiling": _Check(len(off_regions), 0, not off_regions)},
+        record=True,
+        log=False,
+    )
     _summary(
         stage,
         year,
         f"checked {int(priced.sum())}, failed {int(above.sum())}; "
-        f"LCOH checked {int(lcoh_checked.sum())}, failed {int(off_lcoh.sum())}",
+        f"LCOH checked {int(lcoh_checked.sum())}, failed {int(off_lcoh.sum())}; "
+        f"ceilings checked {len(hydrogen_ceiling)}, failed {len(off_regions)}"
+        + (f" ({', '.join(off_regions)})" if off_regions else ""),
     )
 
 
@@ -786,8 +853,10 @@ def greenfield_operating(plants: "PlantRepository", year: int, active_statuses: 
         None.
 
     Notes:
-        No-subsidy electricity and hydrogen must equal the references frozen when the site entered
-        construction. A furnace group without a reference is traced unchecked and counted as skipped.
+        No-subsidy electricity must equal c × L + (1 − c) × g, and no-subsidy hydrogen the contract × 1,000, or
+        else (e × 1,000 × that electricity + k) × 1,000, from the stack frozen when the site entered
+        construction and the year's grid price g at the plant's geo key, else its country, computed here from
+        the frozen fields. A furnace group without a reference is traced unchecked and counted as skipped.
     """
     if not _state.enabled:
         return
@@ -800,19 +869,22 @@ def greenfield_operating(plants: "PlantRepository", year: int, active_statuses: 
         for fg in plant.furnace_groups:
             if fg.status.lower() not in active:
                 continue
-            reference = _state.references.get(fg.furnace_group_id, {})
+            reference = _state.references.get(fg.furnace_group_id)
             values: dict[str, object] = {}
             checks: dict[str, _Check] = {}
-            for carrier in CARRIERS:
-                actual = _price(fg.energy_costs_no_subsidy, carrier)
-                if carrier in reference:
-                    checks[carrier] = _Check(actual, reference[carrier], _matches(actual, reference[carrier]))
-                else:
-                    values[carrier] = actual
+            if reference is None:
+                values.update({carrier: _price(fg.energy_costs_no_subsidy, carrier) for carrier in CARRIERS})
+                skipped += len(CARRIERS)
+            else:
+                grid = _grid_price(_environment(), plant.location, year)
+                expected = _expected_operating_prices(reference, grid)
+                values["grid"] = grid
+                for carrier in CARRIERS:
+                    actual = _price(fg.energy_costs_no_subsidy, carrier)
+                    checks[carrier] = _Check(actual, expected[carrier], _matches(actual, expected[carrier]))
             values.update(_paid(fg))
             checked += len(checks)
             failed += sum(not c.ok for c in checks.values())
-            skipped += len(CARRIERS) - len(checks)
             _emit(stage, year, _furnace_group_identity(plant, fg), values, checks, record=True, log=True)
     _summary(stage, year, f"checked {checked}, failed {failed}, skipped {skipped} (no reference)")
 
@@ -820,50 +892,78 @@ def greenfield_operating(plants: "PlantRepository", year: int, active_statuses: 
 def greenfield_select(
     year: Year,
     site: "NewPlantLocation",
-    geo_key: str,
+    location: "Location",
     site_costs: Mapping[str, float],
     country_costs: Mapping[Year, Mapping[str, float]],
-    target_year: int,
+    captive: "CaptiveEnergy",
     construction_time: int,
 ) -> None:
     """
-    Trace a candidate site's prices as the NPV at selection receives them.
+    Trace a candidate site's prices and the stack its NPV at selection is priced with.
 
     Args:
-        year: Simulation year, which is also the NPV overrides' reference year.
+        year: Simulation year.
         site: The candidate site with its raster prices.
-        geo_key: The site's geo key.
+        location: The site's location, with its geo key.
         site_costs: The site's energy costs after the site prices replaced the country ones.
         country_costs: Year to carrier price for the site's geo key, the master's input costs.
-        target_year: The year the opportunity would start construction.
+        captive: The stack locked at the year the opportunity would start construction.
         construction_time: Years of construction.
 
     Returns:
         None.
 
     Notes:
-        One row set per site, no log line; ``greenfield_summary`` logs the per-country summaries.
+        One row set per site, no log line; ``greenfield_summary`` logs the per-country summaries and the
+        checks. The stack's ``lcoe`` must equal the LCOE grid at the site's cell and the lock year (0 without
+        a baseload share). The NPV's electricity and hydrogen of the first operating year, before subsidies,
+        must equal c × L + (1 − c) × g of that year, and e × 1,000 × that + k (× 1,000, USD/t) or the
+        ceiling, computed here from the LCOE grid, the input costs, the electrolyser inputs and the stored
+        ceiling of the lock year at the site's geo key, else its country.
     """
     if not _state.enabled:
         return
     stage = "greenfield_select"
+    env = _environment()
     iso3 = site["iso3"]
     country_year = country_costs[year]
     site_electricity = site_costs["electricity"]
     site_hydrogen = site_costs["hydrogen"]
     country_electricity = _price(country_year, "electricity")
-    values = {
+    first_year = Year(captive.lock_year + construction_time)
+    expected_lcoe, expected_electricity, expected_hydrogen = _expected_captive_prices(
+        env, location, captive.lock_year, first_year
+    )
+    npv_costs = env.site_energy_costs_for_year(location, first_year, captive=captive)
+    npv_electricity = _price(npv_costs, "electricity")
+    npv_hydrogen = _price(npv_costs, "hydrogen")
+    values: dict[str, object] = {
         "site_electricity": site_electricity,
         "site_hydrogen": site_hydrogen,
         "country_electricity": country_electricity,
         "country_hydrogen": _price(country_year, "hydrogen"),
-        "override_reference_year": year,
-        "operating_start_year": target_year + construction_time,
+        "operating_start_year": first_year,
+        **_captive_values(captive),
     }
-    identity = {"iso3": iso3, "geo_key": geo_key, "lat": site["Latitude"], "lon": site["Longitude"], "new_site": True}
-    _emit(stage, year, identity, values, {}, record=True, log=False)
+    checks = {
+        "lcoe": _Check(captive.lcoe, expected_lcoe, _matches_lcoe(captive.lcoe, expected_lcoe)),
+        "npv_electricity": _Check(
+            npv_electricity, expected_electricity, _matches_lcoe(npv_electricity, expected_electricity)
+        ),
+        "npv_hydrogen": _Check(npv_hydrogen, expected_hydrogen, _matches_lcoe(npv_hydrogen, expected_hydrogen)),
+    }
+    identity = {
+        "iso3": iso3,
+        "geo_key": location.geo_key,
+        "lat": site["Latitude"],
+        "lon": site["Longitude"],
+        "new_site": True,
+    }
+    _emit(stage, year, identity, values, checks, record=True, log=False)
     tally = _state.greenfield
     tally.sites += 1
+    tally.select_checked += len(checks)
+    tally.select_failed += sum(not c.ok for c in checks.values())
     if iso3 in _state.countries:
         tally.site_prices_by_country[iso3].append((site_electricity, site_hydrogen))
         ratio = site_electricity / country_electricity if country_electricity != 0 else math.inf
@@ -877,9 +977,11 @@ def greenfield_revalue(
     site_power_price: "np.ndarray",
     site_capped_lcoh: "np.ndarray",
     written: Mapping[str, float],
+    captive: "CaptiveEnergy",
+    energy_prices: Mapping[str, Any],
 ) -> None:
     """
-    Check the prices a considered or announced new site is re-valued with this year.
+    Check the prices and the stack a considered or announced new site is re-valued with this year.
 
     Args:
         plant: The new site's plant.
@@ -888,18 +990,25 @@ def greenfield_revalue(
         site_power_price: The site's ``power_price`` raster value (USD/kWh).
         site_capped_lcoh: The site's ``capped_lcoh`` raster value (USD/kg).
         written: The no-subsidy energy costs the re-valuation writes.
+        captive: The stack the re-valuation locks at the opportunity's construction start.
+        energy_prices: The year's site rasters, for the cell's ``geo_key``.
 
     Returns:
         None.
 
     Notes:
         The written hydrogen must equal the site's ``capped_lcoh`` × ``T_TO_KG``; a site with no
-        raster value gets its row without the check. The finite raster prices are kept as the
-        furnace group's candidate references, which ``greenfield_build`` freezes.
+        raster value gets its row without the check. The finite raster prices are kept for
+        ``greenfield_build`` to record. The stack's ``lcoe`` must equal the LCOE grid at the cell and the
+        lock year. An announced opportunity locks the current
+        year, so its stack priced at the year's grid price (``lock_electricity``, ``lock_hydrogen``) must
+        equal the cell's ``power_price`` and ``capped_lcoh`` × ``T_TO_KG`` when the cell's raster geo key is
+        the plant's; otherwise both are recorded unchecked and counted.
     """
     if not _state.enabled:
         return
     stage = "greenfield_revalue"
+    env = _environment()
     site_power = float(site_power_price)
     site_hydrogen = float(site_capped_lcoh) * T_TO_KG
     kept = _state.site_prices.setdefault(fg.furnace_group_id, {})
@@ -908,26 +1017,45 @@ def greenfield_revalue(
     if math.isfinite(site_hydrogen):
         kept["hydrogen"] = site_hydrogen
     hydrogen = _price(written, "hydrogen")
+    location = plant.location
+    expected_lcoe, _, _ = _expected_captive_prices(env, location, captive.lock_year, captive.lock_year)
     values: dict[str, object] = {
         "electricity": _price(written, "electricity"),
         "site_power_price": site_power,
         "site_hydrogen": site_hydrogen,
+        **_captive_values(captive),
     }
-    checks: dict[str, _Check] = {}
+    checks: dict[str, _Check] = {
+        "lcoe": _Check(captive.lcoe, expected_lcoe, _matches_lcoe(captive.lcoe, expected_lcoe)),
+    }
     tally = _state.greenfield
     if math.isfinite(site_hydrogen):
         checks["hydrogen"] = _Check(hydrogen, site_hydrogen, _matches(hydrogen, site_hydrogen))
-        tally.revalue_checked += 1
-        tally.revalue_failed += not checks["hydrogen"].ok
     else:
         values["hydrogen"] = hydrogen
         tally.revalue_skipped += 1
+    if fg.status == "announced":
+        grid = _grid_price(env, location, captive.lock_year)
+        lock_electricity = captive.electricity(grid)
+        lock_hydrogen = captive.hydrogen(grid)
+        cell_geo_key = str(energy_prices["geo_key"].sel(lat=location.lat, lon=location.lon).values)
+        if cell_geo_key == location.geo_key and math.isfinite(site_power) and math.isfinite(site_hydrogen):
+            checks["lock_electricity"] = _Check(
+                lock_electricity, site_power, _matches_lcoe(lock_electricity, site_power)
+            )
+            checks["lock_hydrogen"] = _Check(lock_hydrogen, site_hydrogen, _matches_lcoe(lock_hydrogen, site_hydrogen))
+        else:
+            values["lock_electricity"] = lock_electricity
+            values["lock_hydrogen"] = lock_hydrogen
+            tally.revalue_lock_unchecked += 1
+    tally.revalue_checked += len(checks)
+    tally.revalue_failed += sum(not c.ok for c in checks.values())
     _emit(stage, year, _furnace_group_identity(plant, fg), values, checks, record=True, log=True)
 
 
 def greenfield_build(plant: "Plant", fg: "FurnaceGroup", year: Year, env: "Environment") -> None:
     """
-    Trace a new site entering construction and freeze its reference prices.
+    Trace a new site entering construction and freeze its stack as the reference.
 
     Args:
         plant: The new site's plant.
@@ -939,27 +1067,99 @@ def greenfield_build(plant: "Plant", fg: "FurnaceGroup", year: Year, env: "Envir
         None.
 
     Notes:
-        The reference is the site's raster prices from the furnace group's last re-valuation, which
-        ``greenfield_operating`` expects once the site operates. A furnace group never re-valued
-        gets a ``reference`` row reading ``missing``. ``regional_hydrogen`` is recorded for reading;
-        no check uses it.
+        The reference is the furnace group's stack (``captive_energy``), whose ``lock_year`` must be the
+        construction start year; ``greenfield_operating`` prices the site from it. A furnace group without a
+        stack gets a ``reference`` row reading ``missing`` and no reference. The site's raster prices from its
+        last re-valuation (``cell_electricity``, ``cell_hydrogen``) and the geo key's ``regional_hydrogen`` are
+        recorded for reading; no check uses them.
     """
     if not _state.enabled:
         return
     stage = "greenfield_build"
     regional = _resolved_hydrogen(plant, env.capped_hydrogen_costs_for_year(year))
     values: dict[str, object] = {carrier: _price(fg.energy_costs_no_subsidy, carrier) for carrier in CARRIERS}
-    reference = dict(_state.site_prices.get(fg.furnace_group_id, {}))
-    for carrier, price in reference.items():
-        values[f"reference_{carrier}"] = price
-    if not reference:
-        values["reference"] = "missing"
+    for carrier, price in _state.site_prices.get(fg.furnace_group_id, {}).items():
+        values[f"cell_{carrier}"] = price
     values["regional_hydrogen"] = regional
     values["operating_start_year"] = fg.lifetime.time_frame.start
-    _state.references[fg.furnace_group_id] = reference
+    checks: dict[str, _Check] = {}
+    captive = fg.captive_energy
+    if captive is None:
+        values["reference"] = "missing"
+    else:
+        values.update(
+            {quantity: value for quantity, value in _captive_values(captive).items() if quantity != "lock_year"}
+        )
+        values["lcoe"] = captive.lcoe
+        checks["lock_year"] = _Check(captive.lock_year, year, captive.lock_year == year)
+        _state.references[fg.furnace_group_id] = _reference_of(captive)
     _state.greenfield.built += 1
-    _state.greenfield.built_without_reference += not reference
-    _emit(stage, year, _furnace_group_identity(plant, fg), values, {}, record=True, log=True)
+    _state.greenfield.built_without_reference += captive is None
+    _emit(stage, year, _furnace_group_identity(plant, fg), values, checks, record=True, log=True)
+
+
+def greenfield_relock(
+    event: str,
+    plant: "Plant",
+    fg: "FurnaceGroup",
+    year: int,
+    old: "CaptiveEnergy | None",
+    new: "CaptiveEnergy | None",
+    lock_year: int,
+) -> None:
+    """
+    Trace a new site re-locking its stack for a new investment, and check the new stack.
+
+    Args:
+        event: ``renovation``, ``switch_decision``, ``switch_execution`` or ``expansion``.
+        plant: The plant.
+        fg: The furnace group investing.
+        year: Simulation year.
+        old: The stack the furnace group held before the event; None for a group without one.
+        new: The stack locked for the investment; None for an existing plant.
+        lock_year: The investment's start year, the lock year the new stack must hold: the renovation,
+            decision or expansion year, or for a switch's execution the year it was decided.
+
+    Returns:
+        None.
+
+    Notes:
+        Existing plants are not traced. Old and new stacks are recorded as ``old_<field>`` and ``new_<field>``.
+        ``new_lock_year`` must equal ``lock_year``; ``new_lcoe``, ``new_electrolyser_use`` and
+        ``new_electrolyser_cost`` must equal the LCOE grid at the cell and the electrolyser inputs at the geo
+        key, else the country, of that year, read here. A renovation, a switch's execution and an expansion's
+        new group replace (or create) the furnace group's frozen reference with the new stack, so
+        ``greenfield_operating`` expects the latest lock; at a switch decision the old technology keeps the old
+        stack until the switch executes.
+    """
+    if not _state.enabled or not is_new_site(plant) or new is None:
+        return
+    stage = "greenfield_relock"
+    expected_lcoe, expected_use, expected_cost = _expected_stack_inputs(_environment(), plant.location, lock_year)
+    values: dict[str, object] = {"event": event}
+    if old is None:
+        values["old_stack"] = "none"
+    else:
+        values.update({f"old_{quantity}": value for quantity, value in _captive_values(old).items()})
+        values["old_lcoe"] = old.lcoe
+    values["new_coverage"] = new.coverage
+    values["new_hydrogen_contract"] = "none" if new.hydrogen_contract is None else new.hydrogen_contract
+    checks = {
+        "new_lock_year": _Check(new.lock_year, lock_year, new.lock_year == lock_year),
+        "new_lcoe": _Check(new.lcoe, expected_lcoe, _matches_lcoe(new.lcoe, expected_lcoe)),
+        "new_electrolyser_use": _Check(
+            new.electrolyser_use, expected_use, _matches(new.electrolyser_use, expected_use)
+        ),
+        "new_electrolyser_cost": _Check(
+            new.electrolyser_cost, expected_cost, _matches(new.electrolyser_cost, expected_cost)
+        ),
+    }
+    if event in ("renovation", "switch_execution", "expansion"):
+        _state.references[fg.furnace_group_id] = _reference_of(new)
+    tally = _state.greenfield
+    tally.relocked += 1
+    tally.relock_failed += not all(c.ok for c in checks.values())
+    _emit(stage, year, _furnace_group_identity(plant, fg), values, checks, record=True, log=True)
 
 
 def greenfield_summary(year: int) -> None:
@@ -974,9 +1174,10 @@ def greenfield_summary(year: int) -> None:
 
     Notes:
         For ``greenfield_select``: per listed country the candidate sites, the median site prices
-        and the number whose power price is outside 0.1 to 10 times the country's, then the total.
-        For ``greenfield_revalue`` the checks; for ``greenfield_build`` the sites built. Resets the
-        counts for the next year.
+        and the number whose power price is outside 0.1 to 10 times the country's, then the total and
+        the checks. For ``greenfield_revalue`` the checks and the announced locks left unchecked; for
+        ``greenfield_build`` the sites built; for ``greenfield_relock`` the re-locks and how many failed a check.
+        Resets the counts for the next year.
     """
     if not _state.enabled:
         return
@@ -991,14 +1192,233 @@ def greenfield_summary(year: int) -> None:
             f"median_site_hydrogen={_fmt(_median(prices[:, 1]))} USD/t "
             f"outside_ratio={tally.outside_ratio_by_country[iso3]}",
         )
-    _summary("greenfield_select", year, f"sites {tally.sites}")
+    _summary(
+        "greenfield_select",
+        year,
+        f"sites {tally.sites}; checked {tally.select_checked}, failed {tally.select_failed}",
+    )
     _summary(
         "greenfield_revalue",
         year,
-        f"checked {tally.revalue_checked}, failed {tally.revalue_failed}, skipped {tally.revalue_skipped} (no site value)",
+        f"checked {tally.revalue_checked}, failed {tally.revalue_failed}, skipped {tally.revalue_skipped} (no site value), "
+        f"announced locks unchecked {tally.revalue_lock_unchecked} (cell geo key not the plant's or no site value)",
     )
     _summary("greenfield_build", year, f"built {tally.built}, without reference {tally.built_without_reference}")
+    _summary("greenfield_relock", year, f"relocked {tally.relocked}, failed {tally.relock_failed}")
     _state.greenfield = _GreenfieldYear()
+
+
+def _environment() -> "Environment":
+    """
+    The environment ``attach_environment`` gave the trace.
+
+    Returns:
+        The run's environment.
+
+    Raises:
+        ValueError: If none was attached; a stage that needs it cannot check anything without it.
+    """
+    if _state.environment is None:
+        raise ValueError("The energy trace needs the run's environment: call attach_environment after configure")
+    return _state.environment
+
+
+def _captive_values(captive: "CaptiveEnergy") -> dict[str, object]:
+    """
+    A stack's fields as trace quantities.
+
+    Args:
+        captive: A new site's stack.
+
+    Returns:
+        ``lock_year``, ``coverage``, ``electrolyser_use``, ``electrolyser_cost`` and ``hydrogen_contract``
+        (``none`` without one). ``lcoe`` is a check of its own.
+    """
+    return {
+        "lock_year": captive.lock_year,
+        "coverage": captive.coverage,
+        "electrolyser_use": captive.electrolyser_use,
+        "electrolyser_cost": captive.electrolyser_cost,
+        "hydrogen_contract": "none" if captive.hydrogen_contract is None else captive.hydrogen_contract,
+    }
+
+
+def _grid_price(env: "Environment", location: "Location", year: int) -> float:
+    """
+    The input costs' grid price at a location, read for the trace.
+
+    Args:
+        env: The run's environment.
+        location: Plant or site location.
+        year: The year; clamped to the last input-cost year.
+
+    Returns:
+        The electricity price (USD/kWh) at the geo key, else the country, or NaN when neither has a row.
+    """
+    key = location.geo_key if location.geo_key in env.input_costs else location.iso3
+    if key not in env.input_costs:
+        return math.nan
+    by_year = env.input_costs[key]
+    return abs(_nested(by_year, min(year, max(by_year)), "electricity"))
+
+
+def _expected_stack_inputs(env: "Environment", location: "Location", lock_year: int) -> tuple[float, float, float]:
+    """
+    The LCOE, electrolyser use and electrolyser cost a new site's stack should hold for a lock year.
+
+    Args:
+        env: The run's environment.
+        location: The site.
+        lock_year: The year the stack is locked.
+
+    Returns:
+        The LCOE of the site's cell for a system built in ``lock_year`` (USD/kWh, 0 without a baseload share),
+        the electrolyser's use (MWh/kg) and its cost at the site's geo key, else its country (USD/kg), NaN where
+        an input is missing.
+
+    Notes:
+        The LCOE is read with ``np.interp`` at the cell, years clipped to the grid's, never through
+        ``boa_lcoe.lcoe_at_cell``; the electrolyser inputs hold their last year past it.
+    """
+    assert env.config is not None
+    lcoe = 0.0
+    if POWER_MIX_TO_COVERAGE_MAP[env.config.geo_config.included_power_mix] > 0:
+        lcoe = math.nan
+        grid = env.baseload_lcoe_grid
+        if grid is not None and location.lat in grid["lat"].values and location.lon in grid["lon"].values:
+            cell = grid.sel(lat=location.lat, lon=location.lon)
+            years = cell["year"].values.astype(float)
+            lcoe = float(np.interp(np.clip(lock_year, years.min(), years.max()), years, cell.values)) * PERMWh_TO_PERkWh
+    capex_key = location.geo_key if location.geo_key in env.hydrogen_capex_opex else location.iso3
+    capex_by_year = env.hydrogen_capex_opex[capex_key] if capex_key in env.hydrogen_capex_opex else {}
+    use = _nested(env.hydrogen_efficiency, min(lock_year, max(env.hydrogen_efficiency)))
+    cost = _nested(capex_by_year, min(lock_year, max(capex_by_year))) if capex_by_year else math.nan
+    return lcoe, use, cost
+
+
+def _reference_of(captive: "CaptiveEnergy") -> dict[str, float]:
+    """
+    A stack's fields as the frozen reference ``greenfield_operating`` prices a site from.
+
+    Args:
+        captive: The stack.
+
+    Returns:
+        ``coverage``, ``lcoe``, ``electrolyser_use``, ``electrolyser_cost`` and ``hydrogen_contract``, NaN without
+        a contract.
+    """
+    return {
+        "coverage": captive.coverage,
+        "lcoe": captive.lcoe,
+        "electrolyser_use": captive.electrolyser_use,
+        "electrolyser_cost": captive.electrolyser_cost,
+        "hydrogen_contract": math.nan if captive.hydrogen_contract is None else captive.hydrogen_contract,
+    }
+
+
+def _expected_captive_prices(
+    env: "Environment", location: "Location", lock_year: int, price_year: int
+) -> tuple[float, float, float]:
+    """
+    A new site's locked LCOE and its electricity and hydrogen in a year, from the run's inputs.
+
+    Args:
+        env: The run's environment.
+        location: The site.
+        lock_year: The year the stack is locked.
+        price_year: The year to price.
+
+    Returns:
+        The LCOE of the site's cell for a system built in ``lock_year`` (USD/kWh, 0 without a baseload
+        share), the electricity price of ``price_year`` (USD/kWh) and the hydrogen price of ``price_year``
+        (USD/t), NaN where an input is missing.
+
+    Notes:
+        Read from the LCOE grid (``np.interp`` at the cell, years clipped to the grid's), the input costs,
+        the electrolyser inputs and the stored ceilings, never from ``CaptiveEnergy``'s methods. Electrolyser
+        inputs and the ceiling hold their last year past it.
+    """
+    assert env.config is not None
+    coverage = POWER_MIX_TO_COVERAGE_MAP[env.config.geo_config.included_power_mix]
+    lcoe, use, cost = _expected_stack_inputs(env, location, lock_year)
+    own_at_lock = use * MWH_TO_KWH * (coverage * lcoe + (1 - coverage) * _grid_price(env, location, lock_year)) + cost
+    ceilings = env.site_hydrogen_ceilings
+    region = env.site_hydrogen_region_by_iso3.get(location.iso3)
+    ceiling = _nested(ceilings, min(lock_year, max(ceilings)), region) if ceilings and region else math.nan
+    electricity = coverage * lcoe + (1 - coverage) * _grid_price(env, location, price_year)
+    if own_at_lock > ceiling:
+        hydrogen = ceiling * T_TO_KG
+    else:
+        hydrogen = (use * MWH_TO_KWH * electricity + cost) * T_TO_KG
+    return lcoe, electricity, hydrogen
+
+
+def _expected_operating_prices(reference: Mapping[str, float], grid: float) -> dict[str, float]:
+    """
+    An operating new site's electricity and hydrogen in a year, from its frozen stack fields.
+
+    Args:
+        reference: The stack's ``coverage``, ``lcoe`` (USD/kWh), ``electrolyser_use`` (MWh/kg),
+            ``electrolyser_cost`` (USD/kg) and ``hydrogen_contract`` (USD/kg, NaN without one).
+        grid: The year's grid price at the plant (USD/kWh).
+
+    Returns:
+        ``electricity`` (USD/kWh) and ``hydrogen`` (USD/t).
+    """
+    coverage = reference["coverage"]
+    electricity = coverage * reference["lcoe"] + (1 - coverage) * grid
+    contract = reference["hydrogen_contract"]
+    if math.isfinite(contract):
+        hydrogen = contract * T_TO_KG
+    else:
+        hydrogen = (reference["electrolyser_use"] * MWH_TO_KWH * electricity + reference["electrolyser_cost"]) * T_TO_KG
+    return {"electricity": electricity, "hydrogen": hydrogen}
+
+
+def _raster_hydrogen_ceilings(
+    lcoh: np.ndarray, regions: np.ndarray, region_names: list[str], geo_config: "GeoConfig"
+) -> dict[str, float]:
+    """
+    Each region's effective hydrogen ceiling as the year's raster implies it.
+
+    Args:
+        lcoh: The cells' uncapped LCOH (USD/kg).
+        regions: The cells' TIAM-UCL region.
+        region_names: The regions to compute.
+        geo_config: The ceiling percentile and the intraregional trade settings.
+
+    Returns:
+        Region to ceiling (USD/kg): the percentile of its finite cells, the highest finite LCOH anywhere
+        for a region without any, lowered to the best trade partner's plus the pipeline cost when
+        intraregional trade is allowed.
+    """
+    finite = np.isfinite(lcoh)
+    highest = float(lcoh[finite].max()) if finite.any() else math.nan
+    raw: dict[str, float] = {}
+    for region in region_names:
+        values = lcoh[(regions == region) & finite]
+        raw[region] = float(np.percentile(values, geo_config.hydrogen_ceiling_percentile)) if values.size else highest
+    effective: dict[str, float] = {}
+    for region, value in raw.items():
+        partners = geo_config.intraregional_trade_matrix[region]
+        if geo_config.intraregional_trade_allowed and partners is not None:
+            value = min(value, min(raw[p] for p in partners) + geo_config.long_dist_pipeline_transport_cost)
+        effective[region] = value
+    return effective
+
+
+def _matches_lcoe(actual: float, expected: float) -> bool:
+    """
+    Whether two values built on an LCOE file's float32 values are equal within its tolerance.
+
+    Args:
+        actual: The value the code holds.
+        expected: The independent value.
+
+    Returns:
+        True when both are finite and equal within ``LCOE_REL_TOL``.
+    """
+    return math.isfinite(actual) and math.isfinite(expected) and math.isclose(actual, expected, rel_tol=LCOE_REL_TOL)
 
 
 def _expected_power_price(grid: np.ndarray, lcoe: np.ndarray, coverage: float, lcoe_basis: str | None) -> np.ndarray:

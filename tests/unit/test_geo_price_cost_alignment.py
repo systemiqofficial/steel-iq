@@ -19,10 +19,22 @@ from steelo.domain.calculate_costs import (
     calculate_variable_opex,
     scale_fopex_to_production,
 )
-from steelo.domain.models import Location, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Location, PlantGroup
 from steelo.domain.constants import Year
 
 SITE_ID = (40.0, -100.0, "USA")
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def _flat_score_series(location, tech, output_shares, start, end, **kwargs):
@@ -123,6 +135,7 @@ def _run_identify(monkeypatch, market_price_steel: list[float]) -> dict:
         dynamic_feedstocks={},
         get_bom_from_avg_boms=lambda *args, **kwargs: (None, 0.7, "scrap", {}),
         reductant_score_series=_flat_score_series,
+        captive_energy_at=_stack_at,
         global_risk_free_rate=0.03,
         tech_to_product={"EAF": "steel"},
         allowed_techs={Year(2025): ["EAF"], Year(2028): ["EAF"]},
@@ -177,7 +190,7 @@ def _make_opportunity_fg(plant_lifetime: int):
     fg.railway_cost = 10.0
     fg.chosen_reductant = "scrap"
     fg.output_shares = {"scrap": 1.0}
-    fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+    fg.captive_energy = _stack_at(None, Year(2028))
     return fg
 
 

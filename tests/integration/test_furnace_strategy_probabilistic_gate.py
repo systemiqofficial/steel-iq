@@ -13,6 +13,11 @@ from steelo.simulation_types import get_default_technology_settings
 TECH_NPVS = {"EAF": 100_000, "BOF": 500_000, "DRI": 1_000_000, "BF": 50_000}
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its evaluation must never ask for one."""
+    raise AssertionError("an existing plant's evaluation asked for a captive energy stack")
+
+
 @pytest.fixture
 def plant_with_eaf():
     """Create a plant with an EAF furnace group."""
@@ -114,6 +119,7 @@ def evaluate_strategy(bus, plant, plant_group, probabilistic_agents):
         cost_of_equity_by_tech={"EAF": 0.08, "BOF": 0.08, "DRI": 0.08, "BF": 0.08},
         get_bom_from_avg_boms=lambda *a: (None, 0.0, "", {}),
         reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[], picks=[]),
+        captive_energy_at=_no_stack,
         probabilistic_agents=probabilistic_agents,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",

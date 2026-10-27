@@ -78,6 +78,8 @@ Optionally, regions can import hydrogen from connected regions. When enabled, th
    - Where `min_connected_ceiling` is the lowest ceiling among connected trade regions
    - And `pipeline_cost` is the long-distance hydrogen pipeline transport cost per kg
 
+The effective ceilings of steps 2 to 4 are computed once, in the first geospatial year, for every year a new site can lock its hydrogen supply (`site_hydrogen_ceilings`); each year's raster is then capped at the stored ceilings of its year (see [Energy Prices](../overarching_elements/energy_prices.md#1-the-site-rasters)).
+
 **Configuration:**
 - `hydrogen_ceiling_percentile`: Percentile for regional cap (default: 100, which leaves hydrogen prices uncapped); `run_simulation --hydrogen-ceiling-percentile`
 - `intraregional_trade_allowed`: Enable/disable hydrogen imports between regions (default: False); `run_simulation --intraregional-trade` switches it on
@@ -239,10 +241,10 @@ The wrapper function `get_candidate_locations_for_opening_new_plants()` in `src/
 
 1. **Calculate baseload coverage** - Determines the percentage of power from renewable baseload sources based on user configuration
 2. **Add ISO3 codes** - Assigns country codes to each grid point (cached for reuse)
-3. **Build geo keys** - Tags each grid point with its sub-national geo unit where `geo_hierarchy.json` declares one, else its country; grid prices and electrolyser costs resolve at it
+3. **Build geo keys** - Tags each grid point with its sub-national geo unit where `geo_hierarchy.json` declares one, else its country; grid prices and electrolyser costs resolve at it. In the first year only, the effective hydrogen ceiling of every region is then precomputed for every year a new site can lock
 4. **Add feasibility mask** - Filters out sea, mountains, steep slopes, and extreme latitudes (cached for reuse)
 5. **Add power prices** - Calculates electricity costs from baseload renewable energy and/or grid
-6. **Add capped hydrogen price** - Computes hydrogen costs with regional ceiling constraints (and intraregional trade, if allowed)
+6. **Add capped hydrogen price** - Computes hydrogen costs capped at the year's stored regional ceilings (with intraregional trade, if allowed)
 7. **Add CAPEX proxy** - Estimates capital costs for steel/iron-making technologies
 8. **Add infrastructure costs** - Calculates railway buildout costs (cached for reuse)
 9. **Add transportation costs** - Computes shipping costs to demand centers and from feedstock sources (optional)

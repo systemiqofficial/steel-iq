@@ -76,13 +76,16 @@ The series lets an NPV follow changing prices over the asset life. A DRI plant c
 
 ### Site prices for geospatial sites
 
-Sites from the geospatial model carry their own power and hydrogen prices, which differ from the country average. For these sites the series keeps the site price level but follows the country trajectory:
+Sites from the geospatial model own their power system and electrolyser, so their power and hydrogen prices differ from the country average. A new-plant opportunity's NPV, at selection and at each yearly re-valuation, prices the site as a system built at its expected construction start b. The series takes the site's stack (`CaptiveEnergy`, built by `Environment.captive_energy_at`): the coverage c of the power mix, the LCOE L of the site's cell for a system built in b, the electrolyser's electricity use e(b) in MWh/kg and cost k(b) in USD/kg, and the region's hydrogen ceiling of b as a contract when the site's own price in b is above it. Each year t then reads the grid price g(t) at the site's geo key:
 
 ```
-site price in year t = site price today × country price in year t / country price today
+electricity in year t = c × L(site, b) + (1 − c) × g(t)
+hydrogen in year t    = e(b) × 1,000 × electricity in year t + k(b), or the contract price, flat
 ```
 
-Both country prices on the right are unsubsidised, so a candidate subsidy active today does not distort the ratio. Candidate subsidies for year t apply after scaling. This scaling is temporary: a later version will read each site's own price series from the rasters.
+The grid share follows the grid; nothing else moves after b. Candidate subsidies for year t apply after these prices. The memo keys a site's entries on its stack, so two stacks never share one.
+
+A switch, renovation or expansion at a new site's plant is a new investment, so its candidates are priced the same way from the stack the site would lock in the investment's start year, the current year. See [Energy Prices](../overarching_elements/energy_prices.md#10-a-switch-renovation-or-expansion). Candidates at an existing plant follow the country prices.
 
 ### How the NPVs use the series
 

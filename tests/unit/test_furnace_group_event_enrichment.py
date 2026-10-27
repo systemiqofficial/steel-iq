@@ -77,6 +77,7 @@ def test_furnace_group_renovated_event_carries_plant_context():
         capex_no_subsidy=300.0,
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
+        captive_energy=None,
     )
 
     event = plant.events[-1]
@@ -104,6 +105,7 @@ def test_furnace_group_tech_changed_event_records_old_technology():
         capex_no_subsidy=400.0,
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
+        captive_energy=None,
         bom={"materials": {}, "energy": {}},
     )
 

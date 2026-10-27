@@ -18,9 +18,21 @@ from steelo.adapters.dataprocessing.master_excel_validator import MasterExcelVal
 from steelo.adapters.repositories.json_repository import SubsidyInDb
 from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import Year
-from steelo.domain.models import Environment, Subsidy
+from steelo.domain.models import CaptiveEnergy, Environment, Subsidy
 from steelo.domain.new_plant_opening import NewPlantLocation, prepare_cost_data_for_business_opportunity
 from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def _stub_series(location, tech, output_shares, start, end, **kwargs):
@@ -287,6 +299,7 @@ def test_candidate_site_collects_country_and_province_capex_subsidies():
         plant_lifetime=20,
         construction_time=2,
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         iso3_to_region_map={"CHN": "Asia"},
         global_risk_free_rate=0.03,
         capex_subsidies=capex_subsidies,
@@ -373,6 +386,7 @@ def test_candidate_bom_priced_at_province_energy_costs():
         plant_lifetime=20,
         construction_time=2,
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         iso3_to_region_map={"CHN": "Asia"},
         global_risk_free_rate=0.03,
         capex_subsidies={},
@@ -391,7 +405,7 @@ def test_candidate_bom_priced_at_province_energy_costs():
     # (no dedicated row -> logged fallback to the country)
     assert hebei["no_subsidy_prices"]["natural_gas"] == pytest.approx(0.01)
     assert anhui["no_subsidy_prices"]["natural_gas"] == pytest.approx(0.03)
-    # Pixel overrides still win for electricity and hydrogen at both sites
+    # The site's raster prices still win for electricity and hydrogen at both sites
     assert hebei["no_subsidy_prices"]["electricity"] == pytest.approx(0.05)
     assert anhui["no_subsidy_prices"]["electricity"] == pytest.approx(0.05)
     # The BOM pick itself was priced with the resolved carriers

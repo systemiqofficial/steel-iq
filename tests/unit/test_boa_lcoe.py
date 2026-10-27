@@ -275,3 +275,37 @@ def test_lcoe_for_year_holds_the_nearest_year_outside_the_span_with_one_warning(
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "[BOA LCOE]" in r.getMessage()]
     assert len(warnings) == 1
     assert str(year) in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("year", [2025, 2035, 2030, 2027, 2040])
+def test_lcoe_at_cell_equals_the_yearly_raster_at_the_cell(tmp_path, year):
+    """The one-cell lookup gives the yearly grid's value at the cell, for file years, years between and years past."""
+    path = write_lcoe_file(tmp_path, "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc")
+    grid = boa_lcoe.load_lcoe_grid(path, 0.85)
+    grid.values[:, 1, 0] = [52.0, 71.0]
+
+    with boa_lcoe.open_lcoe_file(path, 0.85) as ds:
+        ds["lcoe"].values[:, 1, 0] = [52.0, 71.0]
+        raster = boa_lcoe.lcoe_for_year(ds, year).load()
+
+    assert boa_lcoe.lcoe_at_cell(grid, 0.25, 0.0, year) == float(raster.sel(lat=0.25, lon=0.0))
+    assert boa_lcoe.lcoe_at_cell(grid, 0.0, 0.25, year) == float(raster.sel(lat=0.0, lon=0.25))
+
+
+def test_load_lcoe_grid_holds_every_year_in_memory_after_the_file_closes(tmp_path):
+    """The loaded grid keeps both years of the file and reads after the file is closed."""
+    path = write_lcoe_file(tmp_path, "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc")
+
+    grid = boa_lcoe.load_lcoe_grid(path, 0.85)
+
+    assert [int(y) for y in grid["year"].values] == [2025, 2035]
+    assert boa_lcoe.lcoe_at_cell(grid, 0.0, 0.0, 2030) == pytest.approx(70.0)
+
+
+def test_lcoe_at_cell_raises_for_a_point_off_the_grid(tmp_path):
+    """A location that is not one of the grid's cells raises instead of reading a neighbour."""
+    path = write_lcoe_file(tmp_path, "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc")
+    grid = boa_lcoe.load_lcoe_grid(path, 0.85)
+
+    with pytest.raises(KeyError):
+        boa_lcoe.lcoe_at_cell(grid, 0.1, 0.0, 2025)

@@ -152,7 +152,11 @@ def test_grid_raster_passes_every_site_grid_check(tmp_path, trace_off_afterwards
 
 
 def test_hydrogen_raster_passes_every_site_hydrogen_check(tmp_path, trace_off_afterwards):
-    """With the trace on, the LCOH add_capped_hydrogen_price builds matches the electrolyser formula cell by cell."""
+    """With the trace on, the LCOH add_capped_hydrogen_price builds matches the electrolyser formula cell by cell.
+
+    Notes:
+        The stored ceilings are the ones the same cells imply, so the ceiling check passes too.
+    """
     energy_trace.configure(True, ["CHN"], [], tmp_path)
     ds = cells(["CHN", "CHN", "DEU"], geo_key=["CHN:CN-XJ", "CHN:CN-XZ", "DEU"], power_price=[0.03, 0.04, 0.05])
     mappings = CountryMappingService(
@@ -170,6 +174,14 @@ def test_hydrogen_raster_passes_every_site_hydrogen_check(tmp_path, trace_off_af
         ],
     )
 
+    priced = geospatial_calculations.calculate_lcoh_from_power_price(ds.copy(), 2025, EFFICIENCY, CAPEX_OPEX)
+    stored_ceiling = geospatial_calculations.effective_hydrogen_ceilings(
+        geospatial_calculations.calculate_regional_hydrogen_ceiling(
+            priced, mappings, GeoConfig().hydrogen_ceiling_percentile
+        ),
+        GeoConfig(),
+    )
+
     with patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"):
         geospatial_layers.add_capped_hydrogen_price(
             ds,
@@ -180,8 +192,9 @@ def test_hydrogen_raster_passes_every_site_hydrogen_check(tmp_path, trace_off_af
             0.85,
             GeoConfig(),
             geo_paths=Mock(),
+            hydrogen_ceiling=stored_ceiling,
         )
 
     checks = [row for row in trace_rows(tmp_path) if row["stage"] == "site_hydrogen" and row["expected"]]
-    assert {row["quantity"] for row in checks} == {"cells_above_ceiling", "cells_off_lcoh"}
+    assert {row["quantity"] for row in checks} == {"cells_above_ceiling", "cells_off_lcoh", "regions_off_ceiling"}
     assert {row["check_failed"] for row in checks} == {"0"}
