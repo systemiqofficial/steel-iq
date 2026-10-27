@@ -8738,8 +8738,12 @@ class Environment:
             2. Handle special cases based on plant type:
 
                **New GEO Plants (parent_gem_id starts with "indi"):**
-               - These plants have their own power infrastructure (renewable energy park)
-               - Preserve electricity and hydrogen costs from their own power generation if previously set
+               - These plants own their power system and electrolyser (``FurnaceGroup.captive_energy``)
+               - Past construction start, each furnace group's electricity and hydrogen without subsidy come
+                 from its stack and the year's grid price at the plant's geo key
+               - A considered or announced opportunity, and a furnace group without a stack, keep their stored
+                 electricity and hydrogen without subsidy
+               - Each furnace group starts from its own copy of the input costs
 
                **Existing Plants (all others):**
                - Use grid electricity costs from Excel input costs
@@ -8750,7 +8754,8 @@ class Environment:
             - Bootstrap: Uses hydrogen from Excel input costs
             - Year Start: the year's capped prices are read from the series precomputed at bootstrap
               (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
-              fg.energy_costs["hydrogen"] with them for existing plants; new sites keep their own price
+              fg.energy_costs["hydrogen"] with them for existing plants; new sites keep the price this
+              method set
             - This method, at the year end: keeps each furnace group's stored hydrogen instead of Excel's static
               values, until the year-start refresh replaces it for existing plants
 
@@ -8789,27 +8794,23 @@ class Environment:
                 )
                 logged_countries.add(plant.location.iso3)
 
-            # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
+            # New GEO plants: each furnace group prices its own electricity and hydrogen, without subsidy
             if plant.parent_gem_id.lower().startswith("indi"):
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
-                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-                    if "electricity" in no_sub:
-                        input_costs["electricity"] = no_sub["electricity"]
-                    if "hydrogen" in no_sub:
-                        input_costs["hydrogen"] = no_sub["hydrogen"]
-                    if fg.energy_costs_no_subsidy and "electricity" in no_sub:
-                        sub_elec = fg.energy_costs.get("electricity", 0)
-                        if sub_elec != no_sub["electricity"]:
-                            logger.debug(
-                                "[INPUT COSTS] indi %s FG:%s elec no_sub=$%.6f (was sub=$%.6f)",
-                                plant.location.iso3,
-                                fg.furnace_group_id,
-                                no_sub["electricity"],
-                                sub_elec,
-                            )
-                    fg.set_energy_costs(**input_costs)
+                    fg_costs = input_costs.copy()
+                    if fg.captive_energy is None:
+                        # An expansion's group, seeded from the plant's prices, holds no stack of its own yet
+                        self._keep_stored_site_prices(fg, fg_costs)
+                    elif fg.status in ("considered", "announced"):
+                        # The year's re-valuation writes an opportunity's prices from the year's rasters
+                        self._keep_stored_site_prices(fg, fg_costs)
+                    else:
+                        grid = self._grid_electricity_for_year(plant.location, self.year)
+                        fg_costs["electricity"] = fg.captive_energy.electricity(grid)
+                        fg_costs["hydrogen"] = fg.captive_energy.hydrogen(grid)
+                    fg.set_energy_costs(**fg_costs)
 
             # Existing plants: Preserve calculated hydrogen costs if set (only not at bootstrap)
             else:
@@ -8819,6 +8820,27 @@ class Environment:
                     if "hydrogen" in fg.energy_costs:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)
+
+    @staticmethod
+    def _keep_stored_site_prices(fg: FurnaceGroup, fg_costs: dict[str, float]) -> None:
+        """
+        Carry a new site's stored electricity and hydrogen without subsidy into its next input costs.
+
+        Args:
+            fg: A new site's furnace group.
+            fg_costs: The furnace group's own copy of the year's input costs, changed in place.
+
+        Returns:
+            None.
+
+        Notes:
+            The prices without subsidy are carried, not the subsidised ones, so subsidies never compound.
+        """
+        no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
+        if "electricity" in no_sub:
+            fg_costs["electricity"] = no_sub["electricity"]
+        if "hydrogen" in no_sub:
+            fg_costs["hydrogen"] = no_sub["hydrogen"]
 
     def calculate_capped_hydrogen_costs_per_country(self, year: Year | None = None) -> dict[str, float]:
         """

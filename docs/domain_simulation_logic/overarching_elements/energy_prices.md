@@ -79,21 +79,28 @@ An opportunity whose NPVs over the consideration window are all positive is anno
 
 ### 6. Construction start
 
-`update_status_of_furnace_group` moves an announced opportunity into construction. It sets the operating start year, the construction start plus the construction time (4 years by default), and the utilisation to zero. The prices stay as the last re-valuation wrote them, and so does the stack that re-valuation locked for the construction-start year.
+`update_status_of_furnace_group` moves an announced opportunity into construction. It sets the operating start year, the construction start plus the construction time (4 years by default), and the utilisation to zero. The prices stay as the last re-valuation wrote them, and so does the stack that re-valuation locked for the construction-start year. From now on the stack is fixed.
 
-**Trace:** `greenfield_build` writes the stored prices and freezes the site's raster prices from the last re-valuation as the furnace group's reference. It also records the geo key's capped regional hydrogen price of that year, for reading only.
+**Trace:** `greenfield_build` freezes the furnace group's stack as its reference and checks that its lock year is the construction-start year. It records the stored prices, the site's raster prices from the last re-valuation and the geo key's capped regional hydrogen price of that year, for reading only.
 
 ### 7. Construction
 
-The furnace group is no longer re-valued. At the end of each year, `Environment.set_input_cost_in_furnace_groups` refreshes every carrier from the input costs, but keeps a new site's electricity and hydrogen without subsidy. The year-start hydrogen refresh skips new sites, so the furnace group keeps the hydrogen price of its construction-start year.
+The furnace group is no longer re-valued. At the end of each year, `Environment.set_input_cost_in_furnace_groups` gives each furnace group its own copy of the next year's input costs and prices its electricity and hydrogen without subsidy from its stack and that year's grid price g at the plant's geo key, else its country:
+
+```
+electricity = c × L + (1 − c) × g
+hydrogen    = (e × electricity + k) × 1,000, or the contract × 1,000
+```
+
+The grid share follows the grid every year; the LCOE, the electrolyser and the contract stay those of the construction-start year. Every other carrier comes from the input costs. A considered or announced opportunity keeps its stored electricity and hydrogen, which the next re-valuation replaces, and so does a new site's furnace group without a stack, which an expansion of a new site adds. The year-start hydrogen refresh skips new sites.
 
 **Trace:** no stage.
 
 ### 8. Operation
 
-At the start of its operating start year, before the trade model, the furnace group turns operating. Its electricity and hydrogen are still the site's power price and capped hydrogen price from the last re-valuation, in the construction-start year.
+At the start of its operating start year, before the trade model, the furnace group turns operating. It pays the electricity and hydrogen the year-end refresh set from its stack and the year's grid price, with the year's energy subsidies on top.
 
-**Trace:** `greenfield_operating` checks both prices without subsidy against the references frozen at construction start.
+**Trace:** `greenfield_operating` checks both prices without subsidy against c × L + (1 − c) × g and the hydrogen rule, computed from the stack frozen at construction start and the year's grid price at the plant's geo key.
 
 ### 9. The yearly reductant pick
 

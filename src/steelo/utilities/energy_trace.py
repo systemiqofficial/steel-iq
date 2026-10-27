@@ -124,7 +124,7 @@ UNITS: dict[str, dict[str, str]] = {
         "capped": "USD/kg",
     },
     "brownfield": FURNACE_GROUP_UNITS,
-    "greenfield_operating": FURNACE_GROUP_UNITS,
+    "greenfield_operating": {**FURNACE_GROUP_UNITS, "grid": "USD/kWh"},
     "greenfield_select": {
         "site_electricity": "USD/kWh",
         "site_hydrogen": "USD/t",
@@ -147,10 +147,11 @@ UNITS: dict[str, dict[str, str]] = {
     "greenfield_build": {
         "electricity": "USD/kWh",
         "hydrogen": "USD/t",
-        "reference_electricity": "USD/kWh",
-        "reference_hydrogen": "USD/t",
+        "cell_electricity": "USD/kWh",
+        "cell_hydrogen": "USD/t",
         "regional_hydrogen": "USD/t",
         "operating_start_year": "year",
+        **CAPTIVE_UNITS,
         "reference": "",
     },
 }
@@ -844,8 +845,10 @@ def greenfield_operating(plants: "PlantRepository", year: int, active_statuses: 
         None.
 
     Notes:
-        No-subsidy electricity and hydrogen must equal the references frozen when the site entered
-        construction. A furnace group without a reference is traced unchecked and counted as skipped.
+        No-subsidy electricity must equal c × L + (1 − c) × g, and no-subsidy hydrogen the contract × 1,000, or
+        else (e × 1,000 × that electricity + k) × 1,000, from the stack frozen when the site entered
+        construction and the year's grid price g at the plant's geo key, else its country, computed here from
+        the frozen fields. A furnace group without a reference is traced unchecked and counted as skipped.
     """
     if not _state.enabled:
         return
@@ -858,19 +861,22 @@ def greenfield_operating(plants: "PlantRepository", year: int, active_statuses: 
         for fg in plant.furnace_groups:
             if fg.status.lower() not in active:
                 continue
-            reference = _state.references.get(fg.furnace_group_id, {})
+            reference = _state.references.get(fg.furnace_group_id)
             values: dict[str, object] = {}
             checks: dict[str, _Check] = {}
-            for carrier in CARRIERS:
-                actual = _price(fg.energy_costs_no_subsidy, carrier)
-                if carrier in reference:
-                    checks[carrier] = _Check(actual, reference[carrier], _matches(actual, reference[carrier]))
-                else:
-                    values[carrier] = actual
+            if reference is None:
+                values.update({carrier: _price(fg.energy_costs_no_subsidy, carrier) for carrier in CARRIERS})
+                skipped += len(CARRIERS)
+            else:
+                grid = _grid_price(_environment(), plant.location, year)
+                expected = _expected_operating_prices(reference, grid)
+                values["grid"] = grid
+                for carrier in CARRIERS:
+                    actual = _price(fg.energy_costs_no_subsidy, carrier)
+                    checks[carrier] = _Check(actual, expected[carrier], _matches(actual, expected[carrier]))
             values.update(_paid(fg))
             checked += len(checks)
             failed += sum(not c.ok for c in checks.values())
-            skipped += len(CARRIERS) - len(checks)
             _emit(stage, year, _furnace_group_identity(plant, fg), values, checks, record=True, log=True)
     _summary(stage, year, f"checked {checked}, failed {failed}, skipped {skipped} (no reference)")
 
@@ -984,9 +990,9 @@ def greenfield_revalue(
 
     Notes:
         The written hydrogen must equal the site's ``capped_lcoh`` × ``T_TO_KG``; a site with no
-        raster value gets its row without the check. The finite raster prices are kept as the
-        furnace group's candidate references, which ``greenfield_build`` freezes. The stack's ``lcoe``
-        must equal the LCOE grid at the cell and the lock year. An announced opportunity locks the current
+        raster value gets its row without the check. The finite raster prices are kept for
+        ``greenfield_build`` to record. The stack's ``lcoe`` must equal the LCOE grid at the cell and the
+        lock year. An announced opportunity locks the current
         year, so its stack priced at the year's grid price (``lock_electricity``, ``lock_hydrogen``) must
         equal the cell's ``power_price`` and ``capped_lcoh`` × ``T_TO_KG`` when the cell's raster geo key is
         the plant's; otherwise both are recorded unchecked and counted.
@@ -1041,7 +1047,7 @@ def greenfield_revalue(
 
 def greenfield_build(plant: "Plant", fg: "FurnaceGroup", year: Year, env: "Environment") -> None:
     """
-    Trace a new site entering construction and freeze its reference prices.
+    Trace a new site entering construction and freeze its stack as the reference.
 
     Args:
         plant: The new site's plant.
@@ -1053,27 +1059,41 @@ def greenfield_build(plant: "Plant", fg: "FurnaceGroup", year: Year, env: "Envir
         None.
 
     Notes:
-        The reference is the site's raster prices from the furnace group's last re-valuation, which
-        ``greenfield_operating`` expects once the site operates. A furnace group never re-valued
-        gets a ``reference`` row reading ``missing``. ``regional_hydrogen`` is recorded for reading;
-        no check uses it.
+        The reference is the furnace group's stack (``captive_energy``), whose ``lock_year`` must be the
+        construction start year; ``greenfield_operating`` prices the site from it. A furnace group without a
+        stack gets a ``reference`` row reading ``missing`` and no reference. The site's raster prices from its
+        last re-valuation (``cell_electricity``, ``cell_hydrogen``) and the geo key's ``regional_hydrogen`` are
+        recorded for reading; no check uses them.
     """
     if not _state.enabled:
         return
     stage = "greenfield_build"
     regional = _resolved_hydrogen(plant, env.capped_hydrogen_costs_for_year(year))
     values: dict[str, object] = {carrier: _price(fg.energy_costs_no_subsidy, carrier) for carrier in CARRIERS}
-    reference = dict(_state.site_prices.get(fg.furnace_group_id, {}))
-    for carrier, price in reference.items():
-        values[f"reference_{carrier}"] = price
-    if not reference:
-        values["reference"] = "missing"
+    for carrier, price in _state.site_prices.get(fg.furnace_group_id, {}).items():
+        values[f"cell_{carrier}"] = price
     values["regional_hydrogen"] = regional
     values["operating_start_year"] = fg.lifetime.time_frame.start
-    _state.references[fg.furnace_group_id] = reference
+    checks: dict[str, _Check] = {}
+    captive = fg.captive_energy
+    if captive is None:
+        values["reference"] = "missing"
+    else:
+        values.update(
+            {quantity: value for quantity, value in _captive_values(captive).items() if quantity != "lock_year"}
+        )
+        values["lcoe"] = captive.lcoe
+        checks["lock_year"] = _Check(captive.lock_year, year, captive.lock_year == year)
+        _state.references[fg.furnace_group_id] = {
+            "coverage": captive.coverage,
+            "lcoe": captive.lcoe,
+            "electrolyser_use": captive.electrolyser_use,
+            "electrolyser_cost": captive.electrolyser_cost,
+            "hydrogen_contract": math.nan if captive.hydrogen_contract is None else captive.hydrogen_contract,
+        }
     _state.greenfield.built += 1
-    _state.greenfield.built_without_reference += not reference
-    _emit(stage, year, _furnace_group_identity(plant, fg), values, {}, record=True, log=True)
+    _state.greenfield.built_without_reference += captive is None
+    _emit(stage, year, _furnace_group_identity(plant, fg), values, checks, record=True, log=True)
 
 
 def greenfield_summary(year: int) -> None:
@@ -1220,6 +1240,28 @@ def _expected_captive_prices(
     else:
         hydrogen = (use * MWH_TO_KWH * electricity + cost) * T_TO_KG
     return lcoe, electricity, hydrogen
+
+
+def _expected_operating_prices(reference: Mapping[str, float], grid: float) -> dict[str, float]:
+    """
+    An operating new site's electricity and hydrogen in a year, from its frozen stack fields.
+
+    Args:
+        reference: The stack's ``coverage``, ``lcoe`` (USD/kWh), ``electrolyser_use`` (MWh/kg),
+            ``electrolyser_cost`` (USD/kg) and ``hydrogen_contract`` (USD/kg, NaN without one).
+        grid: The year's grid price at the plant (USD/kWh).
+
+    Returns:
+        ``electricity`` (USD/kWh) and ``hydrogen`` (USD/t).
+    """
+    coverage = reference["coverage"]
+    electricity = coverage * reference["lcoe"] + (1 - coverage) * grid
+    contract = reference["hydrogen_contract"]
+    if math.isfinite(contract):
+        hydrogen = contract * T_TO_KG
+    else:
+        hydrogen = (reference["electrolyser_use"] * MWH_TO_KWH * electricity + reference["electrolyser_cost"]) * T_TO_KG
+    return {"electricity": electricity, "hydrogen": hydrogen}
 
 
 def _raster_hydrogen_ceilings(

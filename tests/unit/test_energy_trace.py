@@ -91,7 +91,7 @@ def make_furnace_group(
     technology: str = "EAF",
     operating_start: int = 2030,
 ) -> SimpleNamespace:
-    """A furnace group with the fields the trace reads, paying the no-subsidy prices."""
+    """A furnace group with the fields the trace reads, paying the no-subsidy prices, without a stack."""
     prices = {"electricity": electricity, "hydrogen": hydrogen}
     return SimpleNamespace(
         furnace_group_id=furnace_group_id,
@@ -100,6 +100,7 @@ def make_furnace_group(
         energy_costs=dict(prices),
         energy_costs_no_subsidy=dict(prices),
         lifetime=SimpleNamespace(time_frame=SimpleNamespace(start=Year(operating_start))),
+        captive_energy=None,
     )
 
 
@@ -374,32 +375,32 @@ def cell_rasters(geo_key: str) -> xr.Dataset:
 
 def built_new_site(output_dir: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
     """
-    A new site re-valued at its raster prices in 2027 and entering construction in 2028.
-
-    Its cell's raster geo key is not the plant's, so its announced lock is recorded unchecked.
+    A new site re-valued at its raster prices in 2028, locking ``site_stack()``, and entering construction that year.
 
     Args:
         output_dir: The run folder the trace writes to.
 
     Returns:
-        The plant and its furnace group, now operating at the reference prices.
+        The plant and its furnace group, now operating at its stack's prices on China's flat grid of 0.08 USD/kWh:
+        0.0596 USD/kWh and 3,980 USD/t.
     """
     energy_trace.configure(True, ["CHN"], [], output_dir)
     energy_trace.attach_environment(captive_environment())
-    fg = make_furnace_group("indi_7_1", electricity=0.05, hydrogen=4000.0, status="announced", operating_start=2032)
+    fg = make_furnace_group("indi_7_1", electricity=0.0596, hydrogen=3980.0, status="announced", operating_start=2032)
     plant = make_plant("indi_7", "CHN", [fg], parent_gem_id="indi_7")
+    fg.captive_energy = site_stack()
     energy_trace.greenfield_revalue(
         plant,
         fg,
-        Year(2027),
-        np.array(0.05),
-        np.array(4.0),
-        {"electricity": 0.05, "hydrogen": 4000.0},
-        site_stack(lock_year=Year(2027), lcoe=0.060),
-        cell_rasters("CHN:CN-LN"),
+        LOCK_YEAR,
+        np.array(0.0596),
+        np.array(3.98),
+        {"electricity": 0.0596, "hydrogen": 3980.0},
+        fg.captive_energy,
+        cell_rasters("CHN"),
     )
     env = SimpleNamespace(capped_hydrogen_costs_for_year=lambda year: {"CHN": 4.5})
-    energy_trace.greenfield_build(plant, fg, Year(2028), env)
+    energy_trace.greenfield_build(plant, fg, LOCK_YEAR, env)
     fg.status = "operating"
     return plant, fg
 
@@ -1011,8 +1012,8 @@ def test_greenfield_revalue_skips_the_check_where_the_site_has_no_value(tmp_path
     )
 
 
-def test_greenfield_operating_passes_the_frozen_reference_and_flags_the_regional_overwrite(tmp_path, trace_log):
-    """An operating new site must keep the prices frozen at construction; the regional hydrogen price fails."""
+def test_greenfield_operating_passes_the_frozen_stack_and_flags_the_regional_overwrite(tmp_path, trace_log):
+    """An operating new site must pay its frozen stack's prices on the year's grid; the regional hydrogen fails."""
     plant, fg = built_new_site(tmp_path)
 
     energy_trace.greenfield_operating(make_repository(plant), Year(2032), ACTIVE)
@@ -1029,15 +1030,85 @@ def test_greenfield_operating_passes_the_frozen_reference_and_flags_the_regional
         ("2033", "electricity"): "0",
         ("2033", "hydrogen"): "1",
     }
-    (build_reference,) = rows_for(read_rows(tmp_path), stage="greenfield_build", quantity="reference_hydrogen")
-    assert float(build_reference["value"]) == 4000.0
+    (cell_hydrogen,) = rows_for(read_rows(tmp_path), stage="greenfield_build", quantity="cell_hydrogen")
+    assert float(cell_hydrogen["value"]) == pytest.approx(3980.0)
     (regional,) = rows_for(read_rows(tmp_path), stage="greenfield_build", quantity="regional_hydrogen")
     assert float(regional["value"]) == 4500.0
     assert len(warnings_logged(trace_log)) == 1
 
 
+def test_greenfield_build_freezes_the_stack_and_checks_its_lock_year(tmp_path, trace_log):
+    """The build records the stack and passes a lock year equal to the construction year; one a year early fails."""
+    energy_trace.configure(True, [], [], tmp_path)
+    env = SimpleNamespace(capped_hydrogen_costs_for_year=lambda year: {"CHN": 4.5})
+    on_time = make_furnace_group("indi_3_1", electricity=0.0596, hydrogen=3980.0, status="construction")
+    on_time.captive_energy = site_stack()
+    late = make_furnace_group("indi_4_1", electricity=0.0596, hydrogen=3980.0, status="construction")
+    late.captive_energy = site_stack(lock_year=Year(2027))
+
+    energy_trace.greenfield_build(
+        make_plant("indi_3", "CHN", [on_time], parent_gem_id="indi_3"), on_time, LOCK_YEAR, env
+    )
+    energy_trace.greenfield_build(make_plant("indi_4", "CHN", [late], parent_gem_id="indi_4"), late, LOCK_YEAR, env)
+    energy_trace.greenfield_summary(int(LOCK_YEAR))
+
+    rows = read_rows(tmp_path)
+    first = {row["quantity"]: row for row in rows if row["furnace_group_id"] == "indi_3_1"}
+    assert {name: first[name]["value"] for name in ("coverage", "lcoe", "electrolyser_use", "electrolyser_cost")} == {
+        "coverage": "0.85",
+        "lcoe": "0.056",
+        "electrolyser_use": "0.05",
+        "electrolyser_cost": "1.0",
+    }
+    assert first["hydrogen_contract"]["value"] == "none"
+    assert (first["lock_year"]["value"], first["lock_year"]["check_failed"]) == ("2028", "0")
+    (late_lock,) = rows_for(rows, furnace_group_id="indi_4_1", quantity="lock_year")
+    assert (late_lock["value"], late_lock["expected"], late_lock["check_failed"]) == ("2027", "2028", "1")
+    assert len(warnings_logged(trace_log)) == 1
+    assert "built 2, without reference 0" in trace_log.text
+
+
+def test_greenfield_operating_follows_the_grid_share_of_a_rising_grid(tmp_path, trace_log):
+    """With China's grid up to 0.10 USD/kWh in 2033, the stack's prices on that grid pass and the frozen prices fail."""
+    plant, fg = built_new_site(tmp_path)
+    energy_trace._state.environment.input_costs["CHN"][Year(2033)] = {"electricity": 0.10}
+    electricity = 0.85 * 0.056 + 0.15 * 0.10
+
+    energy_trace.greenfield_operating(make_repository(plant), Year(2033), ACTIVE)
+    fg.energy_costs_no_subsidy = {"electricity": electricity, "hydrogen": (50 * electricity + 1.0) * 1000}
+    energy_trace.greenfield_operating(make_repository(plant), Year(2033), ACTIVE)
+
+    rows = rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="electricity")
+    assert [row["check_failed"] for row in rows] == ["1", "0"]
+    assert all(float(row["expected"]) == pytest.approx(electricity) for row in rows)
+    (grid,) = {row["value"] for row in rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="grid")}
+    assert float(grid) == 0.10
+    assert len(warnings_logged(trace_log)) == 2
+
+
+def test_greenfield_operating_expects_a_contract_site_at_the_ceiling_flat(tmp_path, trace_log):
+    """A site built on contract must pay the contract × 1,000 whatever the grid; its own electrolyser's price fails."""
+    energy_trace.configure(True, [], [], tmp_path)
+    environment = captive_environment()
+    environment.input_costs["CHN"][Year(2033)] = {"electricity": 0.10}
+    energy_trace.attach_environment(environment)
+    fg = make_furnace_group("indi_5_1", electricity=0.0626, hydrogen=3000.0, status="construction")
+    fg.captive_energy = site_stack(hydrogen_contract=3.0)
+    plant = make_plant("indi_5", "CHN", [fg], parent_gem_id="indi_5")
+    energy_trace.greenfield_build(plant, fg, LOCK_YEAR, SimpleNamespace(capped_hydrogen_costs_for_year=lambda y: {}))
+    fg.status = "operating"
+
+    energy_trace.greenfield_operating(make_repository(plant), Year(2033), ACTIVE)
+    fg.energy_costs_no_subsidy["hydrogen"] = (50 * 0.0626 + 1.0) * 1000
+    energy_trace.greenfield_operating(make_repository(plant), Year(2033), ACTIVE)
+
+    rows = rows_for(read_rows(tmp_path), stage="greenfield_operating", quantity="hydrogen")
+    assert [row["check_failed"] for row in rows] == ["0", "1"]
+    assert all(float(row["expected"]) == pytest.approx(3000.0) for row in rows)
+
+
 def test_greenfield_build_without_reference_writes_a_missing_row(tmp_path, trace_log):
-    """A furnace group never re-valued is built with a reference row reading missing."""
+    """A furnace group without a stack is built with a reference row reading missing."""
     energy_trace.configure(True, [], [], tmp_path)
     fg = make_furnace_group("indi_2_1", electricity=0.05, hydrogen=4000.0, status="construction")
     plant = make_plant("indi_2", "CHN", [fg], parent_gem_id="indi_2")
@@ -1048,7 +1119,8 @@ def test_greenfield_build_without_reference_writes_a_missing_row(tmp_path, trace
 
     rows = {row["quantity"]: row["value"] for row in read_rows(tmp_path)}
     assert rows["reference"] == "missing"
-    assert "reference_electricity" not in rows
+    assert "cell_electricity" not in rows
+    assert "lock_year" not in rows
     assert rows["operating_start_year"] == "2030"
     assert "stage=greenfield_build year=2028 built 1, without reference 1" in trace_log.text
 
