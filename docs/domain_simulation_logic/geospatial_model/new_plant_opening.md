@@ -258,7 +258,7 @@ The system uses CAPEX and debt subsidies from the earliest construction start ye
 | Status | Target Year (construction start) | Reasoning |
 |--------|---------------------------------|-----------|
 | CONSIDERED | `max(current + consideration_time - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
-| ANNOUNCED | `current + 1` | Next year (announcement time = 1) |
+| ANNOUNCED | `current` | This year: the construction draw runs after the re-valuation in the same year, and the capex and cost of debt that re-valuation writes are the ones the plant is built with |
 
 **Process:**
 For each business opportunity:

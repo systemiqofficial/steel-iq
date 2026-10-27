@@ -65,7 +65,7 @@ The year-start hydrogen refresh skips opportunities, as it skips every new site.
 
 ### 5. Announcement
 
-An opportunity whose NPVs over the consideration window are all positive is announced with probability `probability_of_announcement`. Its prices do not change at announcement, and step 4 keeps re-valuing it while it is announced.
+An opportunity whose NPVs over the consideration window are all positive is announced with probability `probability_of_announcement`. Its prices do not change at announcement, and step 4 keeps re-valuing it while it is announced. While announced, the re-valuation dates its capex and debt subsidies at the current year, since the construction draw later in the same year can start it, and its energy subsidies at that year plus the construction time, the operating start step 6 sets.
 
 **Trace:** `greenfield_revalue`, as in step 4.
 

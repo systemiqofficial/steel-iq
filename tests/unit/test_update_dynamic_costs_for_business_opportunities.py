@@ -380,7 +380,7 @@ def test_update_costs_with_debt_subsidies(
         }
     }
 
-    # Execute - announced plant uses year = current_year + 1 = 2026
+    # Execute - announced plant uses year = current_year = 2025
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
@@ -1153,9 +1153,9 @@ def test_energy_subsidies_filtered_at_operating_start_year(
     """Energy subsidies price what the plant pays once running, not at construction start.
 
     Notes:
-        Announced FG in 2025 with construction_time=4: construction starts 2026, the plant first
-        operates in 2030. A subsidy expiring in 2029 (during construction) must not move the energy
-        costs, while one starting in 2030 must - matching opportunity creation and PAM.
+        Announced FG in 2025 with construction_time=4: construction starts 2025, the plant first
+        operates in 2029. A subsidy expiring in 2028 (during construction) must not move the energy
+        costs, while one starting in 2029 must - matching opportunity creation and PAM.
     """
     kwargs = dict(
         current_year=Year(2025),
@@ -1171,13 +1171,13 @@ def test_energy_subsidies_filtered_at_operating_start_year(
 
     expires_during_construction = _dri_opportunity_plant_group(
         "announced"
-    ).update_dynamic_costs_for_business_opportunities(energy_subsidies=_hydrogen_subsidy(2026, 2029), **kwargs)
+    ).update_dynamic_costs_for_business_opportunities(energy_subsidies=_hydrogen_subsidy(2025, 2028), **kwargs)
     assert len(expires_during_construction) == 1
-    # Mock provides hydrogen=3.5 USD/kg; the subsidy is dead by 2030, so the site price of 3,500 USD/t stands
+    # Mock provides hydrogen=3.5 USD/kg; the subsidy is dead by 2029, so the site price of 3,500 USD/t stands
     assert expires_during_construction[0].new_energy_costs["hydrogen"] == pytest.approx(3_500.0)
 
     live_at_operating_start = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
-        energy_subsidies=_hydrogen_subsidy(2030, 2035), **kwargs
+        energy_subsidies=_hydrogen_subsidy(2029, 2034), **kwargs
     )
     assert len(live_at_operating_start) == 1
     # 1,000 USD/t absolute subsidy -> input 2,500, output 4,500
@@ -1194,8 +1194,8 @@ def test_capex_subsidies_stay_filtered_at_construction_start_year(
     """CAPEX is incurred at construction start, so its subsidies must not shift to the operating year.
 
     Notes:
-        Guards the energy-subsidy alignment against over-shifting: same 2026 construction start /
-        2030 operating start as the test above, with the opposite expectations.
+        Guards the energy-subsidy alignment against over-shifting: same 2025 construction start /
+        2029 operating start as the test above, with the opposite expectations.
     """
     kwargs = dict(
         current_year=Year(2025),
@@ -1211,16 +1211,56 @@ def test_capex_subsidies_stay_filtered_at_construction_start_year(
 
     live_at_construction_start = _dri_opportunity_plant_group(
         "announced"
-    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2026, 2026), **kwargs)
+    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2025, 2025), **kwargs)
     assert len(live_at_construction_start) == 1
     assert live_at_construction_start[0].new_capex_no_subsidy == 2000.0
     assert live_at_construction_start[0].new_capex == 1000.0  # 50% subsidy applied
 
     live_only_once_operating = _dri_opportunity_plant_group(
         "announced"
-    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2030, 2035), **kwargs)
+    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2029, 2034), **kwargs)
     assert len(live_only_once_operating) == 1
     assert live_only_once_operating[0].new_capex == 2000.0  # unsubsidised
+
+
+def test_announced_capex_subsidies_dated_at_the_year_construction_can_start(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """An announced opportunity's capex subsidies are those of the current year, not the next.
+
+    Notes:
+        The construction draw runs after the re-valuation in the same year, so an opportunity
+        announced in 2033 starts construction in 2033 at the earliest and keeps the capex written
+        that morning. A subsidy that starts in 2034 must not reach it; one that ends in 2033 must.
+    """
+    kwargs = dict(
+        current_year=Year(2033),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
+    )
+
+    starts_next_year = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
+        capex_subsidies=_capex_subsidy(2034, 2040),
+        **kwargs,
+    )
+    assert len(starts_next_year) == 1
+    assert starts_next_year[0].new_capex == 2000.0  # unsubsidised
+
+    ends_this_year = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
+        capex_subsidies=_capex_subsidy(2030, 2033),
+        **kwargs,
+    )
+    assert len(ends_this_year) == 1
+    assert ends_this_year[0].new_capex == 1000.0  # 50% subsidy applied
 
 
 def test_considered_target_year_is_floored_at_next_year(

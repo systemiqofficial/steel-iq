@@ -6827,7 +6827,8 @@ class PlantGroup:
               no raster value keeps its stored no-subsidy price.
             - CAPEX and debt subsidies: set to the construction start year, which is the earliest
               one a considered BO can reach, [current year + consideration time - years considered]
-              floored at [current year + 1], and [current year + 1] for announced BOs.
+              floored at [current year + 1], and [current year] for announced BOs, since the
+              construction draw that can start them runs later in the same year.
             - Energy subsidies: set to the operating start year [construction start + construction
               time], since subsidised carrier prices are what the plant pays once running. This matches
               opportunity creation, PAM and the window the score series prices.
@@ -6906,7 +6907,7 @@ class PlantGroup:
                     )
 
                     if fg.status == "announced":
-                        year = Year(current_year + 1)  # announcement_time = 1
+                        year = current_year
                     elif fg.status == "considered":
                         if fg.historical_npv_business_opportunities:
                             years_already_considered = len(fg.historical_npv_business_opportunities)
