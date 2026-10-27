@@ -1,5 +1,6 @@
 """Unit tests for the bootstrap check of the baseload LCOE file a run's power mix needs."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -98,3 +99,98 @@ def test_check_baseload_lcoe_file_logs_the_file_its_run_and_boa_version(tmp_path
 
     assert bootstrap.check_baseload_lcoe_file(config, run_dir) == path
     assert f"Baseload LCOE: {path} (run test_run, BOA 1.9.0)" in caplog.text
+
+
+def write_minimal_data(data_dir: Path) -> Path:
+    """
+    A prepared data folder just large enough for bootstrap_simulation: one country, two years, no plants.
+
+    Args:
+        data_dir: The folder to write; its ``fixtures`` subfolder is created.
+
+    Returns:
+        ``data_dir``.
+    """
+    fixtures = data_dir / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "tech_switches_allowed.csv").write_text("Technology,BF-BOF\nBF-BOF,YES\n")
+    for name in (
+        "plants",
+        "demand_centers",
+        "suppliers",
+        "plant_groups",
+        "tariffs",
+        "subsidies",
+        "carbon_costs",
+        "primary_feedstocks",
+        "region_emissivity",
+        "capex",
+        "cost_of_capital",
+    ):
+        (fixtures / f"{name}.json").write_text('{"root": []}')
+    (fixtures / "scenarios.json").write_text(
+        json.dumps({"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}),
+    )
+    (fixtures / "input_costs.json").write_text(
+        json.dumps(
+            {"root": [{"iso3": "DEU", "year": year, "costs": {"electricity": 0.05}} for year in (2025, 2026)]},
+        ),
+    )
+    (fixtures / "legal_process_connectors.json").write_text("[]")
+    (fixtures / "country_mappings.json").write_text(
+        json.dumps(
+            [
+                {
+                    "country": "Germany",
+                    "iso2": "DE",
+                    "iso3": "DEU",
+                    "irena_name": "Germany",
+                    "region_for_outputs": "Europe",
+                    "ssp_region": "EUR",
+                    "tiam-ucl_region": "Rest of World",
+                },
+            ],
+        ),
+    )
+    (fixtures / "hydrogen_efficiency.json").write_text(
+        json.dumps([{"year": 2025, "efficiency": 0.05}, {"year": 2026, "efficiency": 0.05}]),
+    )
+    (fixtures / "hydrogen_capex_opex.json").write_text(
+        json.dumps([{"country_code": "DEU", "values": {"2025": 1.0, "2026": 1.0}}]),
+    )
+    (fixtures / "transport_emissions.json").write_text("[]")
+    (fixtures / "biomass_availability.json").write_text("[]")
+    (fixtures / "fallback_material_costs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "iso3": "DEU",
+                    "technology": "BF",
+                    "metric": "Unit material cost",
+                    "unit": "USD/t HM",
+                    "costs_by_year": {"2025": 100.0},
+                },
+            ],
+        ),
+    )
+    (data_dir / "railway_costs.json").write_text('{"root": []}')
+    return data_dir
+
+
+@pytest.mark.parametrize("named_run", [True, False])
+def test_bootstrap_reads_the_lcoe_folder_the_run_names_else_the_prepared_data(tmp_path, named_run):
+    """
+    With boa_run_dir set, bootstrap reads that folder and not the prepared data's default one; without it, the
+    default. Only the expected folder holds a file, so reading the other one would stop bootstrap.
+    """
+    data_dir = write_minimal_data(tmp_path / "data")
+    default_dir = data_dir / "outputs" / "GEO" / "baseload_lcoe"
+    run_dir = tmp_path / "boa" / "lcoe-only" / "my_run"
+    expected = run_dir if named_run else default_dir
+    write_lcoe_file(expected, CONTRACT)
+    config = make_config(tmp_path, "85% baseload + 15% grid", boa_run_dir=run_dir if named_run else None)
+    config.data_dir = data_dir
+
+    runner = bootstrap.bootstrap_simulation(config)
+
+    assert runner.bus.env.geo_paths.baseload_lcoe_dir == expected
