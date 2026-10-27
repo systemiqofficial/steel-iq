@@ -19,18 +19,19 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
 
-from steelo.domain.constants import PERkWh_TO_PERMWh, T_TO_KG, Year
+from steelo.domain.constants import MWH_TO_KWH, PERkWh_TO_PERMWh, T_TO_KG, Year
+from steelo.utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 
 if TYPE_CHECKING:
     import xarray as xr
 
     from steelo.adapters.repositories.interface import PlantRepository
-    from steelo.domain.models import Environment, FurnaceGroup, Plant
+    from steelo.domain.models import Environment, FurnaceGroup, HydrogenPriceInputs, Plant
     from steelo.domain.new_plant_opening import NewPlantLocation
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ CSV_COLUMNS = (
 IDENTITY_COLUMNS = CSV_COLUMNS[2:11]
 ALL_CELLS = "ALL"
 REL_TOL = 1e-9
+LCOE_REL_TOL = 1e-6  # the LCOE files hold float32 values
 PER_MWH_DELIVERED = "per_mwh_delivered"
 CARRIERS = ("electricity", "hydrogen")
 
@@ -93,7 +95,16 @@ UNITS: dict[str, dict[str, str]] = {
         "cells_above_ceiling": "cells",
         "cells_nan_lcoh_priced": "cells",
     },
-    "country_hydrogen": {"lcoh": "USD/kg", "ceiling": "USD/kg", "capped": "USD/kg"},
+    "hydrogen_lcoe": {"lcoe": "USD/MWh", "from_neighbours": ""},
+    "country_hydrogen": {
+        "coverage": "fraction",
+        "grid": "USD/kWh",
+        "lcoe": "USD/kWh",
+        "electricity": "USD/kWh",
+        "lcoh": "USD/kg",
+        "ceiling": "USD/kg",
+        "capped": "USD/kg",
+    },
     "brownfield": FURNACE_GROUP_UNITS,
     "greenfield_operating": FURNACE_GROUP_UNITS,
     "greenfield_select": {
@@ -460,8 +471,77 @@ def site_hydrogen(ds: "xr.Dataset", year: int, regional_ceiling: Mapping[str, fl
     _summary(stage, year, f"checked {int(priced.sum())}, failed {int(above.sum())}")
 
 
+def hydrogen_lcoe(
+    year: int,
+    lcoe: "xr.DataArray",
+    iso3: "xr.DataArray",
+    percentile: float,
+    lcoe_by_geo_key: Mapping[str, float],
+    neighbour_sources: Mapping[str, object],
+) -> None:
+    """
+    Trace and check the baseload LCOE of every geo key for one priced year.
+
+    Args:
+        year: The year priced.
+        lcoe: The year's LCOE grid read from the file (USD/MWh).
+        iso3: The iso3 grid the geo keys were built on.
+        percentile: The configured percentile of an area's cells (``hydrogen_lcoe_percentile``).
+        lcoe_by_geo_key: Geo key to baseload LCOE (USD/kWh), as the hydrogen price reads it.
+        neighbour_sources: The geo keys priced from their nearest cells, to their source cells.
+
+    Returns:
+        None.
+
+    Notes:
+        Rows for every geo key: ``lcoe`` in USD/MWh and ``from_neighbours``. Each listed country's own
+        key not priced from neighbours must equal ``np.percentile`` at the configured percentile of the
+        year's finite LCOE over the cells whose iso3 is the country. That value is computed here on the
+        iso3 raster, apart from the geo key grid and the percentile code it checks, with the relative
+        tolerance ``LCOE_REL_TOL``. Only listed countries get log lines. Runs at bootstrap, once per year.
+    """
+    if not _state.enabled:
+        return
+    stage = "hydrogen_lcoe"
+    lcoe_values = lcoe.transpose(*iso3.dims).values
+    finite = np.isfinite(lcoe_values)
+    country_cells = {country: mask & finite for country, mask in _country_masks(iso3.values) if country != ALL_CELLS}
+    checked = failed = 0
+    for geo_key in sorted(lcoe_by_geo_key):
+        country = geo_key.split(":", 1)[0]
+        value = lcoe_by_geo_key[geo_key] * PERkWh_TO_PERMWh
+        from_neighbours = geo_key in neighbour_sources
+        values: dict[str, object] = {"from_neighbours": from_neighbours}
+        checks: dict[str, _Check] = {}
+        if geo_key in country_cells and not from_neighbours:
+            cells = lcoe_values[country_cells[geo_key]].astype(float)
+            expected = float(np.percentile(cells, percentile)) if cells.size else math.nan
+            ok = math.isfinite(expected) and math.isclose(value, expected, rel_tol=LCOE_REL_TOL)
+            checks["lcoe"] = _Check(value, expected, ok)
+            checked += 1
+            failed += not ok
+        else:
+            values["lcoe"] = value
+        _emit(
+            stage,
+            year,
+            {"iso3": country, "geo_key": geo_key},
+            values,
+            checks,
+            record=True,
+            log=country in _state.countries,
+        )
+    _summary(stage, year, f"checked {checked}, failed {failed}")
+
+
 def country_hydrogen(
     year: int,
+    power_mix: str,
+    input_costs: Mapping[str, Mapping[Year, Mapping[str, float]]],
+    baseload_lcoe_by_geo_key: Mapping[Year, Mapping[str, float]],
+    hydrogen_efficiency: Mapping[Year, float],
+    hydrogen_capex_opex: Mapping[str, Mapping[Year, float]],
+    price_inputs: Mapping[str, "HydrogenPriceInputs"],
     lcoh_by_geo_key: Mapping[str, float],
     regional_ceilings: Mapping[str, float],
     country_to_region: Mapping[str, str],
@@ -472,7 +552,13 @@ def country_hydrogen(
 
     Args:
         year: The year priced.
-        lcoh_by_geo_key: Geo key to LCOH (USD/kg).
+        power_mix: The run's power mix (``GeoConfig.included_power_mix``).
+        input_costs: Geo key to year to carrier price, the master's input costs.
+        baseload_lcoe_by_geo_key: Year to geo key to baseload LCOE (USD/kWh); empty without a baseload share.
+        hydrogen_efficiency: Year to the electrolyser's electricity use (MWh/kg).
+        hydrogen_capex_opex: Geo key to year to the electrolyser's capital and operating cost (USD/kg).
+        price_inputs: Geo key to the inputs the price records, electricity included.
+        lcoh_by_geo_key: Geo key to the LCOH (USD/kg) the cap was applied to.
         regional_ceilings: Region to ceiling (USD/kg).
         country_to_region: ISO3 to region; a province takes its country's region.
         capped_prices: Geo key to capped price (USD/kg).
@@ -481,32 +567,60 @@ def country_hydrogen(
         None.
 
     Notes:
-        The capped price must stay within ``min(lcoh, region's ceiling)``, which holds with
-        intraregional trade on or off. Every geo key gets rows; only listed countries get log lines.
-        Runs at bootstrap, once per year of the precomputed series.
+        Three checks per geo key, from values computed here: the recorded ``electricity`` must equal
+        ``(1 - c) × grid + c × LCOE``, with c from the power mix, the grid from the input costs and the
+        LCOE from the series, or the grid alone without a baseload share; the ``lcoh`` the cap used must
+        equal the electrolyser's kWh per kg × that electricity + its capital and operating cost, at the
+        geo key else its country; and the capped price must stay within ``min(lcoh, region's ceiling)``,
+        which holds with intraregional trade on or off. Every geo key gets rows; only listed countries
+        get log lines. Runs at bootstrap, once per year of the precomputed series.
     """
     if not _state.enabled:
         return
     stage = "country_hydrogen"
-    failed = 0
+    coverage = POWER_MIX_TO_COVERAGE_MAP[power_mix]
+    checked = failed = 0
     for geo_key in sorted(capped_prices):
         iso3 = geo_key.split(":", 1)[0]
+        record = price_inputs[geo_key]
+        grid = _nested(input_costs, geo_key, year, "electricity")
+        if coverage > 0:
+            expected_electricity = (1 - coverage) * grid + coverage * _nested(baseload_lcoe_by_geo_key, year, geo_key)
+        else:
+            expected_electricity = grid
+        capex_opex_key = geo_key if geo_key in hydrogen_capex_opex else iso3
+        expected_lcoh = _nested(hydrogen_efficiency, year) * MWH_TO_KWH * expected_electricity + _nested(
+            hydrogen_capex_opex, capex_opex_key, year
+        )
         lcoh = lcoh_by_geo_key[geo_key]
         ceiling = regional_ceilings[country_to_region[iso3]]
         bound = min(lcoh, ceiling)
         capped = capped_prices[geo_key]
-        ok = _at_most(capped, bound)
-        failed += not ok
+        values: dict[str, object] = {"coverage": record["coverage"], "grid": record["grid"]}
+        if record["lcoe"] is not None:
+            values["lcoe"] = record["lcoe"]
+        values["ceiling"] = ceiling
+        checks = {
+            "electricity": _Check(
+                record["electricity"],
+                expected_electricity,
+                _matches(record["electricity"], expected_electricity),
+            ),
+            "lcoh": _Check(lcoh, expected_lcoh, _matches(lcoh, expected_lcoh)),
+            "capped": _Check(capped, bound, _at_most(capped, bound)),
+        }
+        checked += len(checks)
+        failed += sum(not c.ok for c in checks.values())
         _emit(
             stage,
             year,
             {"iso3": iso3, "geo_key": geo_key},
-            {"lcoh": lcoh, "ceiling": ceiling},
-            {"capped": _Check(capped, bound, ok)},
+            values,
+            checks,
             record=True,
             log=iso3 in _state.countries,
         )
-    _summary(stage, year, f"checked {len(capped_prices)}, failed {failed}")
+    _summary(stage, year, f"checked {checked}, failed {failed}")
 
 
 def brownfield(
@@ -875,6 +989,28 @@ def _price(costs: Mapping[str, float], carrier: str) -> float:
         A missing price must fail the check that reads it, not stop the run.
     """
     return float(costs[carrier]) if carrier in costs else math.nan
+
+
+def _nested(mapping: Mapping[Any, Any], *keys: object) -> float:
+    """
+    A value from nested mappings, NaN when a key is missing.
+
+    Args:
+        mapping: The outer mapping.
+        *keys: One key per level, outermost first.
+
+    Returns:
+        The value as a float, or NaN.
+
+    Notes:
+        A missing input must fail the check that reads it, not stop the run.
+    """
+    value: Any = mapping
+    for key in keys:
+        if key not in value:
+            return math.nan
+        value = value[key]
+    return float(value)
 
 
 def _resolved_hydrogen(plant: "Plant", capped_hydrogen_costs: dict[str, float]) -> float:

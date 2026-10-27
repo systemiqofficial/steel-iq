@@ -262,7 +262,7 @@ def test_settings_layout_places_every_counted_setting_once():
 def test_format_value_shows_shares_units_and_words():
     """
     Tests that a share reads in per cent, a quantity with its unit, the hydrogen ceiling as a percentile or as no
-    cap, and None and booleans in the words their settings use.
+    cap, the hydrogen LCOE percentile as a percentile, and None and booleans in the words their settings use.
     """
     cases = {
         ("equity_share", 0.2): "20%",
@@ -277,6 +277,8 @@ def test_format_value_shows_shares_units_and_words():
         ("geo_config.hydrogen_ceiling_percentile", 100.0): "no cap",
         ("geo_config.hydrogen_ceiling_percentile", 20.0): "20th percentile",
         ("geo_config.hydrogen_ceiling_percentile", 22.0): "22nd percentile",
+        ("geo_config.hydrogen_lcoe_percentile", 50.0): "50th percentile",
+        ("geo_config.hydrogen_lcoe_percentile", None): "none",
         ("technology_settings.BF.to_year", None): "open",
         ("capacity_policy.credit_validity_years", None): "never expires",
         ("technology_settings.BF.allowed", True): "yes",

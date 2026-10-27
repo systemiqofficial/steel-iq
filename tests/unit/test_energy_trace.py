@@ -18,6 +18,7 @@ from steelo.utilities import energy_trace
 
 ACTIVE = ["operating", "operating pre-retirement", "operating switching technology"]
 COVERAGE = 0.85
+BASELOAD_MIX = "85% baseload + 15% grid"
 
 
 @pytest.fixture(autouse=True)
@@ -180,6 +181,69 @@ def hydrogen_dataset() -> tuple[xr.Dataset, dict[str, float]]:
     return ds, ceilings
 
 
+def lcoe_case() -> tuple[xr.DataArray, xr.DataArray, dict[str, float], dict[str, np.ndarray]]:
+    """
+    One year's LCOE grid, its iso3 grid and the baseload LCOE series values that agree with them at the median.
+
+    Returns:
+        The LCOE grid (USD/MWh, float32 as in the files), the iso3 grid, geo key to LCOE (USD/kWh) and the geo keys
+        priced from their nearest cells to their source cells.
+    """
+    coords = {"lat": [0.0, 1.0], "lon": [0.0, 1.0, 2.0]}
+    iso3 = xr.DataArray(np.array([["CHN", "CHN", "IND"], ["CHN", "IND", "IND"]], dtype=object), coords=coords)
+    lcoe = xr.DataArray(np.array([[30.0, 40.0, 50.0], [60.0, np.nan, 70.0]], dtype=np.float32), coords=coords)
+    lcoe_by_geo_key = {"CHN": 0.040, "CHN:CN-LN": 0.035, "IND": 0.060, "BTN": 0.045}
+    return lcoe, iso3, lcoe_by_geo_key, {"BTN": np.array([1, 2])}
+
+
+def country_hydrogen_arguments(power_mix: str) -> dict[str, object]:
+    """
+    Arguments of ``country_hydrogen`` for 2030 that agree with each other, as the Environment prices them.
+
+    Args:
+        power_mix: ``BASELOAD_MIX`` or "Grid only".
+
+    Returns:
+        A country, its province and a second country: electricity at the power mix from the grid and the LCOE
+        series, the LCOH from it at 50 kWh/kg plus 1 USD/kg, and capped prices at the lower of the LCOH and the
+        region's ceiling. Under "Grid only" the LCOH is 5, 6 and 3 USD/kg, against ceilings of 5.5 (China) and 4
+        (Western Europe).
+    """
+    year = Year(2030)
+    coverage = COVERAGE if power_mix == BASELOAD_MIX else 0.0
+    grid = {"CHN": 0.08, "CHN:CN-LN": 0.10, "DEU": 0.04}
+    lcoe = {"CHN": 0.03, "CHN:CN-LN": 0.05, "DEU": 0.06}
+    ceilings = {"China": 5.5, "Western Europe": 4.0}
+    regions = {"CHN": "China", "DEU": "Western Europe"}
+    electricity = {key: (1 - coverage) * grid[key] + coverage * lcoe[key] for key in grid}
+    lcoh = {key: 50.0 * electricity[key] + 1.0 for key in grid}
+    capped = {key: min(lcoh[key], ceilings[regions[key.split(":")[0]]]) for key in grid}
+    price_inputs = {
+        key: {
+            "coverage": coverage,
+            "grid": grid[key],
+            "lcoe": lcoe[key] if coverage else None,
+            "electricity": electricity[key],
+            "lcoh": lcoh[key],
+            "capped_lcoh": capped[key],
+        }
+        for key in grid
+    }
+    return {
+        "year": year,
+        "power_mix": power_mix,
+        "input_costs": {key: {year: {"electricity": price}} for key, price in grid.items()},
+        "baseload_lcoe_by_geo_key": {year: lcoe} if coverage else {},
+        "hydrogen_efficiency": {year: 0.05},
+        "hydrogen_capex_opex": {"CHN": {year: 1.0}, "DEU": {year: 1.0}},
+        "price_inputs": price_inputs,
+        "lcoh_by_geo_key": lcoh,
+        "regional_ceilings": ceilings,
+        "country_to_region": regions,
+        "capped_prices": capped,
+    }
+
+
 def built_new_site(output_dir: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
     """
     A new site re-valued at its raster prices in 2027 and entering construction in 2028.
@@ -228,7 +292,8 @@ def test_stage_functions_touch_no_argument_when_off():
     energy_trace.lcoe_source_medians(u, u)
     energy_trace.site_power(u, u, u, u)
     energy_trace.site_hydrogen(u, u, u)
-    energy_trace.country_hydrogen(u, u, u, u, u)
+    energy_trace.hydrogen_lcoe(u, u, u, u, u, u)
+    energy_trace.country_hydrogen(u, u, u, u, u, u, u, u, u, u, u)
     energy_trace.brownfield(u, u, u, u, u)
     energy_trace.greenfield_operating(u, u, u)
     energy_trace.greenfield_select(u, u, u, u, u, u, u)
@@ -425,9 +490,16 @@ def test_stages_leave_dataset_and_furnace_group_dicts_unchanged(tmp_path):
     new_plant = make_plant("indi_1", "CHN", [new_fg], parent_gem_id="indi_1")
     prices_before = copy.deepcopy([fg.energy_costs, fg.energy_costs_no_subsidy, new_fg.energy_costs_no_subsidy])
     written = {"electricity": 0.05, "hydrogen": 4000.0}
+    lcoe, iso3, lcoe_by_geo_key, neighbour_sources = lcoe_case()
+    lcoe_before, iso3_before = lcoe.copy(deep=True), iso3.copy(deep=True)
+    series_before = copy.deepcopy([lcoe_by_geo_key, neighbour_sources])
+    country_arguments = country_hydrogen_arguments(BASELOAD_MIX)
+    country_arguments_before = copy.deepcopy(country_arguments)
 
     energy_trace.site_power(power_ds, 2030, COVERAGE, None)
     energy_trace.site_hydrogen(hydrogen_ds, 2030, ceilings)
+    energy_trace.hydrogen_lcoe(2030, lcoe, iso3, 50.0, lcoe_by_geo_key, neighbour_sources)
+    energy_trace.country_hydrogen(**country_arguments)
     energy_trace.brownfield(
         make_repository(plant), Year(2030), {"CHN": {Year(2030): {"electricity": 0.08}}}, {"CHN": 4.0}, ACTIVE
     )
@@ -435,6 +507,12 @@ def test_stages_leave_dataset_and_furnace_group_dicts_unchanged(tmp_path):
 
     xr.testing.assert_identical(power_ds, power_before)
     xr.testing.assert_identical(hydrogen_ds, hydrogen_before)
+    xr.testing.assert_identical(lcoe, lcoe_before)
+    xr.testing.assert_identical(iso3, iso3_before)
+    assert lcoe_by_geo_key == series_before[0]
+    assert neighbour_sources.keys() == series_before[1].keys()
+    assert all(np.array_equal(neighbour_sources[key], series_before[1][key]) for key in neighbour_sources)
+    assert country_arguments == country_arguments_before
     assert [fg.energy_costs, fg.energy_costs_no_subsidy, new_fg.energy_costs_no_subsidy] == prices_before
     assert written == {"electricity": 0.05, "hydrogen": 4000.0}
 
@@ -471,12 +549,10 @@ def test_site_hydrogen_counts_priced_cells_without_lcoh_without_failing(tmp_path
 def test_country_hydrogen_passes_trade_lowered_prices_and_flags_a_price_above_the_bound(tmp_path, trace_log):
     """The capped price may sit below min(LCOH, ceiling), as trade allows, but never above it."""
     energy_trace.configure(True, ["CHN"], [], tmp_path)
-    lcoh = {"CHN": 5.0, "CHN:CN-LN": 6.0, "DEU": 3.0}
-    ceilings = {"China": 5.5, "Western Europe": 4.0}
-    regions = {"CHN": "China", "DEU": "Western Europe"}
-    capped = {"CHN": 5.0, "CHN:CN-LN": 5.2, "DEU": 3.5}
+    arguments = country_hydrogen_arguments("Grid only")
+    arguments["capped_prices"] = {"CHN": 5.0, "CHN:CN-LN": 5.2, "DEU": 3.5}
 
-    energy_trace.country_hydrogen(Year(2030), lcoh, ceilings, regions, capped)
+    energy_trace.country_hydrogen(**arguments)
 
     rows = rows_for(read_rows(tmp_path), quantity="capped")
     assert {row["geo_key"]: row["check_failed"] for row in rows} == {"CHN": "0", "CHN:CN-LN": "0", "DEU": "1"}
@@ -485,6 +561,121 @@ def test_country_hydrogen_passes_trade_lowered_prices_and_flags_a_price_above_th
     assert float(province["expected"]) == 5.5
     assert len(warnings_logged(trace_log)) == 1
     assert "geo_key=DEU" not in "".join(r.getMessage() for r in trace_log.records if r.levelno == logging.INFO)
+
+
+def test_country_hydrogen_passes_the_blend_and_records_its_inputs(tmp_path, trace_log):
+    """Under a baseload mix, consistent prices pass every check and each geo key gets its coverage, grid and LCOE."""
+    energy_trace.configure(True, ["CHN"], [], tmp_path)
+
+    energy_trace.country_hydrogen(**country_hydrogen_arguments(BASELOAD_MIX))
+
+    rows = read_rows(tmp_path)
+    assert {row["check_failed"] for row in rows} == {"0"}
+    province = {row["quantity"]: row for row in rows_for(rows, geo_key="CHN:CN-LN")}
+    assert set(province) == {"coverage", "grid", "lcoe", "electricity", "lcoh", "ceiling", "capped"}
+    assert float(province["electricity"]["expected"]) == pytest.approx(0.15 * 0.10 + 0.85 * 0.05)
+    assert float(province["lcoe"]["value"]) == 0.05
+    assert province["lcoe"]["unit"] == "USD/kWh"
+    assert "stage=country_hydrogen year=2030 checked 9, failed 0" in trace_log.text
+
+
+def test_country_hydrogen_records_no_lcoe_under_grid_only(tmp_path):
+    """Without a baseload share the expected electricity is the grid price and no LCOE row is written."""
+    energy_trace.configure(True, [], [], tmp_path)
+
+    energy_trace.country_hydrogen(**country_hydrogen_arguments("Grid only"))
+
+    rows = read_rows(tmp_path)
+    assert {row["quantity"] for row in rows} == {"coverage", "grid", "electricity", "lcoh", "ceiling", "capped"}
+    assert {row["check_failed"] for row in rows} == {"0"}
+
+
+def test_country_hydrogen_flags_grid_only_electricity_under_a_baseload_mix(tmp_path, trace_log):
+    """A price recorded and computed from the grid alone under a baseload mix fails the electricity and LCOH checks."""
+    energy_trace.configure(True, [], [], tmp_path)
+    blended = country_hydrogen_arguments(BASELOAD_MIX)
+    grid_priced = country_hydrogen_arguments("Grid only")
+    arguments = {
+        **blended,
+        "price_inputs": grid_priced["price_inputs"],
+        "lcoh_by_geo_key": grid_priced["lcoh_by_geo_key"],
+        "capped_prices": grid_priced["capped_prices"],
+    }
+
+    energy_trace.country_hydrogen(**arguments)
+
+    rows = read_rows(tmp_path)
+    electricity = {row["geo_key"]: row for row in rows_for(rows, quantity="electricity")}
+    assert {key: row["check_failed"] for key, row in electricity.items()} == {"CHN": "1", "CHN:CN-LN": "1", "DEU": "1"}
+    assert float(electricity["CHN"]["value"]) == 0.08
+    assert float(electricity["CHN"]["expected"]) == pytest.approx(0.15 * 0.08 + 0.85 * 0.03)
+    assert {row["check_failed"] for row in rows_for(rows, quantity="lcoh")} == {"1"}
+    assert len(warnings_logged(trace_log)) == 6
+
+
+def test_country_hydrogen_flags_an_lcoh_computed_from_the_grid_while_the_record_holds_the_blend(tmp_path, trace_log):
+    """An LCOH the cap took from the grid price fails, even though the recorded electricity is the blend."""
+    energy_trace.configure(True, [], [], tmp_path)
+    arguments = country_hydrogen_arguments(BASELOAD_MIX)
+    grid_priced = country_hydrogen_arguments("Grid only")
+    arguments["lcoh_by_geo_key"] = grid_priced["lcoh_by_geo_key"]
+    arguments["capped_prices"] = grid_priced["capped_prices"]
+
+    energy_trace.country_hydrogen(**arguments)
+
+    rows = read_rows(tmp_path)
+    assert {row["check_failed"] for row in rows_for(rows, quantity="electricity")} == {"0"}
+    lcoh = {row["geo_key"]: row for row in rows_for(rows, quantity="lcoh")}
+    assert {key: row["check_failed"] for key, row in lcoh.items()} == {"CHN": "1", "CHN:CN-LN": "1", "DEU": "1"}
+    assert float(lcoh["CHN"]["value"]) == pytest.approx(5.0)
+    assert float(lcoh["CHN"]["expected"]) == pytest.approx(50.0 * (0.15 * 0.08 + 0.85 * 0.03) + 1.0)
+    assert len(warnings_logged(trace_log)) == 3
+
+
+def test_hydrogen_lcoe_checks_listed_countries_against_their_cells(tmp_path, trace_log):
+    """
+    A listed country's LCOE equals the median of its finite cells; a province and a key priced from its neighbours
+    get unchecked rows, and every geo key says whether it was priced from neighbours.
+    """
+    energy_trace.configure(True, ["CHN", "IND"], [], tmp_path)
+    lcoe, iso3, lcoe_by_geo_key, neighbour_sources = lcoe_case()
+
+    energy_trace.hydrogen_lcoe(2030, lcoe, iso3, 50.0, lcoe_by_geo_key, neighbour_sources)
+
+    rows = read_rows(tmp_path)
+    checked = {row["geo_key"]: row for row in rows if row["quantity"] == "lcoe" and row["expected"]}
+    assert set(checked) == {"CHN", "IND"}
+    assert float(checked["CHN"]["expected"]) == pytest.approx(40.0)
+    assert float(checked["IND"]["expected"]) == pytest.approx(60.0)
+    assert {row["check_failed"] for row in rows} == {"0"}
+    unchecked = {
+        row["geo_key"]: float(row["value"]) for row in rows if row["quantity"] == "lcoe" and not row["expected"]
+    }
+    assert unchecked == {"CHN:CN-LN": pytest.approx(35.0), "BTN": pytest.approx(45.0)}
+    assert {row["geo_key"]: row["value"] for row in rows_for(rows, quantity="from_neighbours")} == {
+        "BTN": "1",
+        "CHN": "0",
+        "CHN:CN-LN": "0",
+        "IND": "0",
+    }
+    assert "stage=hydrogen_lcoe year=2030 checked 2, failed 0" in trace_log.text
+
+
+def test_hydrogen_lcoe_flags_a_perturbed_value_and_follows_the_percentile(tmp_path, trace_log):
+    """A series value off its cells' percentile fails; the expectation follows the configured percentile."""
+    energy_trace.configure(True, ["CHN", "IND"], [], tmp_path)
+    lcoe, iso3, lcoe_by_geo_key, neighbour_sources = lcoe_case()
+    lcoe_by_geo_key["IND"] = 0.061
+    lcoe_by_geo_key["CHN"] = 0.035
+
+    energy_trace.hydrogen_lcoe(2030, lcoe, iso3, 25.0, lcoe_by_geo_key, neighbour_sources)
+
+    rows = {row["geo_key"]: row for row in rows_for(read_rows(tmp_path), quantity="lcoe") if row["expected"]}
+    assert rows["CHN"]["check_failed"] == "0"
+    assert float(rows["CHN"]["expected"]) == pytest.approx(35.0)
+    assert rows["IND"]["check_failed"] == "1"
+    assert float(rows["IND"]["expected"]) == pytest.approx(55.0)
+    assert len(warnings_logged(trace_log)) == 1
 
 
 def test_brownfield_flags_stale_electricity_and_hydrogen_in_usd_per_kg(tmp_path, trace_log):
@@ -658,9 +849,11 @@ def test_trace_draws_no_random_number(tmp_path):
     np.random.seed(7)
     plant, _ = built_new_site(tmp_path)
     hydrogen_ds, ceilings = hydrogen_dataset()
+    lcoe, iso3, lcoe_by_geo_key, neighbour_sources = lcoe_case()
     energy_trace.site_power(power_dataset("demand"), 2030, COVERAGE, None)
     energy_trace.site_hydrogen(hydrogen_ds, 2030, ceilings)
-    energy_trace.country_hydrogen(Year(2030), {"CHN": 5.0}, {"China": 5.5}, {"CHN": "China"}, {"CHN": 5.0})
+    energy_trace.hydrogen_lcoe(2030, lcoe, iso3, 50.0, lcoe_by_geo_key, neighbour_sources)
+    energy_trace.country_hydrogen(**country_hydrogen_arguments(BASELOAD_MIX))
     energy_trace.greenfield_operating(make_repository(plant), Year(2032), ACTIVE)
     energy_trace.greenfield_summary(2032)
     drawn = (random.random(), np.random.random())

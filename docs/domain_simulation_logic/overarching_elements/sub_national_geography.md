@@ -25,7 +25,7 @@ Geo-keyed inputs use the same form in the master workbook: a bare country code f
 | Input | Rule |
 |---|---|
 | Input costs (energy and material prices) | **Province first**, then country, through `Location.resolve()` |
-| Hydrogen CAPEX/OPEX component | A province row overrides the country row for that province, so a province gets its own LCOH from its own electricity price and its own hydrogen CAPEX/OPEX |
+| Hydrogen CAPEX/OPEX component | A province row overrides the country row for that province, so a province gets its own LCOH from its own electricity price and its own hydrogen CAPEX/OPEX. With a baseload power mix, a province's electricity price for hydrogen blends its own grid price with the LCOE of its own cells |
 | Grid emissivity | **Province first**, then country |
 | Subsidies (CAPEX, OPEX, cost of debt, energy) | **Additive**: a country row applies to every plant in the country, province-tagged plants included; a province row applies only to plants inside that province and never replaces a country row |
 | Carbon price | National only |
