@@ -322,7 +322,7 @@ Five files hold the power and hydrogen prices of every simulation year, one file
 | `LCOH/lcoh_new_sites_detailed.csv` | Analysis of new sites' hydrogen prices, before and after the ceiling | area, year, `price_type` (`uncapped`, `capped`) |
 | `LCOH/lcoh_existing_plants.csv` | Existing plants' hydrogen price and every input behind it | country or geo unit, year |
 
-Start with the two summaries. The geospatial step appends the four cell-based files every simulation year (`geospatial_statistics.export_lcoe_lcoh_outputs`); the start year writes them afresh, so a rerun into the same folder starts clean. A failure to write them stops the run. `lcoh_existing_plants.csv` is written once at bootstrap (`Environment.export_lcoh_existing_plants`), from the start year to the end year.
+Start with the two summaries. The geospatial step appends the four cell-based files every simulation year (`geospatial_statistics.export_lcoe_lcoh_outputs`); the start year writes them afresh, so a rerun into the same folder starts clean. A failure to write them stops the run. `lcoh_existing_plants.csv` is written once at bootstrap (`Environment.export_lcoh_existing_plants`), for the simulated years the input costs cover.
 
 New-site statistics are taken over the 0.25° cells that carry a country, a power price and a capped hydrogen price; all price types of an area use the same cells. **Every cell weighs the same**, and cells cover less ground towards the poles, so an area's average is a cell average, not an area-weighted one.
 

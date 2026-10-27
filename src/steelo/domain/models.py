@@ -8935,7 +8935,7 @@ class Environment:
 
     def export_lcoh_existing_plants(self, path: Path) -> None:
         """
-        Write existing plants' hydrogen price and its inputs per country and geo unit, start year to end year.
+        Write existing plants' hydrogen price and its inputs per country and geo unit, for the simulated years.
 
         Args:
             path: Output CSV, ``<output_dir>/data/LCOH/lcoh_existing_plants.csv``.
@@ -8945,15 +8945,17 @@ class Environment:
 
         Notes:
             Reads ``hydrogen_price_inputs_by_year``, which the precompute fills to the last input-cost year;
-            the file keeps only the simulated years. A geo unit's CAPEX/OPEX is its own row where the master
-            has one, else its country's. Numbers are written with four decimals, like the cell-based files.
-            Logs one INFO line naming the file.
+            the file keeps only the simulated years, so it stops at that year when the run ends later. A geo
+            unit's CAPEX/OPEX is its own row where the master has one, else its country's. Numbers are written
+            with four decimals, like the cell-based files. Logs one INFO line naming the file and the first and
+            last year written.
         """
         logger = logging.getLogger(f"{__name__}.Environment.export_lcoh_existing_plants")
         if self.config is None:
             raise ValueError("SimulationConfig is required to export existing plants' hydrogen prices")
         geo_config = self.config.geo_config
         start_year, end_year = int(self.config.start_year), int(self.config.end_year)
+        years = sorted(y for y in self.hydrogen_price_inputs_by_year if start_year <= int(y) <= end_year)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="") as handle:
             writer = csv.writer(handle)
@@ -8978,7 +8980,7 @@ class Environment:
                     "capped_usd_per_kg",
                 ]
             )
-            for year in sorted(y for y in self.hydrogen_price_inputs_by_year if start_year <= int(y) <= end_year):
+            for year in years:
                 for geo_key, row in sorted(self.hydrogen_price_inputs_by_year[year].items()):
                     iso3, _, code = geo_key.partition(":")
                     lcoe = row["lcoe"]
@@ -9008,7 +9010,7 @@ class Environment:
                             ),
                         ]
                     )
-        logger.info(f"Wrote existing plants' hydrogen prices, {start_year} to {end_year}, to {path}")
+        logger.info(f"Wrote existing plants' hydrogen prices, {int(years[0])} to {int(years[-1])}, to {path}")
 
     def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
         """
