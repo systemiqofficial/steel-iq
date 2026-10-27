@@ -16,7 +16,7 @@ LCOE below is the levelised cost of electricity of a site's own baseload supply,
   - *Electrolysis power* is priced at the run's power mix: `(1 - c) × grid + c × LCOE`, where c is the baseload coverage (0.85, 0.9 or 0.95), the grid price is the geo key's input-cost electricity price, and the LCOE is a percentile of the LCOE of the geo key's cells in the promoted BOA file new sites read (step 1). The percentile is `hydrogen_lcoe_percentile`, 50 (the median) by default. A country's cells include its provinces'; a province's cells are those inside its admin-1 shape, for the provinces `geo_hierarchy.json` declares. A geo key without a cell of its own that has an LCOE takes the mean of its 8 nearest cells that have one, around its cells or the representative point of its admin-1 shape (`hydrogen_lcoe.baseload_lcoe_by_geo_key_series`). The baseload share is priced at the LCOE even where the grid is cheaper. With the "Grid only" or "Not included" mix, electrolysis power is the grid price alone and no LCOE is read.
   - *LCOH*: the electrolyser's electricity use times that power price, plus the electrolyser's capital and operating cost per kg, from the province row where the master has one, else from the country row.
   - *Ceiling and cap*: a region's ceiling is a percentile of its countries' LCOH (`hydrogen_ceiling_percentile`), and a province takes its country's region. The capped price is the lower of the LCOH and the ceiling; with intraregional trade on, also of the cheapest partner region's ceiling plus pipeline transport. At the 100th percentile, the default, the ceiling is raised to the highest LCOH of all the region's geo keys, provinces included, so no price is capped by its own region; with intraregional trade on, a partner region's ceiling then counts its provinces too. Below 100 the ceiling stays a percentile of the countries' LCOH only, so a province priced above it is capped at it.
-  - At the start of each year, the geo key's capped price × 1,000 replaces the hydrogen price of every furnace group (`Plant.update_furnace_hydrogen_costs`). Data preparation also writes a grid-based country hydrogen price into the input costs, which bootstrap copies into every furnace group and its reductant pick reads; the year-start refresh replaces it, and the reductant pick runs again, before the first trade model, so no price paid uses it.
+  - At the start of each year, the geo key's capped price × 1,000 replaces the hydrogen price of every existing plant's furnace group (`Plant.update_furnace_hydrogen_costs`); new sites keep their own (steps 7 and 8). Data preparation also writes a grid-based country hydrogen price into the input costs, which bootstrap copies into every furnace group and its reductant pick reads; the year-start refresh replaces it, and the reductant pick runs again, before the first trade model, so no price paid uses it.
 - **Subsidies**: energy subsidies for the furnace group's technology then apply on top. The prices without subsidy stay in `energy_costs_no_subsidy`.
 - **Output**: bootstrap writes each geo key's hydrogen price and every input behind it, for the simulated years the input costs cover, to `data/LCOH/lcoh_existing_plants.csv`. See [Outputs and Post-Processing](outputs_and_postprocessing.md#geospatial-statistics-lcoe-and-lcoh-files).
 
@@ -59,9 +59,9 @@ See [Site prices for geospatial sites](../plant_agent_model/reductant_choice_and
 
 ### 4. Each year while considered
 
-The year-start hydrogen refresh writes the regional price into every furnace group, opportunities included. Later in the year, after the plant agent model, `PlantGroup.update_dynamic_costs_for_business_opportunities` re-reads the site's `power_price` and `capped_lcoh` from the year's rasters. It writes them as the opportunity's electricity and hydrogen without subsidy, with the energy subsidies of the operating start year on top. It writes `capped_lcoh` as read, in USD/kg, where the selection converted it to USD/t. Where a raster value is missing, it keeps the stored price. The yearly NPV re-valuation (`track_business_opportunities`) then passes the stored electricity and hydrogen without subsidy to the score series as site prices, with the current year as reference.
+The year-start hydrogen refresh skips opportunities, as it skips every new site. Later in the year, after the plant agent model, `PlantGroup.update_dynamic_costs_for_business_opportunities` re-reads the site's `power_price` and `capped_lcoh` from the year's rasters. It writes them as the opportunity's electricity and hydrogen without subsidy, with the energy subsidies of the operating start year on top. It converts `capped_lcoh` from USD/kg to USD/t, as the selection does. Where a raster value is missing, it keeps the stored price. The yearly NPV re-valuation (`track_business_opportunities`) then passes the stored electricity and hydrogen without subsidy to the score series as site prices, with the current year as reference.
 
-**Trace:** `greenfield_revalue` checks that the hydrogen written equals the site's `capped_lcoh` × 1,000, and keeps the site's raster prices of the year. On the current code the check fails for every opportunity, because of the unit above.
+**Trace:** `greenfield_revalue` checks that the hydrogen written equals the site's `capped_lcoh` × 1,000, and keeps the site's raster prices of the year.
 
 ### 5. Announcement
 
@@ -77,19 +77,19 @@ An opportunity whose NPVs over the consideration window are all positive is anno
 
 ### 7. Construction
 
-The furnace group is no longer re-valued. At the end of each year, `Environment.set_input_cost_in_furnace_groups` refreshes every carrier from the input costs, but keeps a new site's electricity and hydrogen without subsidy. At the start of each year, the hydrogen refresh replaces the hydrogen price of every furnace group, new sites included, with the geo key's capped regional price × 1,000.
+The furnace group is no longer re-valued. At the end of each year, `Environment.set_input_cost_in_furnace_groups` refreshes every carrier from the input costs, but keeps a new site's electricity and hydrogen without subsidy. The year-start hydrogen refresh skips new sites, so the furnace group keeps the hydrogen price of its construction-start year.
 
 **Trace:** no stage.
 
 ### 8. Operation
 
-At the start of its operating start year, before the trade model, the furnace group turns operating. Its electricity is still the site's power price from the last re-valuation, in the construction-start year. Its hydrogen is the geo key's capped regional price of the year, which the year-start refresh writes every year.
+At the start of its operating start year, before the trade model, the furnace group turns operating. Its electricity and hydrogen are still the site's power price and capped hydrogen price from the last re-valuation, in the construction-start year.
 
-**Trace:** `greenfield_operating` checks both prices without subsidy against the references frozen at construction start. The electricity check passes. On the current code the hydrogen check fails, since the regional price has replaced the site's own.
+**Trace:** `greenfield_operating` checks both prices without subsidy against the references frozen at construction start.
 
 ### 9. The yearly reductant pick
 
-At bootstrap and at the start of each year's trade model setup, every furnace group re-picks its reductant from its current input-side and output-side prices, subsidies included. A new site therefore picks with its own electricity price and the regional hydrogen price. See [Annual Reductant Pick](../plant_agent_model/reductant_choice_and_opex.md#annual-reductant-pick).
+At bootstrap and at the start of each year's trade model setup, every furnace group re-picks its reductant from its current input-side and output-side prices, subsidies included. A new site therefore picks with its own electricity and hydrogen prices. See [Annual Reductant Pick](../plant_agent_model/reductant_choice_and_opex.md#annual-reductant-pick).
 
 **Trace:** no stage of its own; the pick reads the prices `brownfield` and `greenfield_operating` check just before it.
 

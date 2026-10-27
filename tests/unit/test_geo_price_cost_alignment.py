@@ -125,7 +125,7 @@ def _run_identify(monkeypatch, market_price_steel: list[float]) -> dict:
         reductant_score_series=_flat_score_series,
         global_risk_free_rate=0.03,
         tech_to_product={"EAF": "steel"},
-        allowed_techs={Year(2025): ["EAF"], Year(2029): ["EAF"]},
+        allowed_techs={Year(2025): ["EAF"], Year(2028): ["EAF"]},
         technology_emission_factors=[],
         chosen_emissions_boundary_for_carbon_costs="scope_1",
         active_statuses=["operating"],
@@ -140,7 +140,7 @@ def _run_identify(monkeypatch, market_price_steel: list[float]) -> dict:
 def test_creation_npv_prices_anchored_at_target_year(monkeypatch):
     """The creation NPV prices the operating window, not the current year.
 
-    With consideration_time=3 the target year is current + 4, so the first four
+    With consideration_time=3 the target year is current + 3, so the first three
     price entries belong to years before construction can even start. They must
     not influence the NPV: the result equals a direct calculate_npv_full call on
     the target-anchored slice, and is invariant to the pre-target entries.
@@ -148,8 +148,8 @@ def test_creation_npv_prices_anchored_at_target_year(monkeypatch):
     plant_lifetime, construction_time = 4, 2
     operating_window_prices = [100.0] * (construction_time + plant_lifetime)
 
-    npv_a = _run_identify(monkeypatch, [999.0] * 4 + operating_window_prices)["steel"][SITE_ID]["EAF"]
-    npv_b = _run_identify(monkeypatch, [111.0] * 4 + operating_window_prices)["steel"][SITE_ID]["EAF"]
+    npv_a = _run_identify(monkeypatch, [999.0] * 3 + operating_window_prices)["steel"][SITE_ID]["EAF"]
+    npv_b = _run_identify(monkeypatch, [111.0] * 3 + operating_window_prices)["steel"][SITE_ID]["EAF"]
 
     expected = _expected_npv(operating_window_prices, plant_lifetime, construction_time)
     assert npv_a == pytest.approx(expected, rel=1e-12)
@@ -204,14 +204,14 @@ def test_refresh_npv_prices_anchored_at_opportunity_window():
     """The yearly re-valuation prices the opportunity's own cost window.
 
     One year after creation (k=1, consideration_time=3) the window anchors at
-    year + 3, so the first three price entries are pre-window and must not
+    year + 2, so the first two price entries are pre-window and must not
     influence the NPV.
     """
     plant_lifetime, construction_time, consideration_time = 4, 2, 3
     fg = _make_opportunity_fg(plant_lifetime)
     fg.historical_npv_business_opportunities = {Year(2030): 50.0}
     window_prices = [100.0] * 7
-    market_price = {"steel": [999.0] * 3 + window_prices}
+    market_price = {"steel": [999.0] * 2 + window_prices}
 
     _score_windows.clear()
     fg.track_business_opportunities(
@@ -229,14 +229,14 @@ def test_refresh_npv_prices_anchored_at_opportunity_window():
 
     expected = _expected_refresh_npv(fg, window_prices, plant_lifetime, construction_time)
     assert fg.historical_npv_business_opportunities[Year(2031)] == pytest.approx(expected, rel=1e-12)
-    # Cost window anchored at year + consideration_time + 1 - k + construction_time = 2036
-    assert _score_windows == [(Year(2036), Year(2040))]
+    # Cost window anchored at year + consideration_time - k + construction_time = 2035
+    assert _score_windows == [(Year(2035), Year(2039))]
 
 
 def test_refresh_straggler_window_floors_at_announcement_plus_construction():
     """An opportunity older than the consideration window prices the soonest physical path.
 
-    With 6 considered years (k=6 > consideration_time + 1) the raw formula would
+    With 6 considered years (k=6 > consideration_time) the raw formula would
     anchor the window in the past. It must pin at announce-this-year + construction:
     operations from year + 1 + construction_time, price offset 1.
     """

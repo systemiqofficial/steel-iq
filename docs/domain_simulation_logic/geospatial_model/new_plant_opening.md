@@ -28,6 +28,8 @@ The system updates the costs and status of business opportunities each simulatio
 - `construction_time`: Years to build plant after announcement (default: 4 years)
 Both the consideration and announcement times can be considerably longer than their set minimums depending on the capacity and probability filters.
 
+On the earliest path, an opportunity created in year t is announced in year t + max(consideration_time - 1, 1), once its window of NPVs exists and no sooner than the next year, and starts construction the year after, in t + max(consideration_time, 2). It operates from that year plus `construction_time`. Opportunity creation and every yearly re-valuation price that path.
+
 ## Process Diagram
 The flow from business opportunity to new plant is as follows: 
 
@@ -40,7 +42,7 @@ The flow from business opportunity to new plant is as follows:
         | - Create new Plant + FurnaceGroup
         |
         v
-    CONSIDERED (years t to t+T for T the consideration time, default: 3 years)
+    CONSIDERED (from year t to at least t+max(T-1, 1) for T the consideration time, default: 3 years)
         |
         | [Each year]:
         | update_dynamic_costs_for_business_opportunities()
@@ -133,7 +135,7 @@ The identification process evaluates potential new plant locations and technolog
 
 **Function:** `get_list_of_allowed_techs_for_target_year()`
 
-Filters technologies based on what will be allowed at the earliest possible construction start year (target year = current year + consideration time + 1), not what's currently allowed.
+Filters technologies based on what will be allowed at the earliest possible construction start year (target year = current year + max(consideration time, 2)), not what's currently allowed.
 
 **Purpose:** Prevents companies from considering plants using technologies that would be illegal to build by the time construction begins. For example, if BF-BOF will be banned in 2034, it won't be considered as an opportunity in 2030 even though it's currently legal.
 
@@ -255,7 +257,7 @@ The system uses CAPEX and debt subsidies from the earliest construction start ye
 
 | Status | Target Year (construction start) | Reasoning |
 |--------|---------------------------------|-----------|
-| CONSIDERED | `max(current + consideration_time + 1 - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
+| CONSIDERED | `max(current + consideration_time - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
 | ANNOUNCED | `current + 1` | Next year (announcement time = 1) |
 
 **Process:**

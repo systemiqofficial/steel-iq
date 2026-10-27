@@ -1688,7 +1688,7 @@ def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
         reductant_score_series=_stub_series,
         global_risk_free_rate=0.03,
         tech_to_product={"EAF": "steel", "BOF": "steel"},
-        allowed_techs={Year(2028): ["EAF", "BOF"]},
+        allowed_techs={Year(2027): ["EAF", "BOF"]},
         technology_emission_factors=[],
         chosen_emissions_boundary_for_carbon_costs="scope_1",
         active_statuses=["operating"],

@@ -2,7 +2,7 @@ import math
 from datetime import date
 
 from steelo.domain.commands import UpdateDynamicCosts
-from steelo.domain.constants import Volumes, Year
+from steelo.domain.constants import T_TO_KG, Volumes, Year
 from steelo.domain.models import (
     FurnaceGroup,
     Location,
@@ -70,6 +70,12 @@ def make_test_plant(furnace_group: FurnaceGroup) -> Plant:
 
 
 def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
+    """
+    The re-valuation writes the site's power price unscaled and its hydrogen price in USD/t.
+
+    The ``power_price`` raster is already in USD/kWh, as the energy cost dicts hold it; the
+    ``capped_lcoh`` raster is in USD/kg and must be multiplied by ``T_TO_KG``.
+    """
     fg = make_test_furnace_group()
     plant = make_test_plant(fg)
     plant_group = PlantGroup(plant_group_id="PG1", plants=[plant])
@@ -125,7 +131,42 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
     (cmd,) = commands_generated
     assert isinstance(cmd, UpdateDynamicCosts)
     assert math.isclose(cmd.new_energy_costs["electricity"], raw_power_price, rel_tol=1e-9)
-    assert math.isclose(cmd.new_energy_costs["hydrogen"], raw_hydrogen_price, rel_tol=1e-9)
+    assert math.isclose(cmd.new_energy_costs["hydrogen"], raw_hydrogen_price * T_TO_KG, rel_tol=1e-9)
     # Output and no_subsidy should match input when no subsidies active
     assert math.isclose(cmd.new_output_energy_costs["electricity"], raw_power_price, rel_tol=1e-9)
     assert math.isclose(cmd.new_energy_costs_no_subsidy["electricity"], raw_power_price, rel_tol=1e-9)
+
+
+def test_hydrogen_refresh_keeps_new_site_price_while_existing_plant_follows_region():
+    """
+    The year-start hydrogen refresh moves an existing plant to its region's price but leaves a new site alone.
+
+    Notes:
+        Both plants share one geo key, whose capped price moves from 4.0 to 3.6 USD/kg. The new site
+        keeps the 3,000 USD/t it was given at construction start in all three cost dicts; the existing
+        plant takes 3.6 USD/kg × ``T_TO_KG``.
+    """
+    new_site_fg = make_test_furnace_group()
+    new_site_fg.set_energy_costs(electricity=0.05, hydrogen=3_000.0)
+    new_site = make_test_plant(new_site_fg)
+    new_site.parent_gem_id = "indi"
+
+    existing_fg = make_test_furnace_group()
+    existing_fg.set_energy_costs(electricity=0.08, hydrogen=4.0 * T_TO_KG)
+    existing_plant = make_test_plant(existing_fg)
+
+    for plant in (new_site, existing_plant):
+        plant.update_furnace_hydrogen_costs({"TST": 3.6})
+
+    for costs in (
+        new_site_fg.energy_costs,
+        new_site_fg.output_energy_costs,
+        new_site_fg.energy_costs_no_subsidy,
+    ):
+        assert math.isclose(costs["hydrogen"], 3_000.0, rel_tol=1e-9)
+    for costs in (
+        existing_fg.energy_costs,
+        existing_fg.output_energy_costs,
+        existing_fg.energy_costs_no_subsidy,
+    ):
+        assert math.isclose(costs["hydrogen"], 3.6 * T_TO_KG, rel_tol=1e-9)
