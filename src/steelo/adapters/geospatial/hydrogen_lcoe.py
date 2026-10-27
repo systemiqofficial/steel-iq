@@ -173,9 +173,10 @@ def neighbour_fill_sources(
         ValueError: If a geo key has neither a cell of its own nor an admin-1 geometry.
 
     Notes:
-        A geo key's locations are its own cells (present but without an LCOE) or, for a territory
-        too small to own a cell, the representative point of its admin-1 geometry. Each location
-        contributes its ``NEIGHBOUR_PIXELS`` nearest finite cells by great-circle distance.
+        A geo key's locations are its own cells (present but without an LCOE) or, for an area too
+        small to own a cell, the representative point of its admin-1 geometry: a sub-national key's
+        own admin-1 row, a country's rows otherwise. Each location contributes its ``NEIGHBOUR_PIXELS``
+        nearest finite cells by great-circle distance.
     """
     missing = list(missing)
     if not missing:
@@ -193,7 +194,13 @@ def neighbour_fill_sources(
         else:
             if admin1 is None and geo_paths.admin1_shapefile_dir is not None:
                 admin1 = _load_admin1_layer(str(geo_paths.admin1_shapefile_dir / f"{ADMIN1_LAYER_NAME}.shp"))
-            geometry = admin1_rows_of_country(admin1, key.partition(":")[0]) if admin1 is not None else None
+            iso3, _, code = key.partition(":")
+            if admin1 is None:
+                geometry = None
+            elif code:
+                geometry = admin1[admin1["iso_3166_2"] == code]
+            else:
+                geometry = admin1_rows_of_country(admin1, iso3)
             if geometry is None or geometry.empty:
                 raise ValueError(f"No LCOE cell and no admin-1 geometry for {key}; cannot price its baseload LCOE")
             point = geometry.geometry.union_all().representative_point()

@@ -50,8 +50,8 @@ def write_lcoe_file(folder: Path, lcoe_2030: np.ndarray | None = None, *, attrs:
 
 def make_geo_paths(tmp_path: Path) -> GeoDataPaths:
     """
-    Prepared geo data for the fixture: the iso3 grid, a hierarchy declaring CHN:CN-XX, and an admin-1 layer with
-    CN-XX and the territory DDD, which owns no cell.
+    Prepared geo data for the fixture: the iso3 grid, a hierarchy declaring CHN:CN-XX and CHN:CN-YY, and an admin-1
+    layer with CN-XX, CN-YY east of the grid, which owns no cell, and the territory DDD, which owns none either.
 
     Args:
         tmp_path: The test's folder.
@@ -70,13 +70,18 @@ def make_geo_paths(tmp_path: Path) -> GeoDataPaths:
     ).to_netcdf(static_layers_dir / "global_grid_with_iso3.nc")
     (data_dir / "fixtures").mkdir()
     (data_dir / "fixtures" / "geo_hierarchy.json").write_text(
-        json.dumps([{"iso3": "CHN", "geo_unit": "CN-XX", "geo_key": "CHN:CN-XX"}]),
+        json.dumps(
+            [
+                {"iso3": "CHN", "geo_unit": "CN-XX", "geo_key": "CHN:CN-XX"},
+                {"iso3": "CHN", "geo_unit": "CN-YY", "geo_key": "CHN:CN-YY"},
+            ],
+        ),
     )
     admin1_dir = data_dir / geo_unit_lookup.ADMIN1_LAYER_NAME
     admin1_dir.mkdir()
     gpd.GeoDataFrame(
-        {"adm0_a3": ["CHN", "DDD"], "gu_a3": ["CHN", "DDD"], "iso_3166_2": ["CN-XX", "DD-1"]},
-        geometry=[box(0.2, 10.2, 0.6, 10.3), box(-0.6, 9.9, -0.4, 10.1)],
+        {"adm0_a3": ["CHN", "CHN", "DDD"], "gu_a3": ["CHN", "CHN", "DDD"], "iso_3166_2": ["CN-XX", "CN-YY", "DD-1"]},
+        geometry=[box(0.2, 10.2, 0.6, 10.3), box(1.1, 10.2, 1.3, 10.3), box(-0.6, 9.9, -0.4, 10.1)],
         crs="EPSG:4326",
     ).to_file(admin1_dir / f"{geo_unit_lookup.ADMIN1_LAYER_NAME}.shp")
     return GeoDataPaths(
@@ -182,6 +187,23 @@ def test_series_fills_keys_without_cells_from_their_nearest_cells(tmp_path, monk
     assert result[Year(2025)]["DDD"] == pytest.approx(0.015)
     assert result[Year(2030)]["CCC"] == pytest.approx(0.045)
     assert result[Year(2030)]["DDD"] == pytest.approx(0.010)
+
+
+def test_series_fills_a_province_without_cells_around_its_own_shape(tmp_path, monkeypatch):
+    """
+    A declared province that owns no cell takes the cells nearest its own admin-1 shape, not its country's; one
+    without an admin-1 row stops the series.
+    """
+    monkeypatch.setattr(hydrogen_lcoe, "NEIGHBOUR_PIXELS", 2)
+    lcoe_file = write_lcoe_file(tmp_path / "lcoe")
+
+    result = series(tmp_path / "a", lcoe_file, ["CHN", "CHN:CN-YY"])
+
+    # CN-YY lies east of the grid, so its nearest cells are the eastern priced column (30, 70); China's own shapes
+    # would centre on CN-XX, whose nearest cells are 50 and 70
+    assert result[Year(2025)]["CHN:CN-YY"] == pytest.approx(0.050)
+    with pytest.raises(ValueError, match="No LCOE cell and no admin-1 geometry for CHN:CN-ZZ"):
+        series(tmp_path / "b", lcoe_file, ["CHN", "CHN:CN-ZZ"])
 
 
 def test_series_raises_for_a_key_without_cells_or_admin1_geometry(tmp_path):
