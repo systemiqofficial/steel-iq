@@ -8639,8 +8639,8 @@ class Environment:
         This method is called twice in the simulation lifecycle:
         1. **At Bootstrap** (before simulation years start): Initializes all furnace groups with input costs
            from the Excel "Input costs" tab. At this point, furnace groups have empty energy_costs dictionaries.
-        2. **At Each Year Start** (during simulation loop): Updates input costs for the current year, while
-           preserving previously calculated hydrogen costs that account for interregional trade.
+        2. **At Each Year End** (``finalise_iteration`` step 6c, after the year advances): Sets the new year's
+           input costs before the year-start hydrogen refresh, while keeping the stored hydrogen prices.
 
         Process:
             1. Retrieve country-specific input costs (electricity, hydrogen, coke, pci, natural_gas, coal, bio_pci)
@@ -8661,7 +8661,8 @@ class Environment:
             - Year Start: the year's capped prices are read from the series precomputed at bootstrap
               (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
               fg.energy_costs["hydrogen"] with them for existing plants; new sites keep their own price
-            - This method: Preserves those capped prices instead of overwriting with Excel's static values
+            - This method, at the year end: keeps each furnace group's stored hydrogen instead of Excel's static
+              values, until the year-start refresh replaces it for existing plants
 
         Args:
             world_plants (list[Plant]): All plants in the simulation to update.
@@ -11606,7 +11607,7 @@ class Environment:
 
         # Generate for FULL simulation range (not from current year!)
         # Runs to end_year + consideration_time + 1 (the range's end is exclusive), which covers the latest
-        # opportunity target year, end_year + max(consideration_time, 2), so new plants are considered to the end
+        # opportunity target year, end_year + max(consideration_time, 2), for a consideration_time of 1 or more
         for year in range(self.config.start_year, self.config.end_year + self.config.consideration_time + 2):
             allowed_techs = []
 
