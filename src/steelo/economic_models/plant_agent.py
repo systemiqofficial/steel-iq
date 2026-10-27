@@ -114,6 +114,8 @@ class GeospatialModel:
 
         Side effects: Opens new plants and furnace groups, updates their energy costs (power and hydrogen), and manages
         the status progression of business opportunities through consideration, announcement, and construction.
+        Appends the year's rows to data/LCOE/lcoe_summary.csv, lcoe_detailed.csv, data/LCOH/lcoh_summary.csv and
+        lcoh_new_sites_detailed.csv in the output folder; the start year writes them afresh.
         """
         logger = logging.getLogger(f"{__name__}.GeospatialModel.run")
         logger.info(f"\n\n[GEO] ========== 🗺️  Starting GeospatialModel.run for Year {bus.env.year} ========== \n")

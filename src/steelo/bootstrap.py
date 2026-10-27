@@ -426,7 +426,7 @@ def bootstrap_simulation(
         tech_switches_path = None
     env = Environment(config=config, tech_switches_csv=tech_switches_path)
 
-    # Initialize GeoDataPaths if data_dir is available, before the data loads: the hydrogen precompute reads the
+    # Initialise GeoDataPaths if data_dir is available, before the data loads: the hydrogen precompute reads the
     # baseload LCOE file checked here
     baseload_lcoe_file: Optional[Path] = None
     if config.data_dir:

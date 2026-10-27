@@ -511,11 +511,11 @@ def site_hydrogen(
     Notes:
         Every cell with a finite ``capped_lcoh`` must stay within its region's ceiling. Cells with no
         LCOH that still carry a price are counted, not failed; the cap leaves such cells unpriced, so the
-        count reads 0. With the ceiling percentile at 100 and
-        intraregional trade off, as by default, that check cannot fail. Every cell with a finite power
-        price and an electrolyser cost row must hold ``lcoh`` = kWh per kg × power price + the capital and
-        operating cost at its geo key, else its iso3 (``cells_off_lcoh``), computed here on the rasters.
-        Without ``geo_key`` the cost is expected at the iso3.
+        count reads 0. With the ceiling percentile at 100 and intraregional trade off, as by default, that
+        check cannot fail. Every cell with a finite power price and an electrolyser cost row must hold
+        ``lcoh`` = kWh per kg × power price + the capital and operating cost at its geo key, else its iso3
+        (``cells_off_lcoh``), computed here on the rasters. Without ``geo_key`` the cost is expected at the
+        iso3.
     """
     if not _state.enabled:
         return

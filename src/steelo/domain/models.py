@@ -8726,7 +8726,7 @@ class Environment:
 
         Steps:
             1. Price electrolysis power per geo key at the power mix, (1 - c) x grid + c x baseload LCOE, and
-            calculate the Levelized Cost of Hydrogen (LCOH) from it with the electrolyser's CAPEX and OPEX.
+            calculate the Levelised Cost of Hydrogen (LCOH) from it with the electrolyser's CAPEX and OPEX.
             2. Determine regional hydrogen price ceilings based on percentile thresholds
             3. Apply price caps considering regional ceilings, interregional trade options, and pipeline transport costs. Pipeline
             transport costs are added when importing hydrogen from trading partners.
