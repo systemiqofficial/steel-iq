@@ -4,7 +4,7 @@ It is computed in two steps:
 1) Simulating renewable energy supply (using weather data and Atlite)
 2) Finding the optimum overbuilding factors for solar, wind, and battery. 
 
-Because a BOA run takes hours per simulation year, steel-iq does not run BOA: it reads precomputed LCOE files. BOA is maintained in its own repository, [systemiqofficial/baseload-optimisation-atlas](https://github.com/systemiqofficial/baseload-optimisation-atlas), which documents how to prepare its input data and run it.
+Because a full BOA run takes about 75 minutes per coverage, the steel simulation does not run BOA: it reads precomputed LCOE files. BOA is maintained in its own repository, [systemiqofficial/baseload-optimisation-atlas](https://github.com/systemiqofficial/baseload-optimisation-atlas), which documents how to prepare its input data and run it. To produce a BOA run from steel-iq, use `steelo-boa-run`; see [Rerunning BOA for Baseload Power Prices](../../user_guide/running_simulations_locally.md#rerunning-boa-for-baseload-power-prices).
 
 ### LCOE files read by steel-iq
 steel-iq reads one promoted BOA file per baseload coverage. A promoted file holds the LCOE of the optimal solar, wind and battery system for every investment year, in USD per MWh delivered; BOA's `docs/promoted-lcoe-file.md` describes its layout. A "Grid only" or "Not included" power mix reads no file.
@@ -19,6 +19,9 @@ steel-iq reads one promoted BOA file per baseload coverage. A promoted file hold
 run_simulation --boa-run my_run                     # a run under $BOA_DATA_ROOT/lcoe-only/ (else ~/.boa/lcoe-only/)
 run_simulation --boa-run /path/to/lcoe-only/my_run  # a run's folder
 ```
+
+### The pinned BOA release
+`steelo-boa-run` runs the BOA release that `BOA_PIN` names in `src/steelo/entrypoints/boa_cli.py`. Move the pin to a newer BOA release only if no LCOE-changing code landed in BOA since the release that built geo-data's default LCOE files: BOA v1.9.0 for geo-data 3.0.0. Otherwise, rerun the default LCOE files at the new release and publish them in a new geo-data version, so the default files and a rerun of them come from the same BOA code.
 
 ## Methodology:
 1. Project investment costs for solar and wind technologies for each country and year

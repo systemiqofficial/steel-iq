@@ -351,6 +351,59 @@ options:
 
 Writes the list of province keys (`CHN:CN-HE` and so on) that the master workbook can use in its geo-keyed sheets, one row per unit. Data preparation already writes `geo_options.csv` to the data root when the geo-data package includes the Natural Earth admin-1 shapefile; run this command to regenerate it after preparation, or to write it elsewhere. It fails if `geo_hierarchy.json` has not been prepared yet. See [Sub-national Geography](../domain_simulation_logic/sub_national_geography.md).
 
+## steelo-boa-run
+
+Reruns BOA, which computes the baseload power LCOE the simulation reads, at the BOA release this version of steel-iq pins, and prints the `run_simulation --boa-run` value for its run. `uvx` runs BOA's `boa-lcoe` command in an environment of its own, with every argument passed on unchanged, so the help is BOA's own. Its description of the steps is left out here:
+
+```shell
+❯ steelo-boa-run -h
+usage: boa-lcoe [-h] [--input-file INPUT_FILE] [--scenario SCENARIO]
+                [--weather-year WEATHER_YEAR] [--run RUN]
+                [--coverage COVERAGE [COVERAGE ...]] [--start-year START_YEAR]
+                [--end-year END_YEAR] [--frequency FREQUENCY]
+                [--load-density LOAD_DENSITY] [--workers WORKERS]
+                [--like LIKE] [--dry-run]
+
+options:
+  -h, --help            show this help message and exit
+  --input-file INPUT_FILE
+                        Cost workbook for a custom scenario (boa-data-prepare
+                        --input-file).
+  --scenario SCENARIO   Cost-set name (boa-data-prepare --scenario, boa-run
+                        --cost-input).
+  --weather-year WEATHER_YEAR
+                        Weather year (boa-cds-prepare --weather_year, boa-run
+                        --weather-input cds-<year>; default: 2024).
+  --run RUN             Run label (boa-run --run).
+  --coverage COVERAGE [COVERAGE ...]
+                        Coverage fractions, one boa-run each (boa-run
+                        --coverage).
+  --start-year START_YEAR
+                        boa-run --start-year.
+  --end-year END_YEAR   boa-run --end-year.
+  --frequency FREQUENCY
+                        boa-run --frequency.
+  --load-density LOAD_DENSITY
+                        boa-run --load-density.
+  --workers WORKERS     boa-run --workers.
+  --like LIKE           Promoted LCOE file to rerun; its settings fill every
+                        option not given.
+  --dry-run             Print every step's command, skip both preparation
+                        steps and pass --dry-run to boa-run.
+```
+
+- It needs [uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`. Without `uvx` on `PATH`, it says how to install uv and exits with code 1.
+- It relays BOA's output as it comes. On success it ends with `Run the steel simulation with: run_simulation --boa-run <name>`, the name taken from BOA's `BOA_RUN=` line. Otherwise it exits with BOA's exit code.
+- BOA writes under `$BOA_DATA_ROOT`, else `~/.boa`, where `run_simulation --boa-run` looks the name up.
+
+```bash
+# One BOA run per coverage, then the simulation priced with it
+steelo-boa-run --coverage 0.85 0.95
+run_simulation --boa-run <name>
+```
+
+Custom cost workbooks, `--like`, disk and time, and the rule for custom cost data are in [Rerunning BOA for Baseload Power Prices](running_simulations_locally.md#rerunning-boa-for-baseload-power-prices).
+
 ## List Available Binaries
 
 This command line entrypoint lists available Steel Model standalone binaries on S3, showing build information, platforms, and download URLs.

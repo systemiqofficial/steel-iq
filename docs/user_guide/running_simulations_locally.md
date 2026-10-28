@@ -384,7 +384,7 @@ Outputs go to a fresh `sim_<timestamp>/` directory under `--output-dir` (default
 - `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
 
 **Data Files (usually handled automatically via caching):**
-- `--boa-run`: Promoted BOA run that prices baseload power: a folder, or a run name under `$BOA_DATA_ROOT` (else `~/.boa`) `/lcoe-only/`. An unknown name stops the run before any data preparation and lists the runs there. Without the flag, the run reads the default LCOE files that geo-data ships in the prepared data. See [Baseload Optimisation Atlas](../domain_simulation_logic/geospatial_model/baseload_optimization_atlas.md#lcoe-files-read-by-steel-iq)
+- `--boa-run`: Promoted BOA run that prices baseload power: a folder, or a run name under `$BOA_DATA_ROOT` (else `~/.boa`) `/lcoe-only/`. An unknown name stops the run before any data preparation and lists the runs there. Without the flag, the run reads the default LCOE files that geo-data ships in the prepared data. See [Baseload Optimisation Atlas](../domain_simulation_logic/geospatial_model/baseload_optimization_atlas.md#lcoe-files-read-by-steel-iq), and [Rerunning BOA for Baseload Power Prices](#rerunning-boa-for-baseload-power-prices) to produce a run
 
 **Caching Options:**
 - `--cache-stats`: Show cache statistics and exit
@@ -414,6 +414,44 @@ The simulation will output progress updates, including:
 - Technology transitions
 - Trade allocations
 - Cost calculations
+:::
+
+## Rerunning BOA for Baseload Power Prices
+
+The model prices baseload power with LCOE files from BOA, the Baseload Optimisation Atlas. Without `--boa-run` it reads the default files that geo-data ships. To price power from a BOA run of your own, for example with another cost workbook or coverage, produce the run with `steelo-boa-run` and pass its name to `run_simulation --boa-run`.
+
+`steelo-boa-run` runs BOA's `boa-lcoe` command at the BOA release this version of steel-iq pins, in an environment of its own that `uvx` builds, so BOA's dependencies never mix with steel-iq's. It needs [uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`; without it, the command stops and says how to install it. Every argument goes to `boa-lcoe` unchanged, and `steelo-boa-run --help` lists them.
+
+```bash
+# One BOA run per coverage
+steelo-boa-run --coverage 0.85 0.95
+
+# A custom cost workbook, under a cost-set name of its own
+steelo-boa-run --input-file costs.xlsx --scenario my_costs --coverage 0.85
+
+# Rerun the run behind a promoted LCOE file, with its settings
+steelo-boa-run --like ~/.boa/lcoe-only/default_49e8/optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc
+
+# Check the arguments against the BOA data on disk, without preparing or computing anything
+steelo-boa-run --coverage 0.85 --dry-run
+```
+
+The command relays BOA's output and ends with the line to run next:
+
+```text
+BOA_RUN=my_costs_<hash>
+BOA_RUN_DIR=<BOA data root>/lcoe-only/my_costs_<hash>
+Run the steel simulation with: run_simulation --boa-run my_costs_<hash>
+```
+
+- **Custom cost workbook**: give it a `--scenario` name of its own. Without one, BOA prepares it as its default cost set, which replaces the default cost data on this machine.
+- **Rerunning a promoted file**: `--like` takes the cost set, weather year, coverage, load density, years and run name from the file; options given on the command line take precedence. It stops when the cost workbook on this machine is not the one the file was produced with; pass that workbook with `--input-file`.
+- **Dry run**: `--dry-run` prints each BOA step and checks the arguments against the BOA data on disk, without preparing data or computing.
+- **Where results go**: under `$BOA_DATA_ROOT`, else `~/.boa`. `run_simulation --boa-run <name>` looks the name up under `lcoe-only/` in the same root, so set `$BOA_DATA_ROOT` the same way for both commands, or not at all.
+- **Disk and time**: a full run from 2025 to 2060 takes about 75 minutes per coverage, and one weather year with five coverages needs about 60 GB under the BOA data root. The first run also downloads BOA and its input data; later runs reuse what BOA has already prepared.
+- **Client data**: a custom cost workbook stays on this machine. Never upload or share it, and do not publish a promoted file built from it.
+
+:::{only} not public
 
 ## Method 3: Django Web Interface
 
