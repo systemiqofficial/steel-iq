@@ -393,7 +393,7 @@ options:
 ```
 
 - It needs [uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`. Without `uvx` on `PATH`, it says how to install uv and exits with code 1.
-- It relays BOA's output as it comes. On success it ends with `Run the steel simulation with: run_simulation --boa-run <name>`, the name taken from BOA's `BOA_RUN=` line. Otherwise it exits with BOA's exit code.
+- It relays BOA's output as it comes. On success it ends with `Run the steel simulation with: run_simulation --boa-run <name>`, the name taken from BOA's `BOA_RUN=` line, except after `--dry-run`, which produces no run. Otherwise it exits with BOA's exit code.
 - BOA writes under `$BOA_DATA_ROOT`, else `~/.boa`, where `run_simulation --boa-run` looks the name up.
 
 ```bash
@@ -402,7 +402,7 @@ steelo-boa-run --coverage 0.85 0.95
 run_simulation --boa-run <name>
 ```
 
-Custom cost workbooks, `--like`, disk and time, and the rule for custom cost data are in [Rerunning BOA for Baseload Power Prices](running_simulations_locally.md#rerunning-boa-for-baseload-power-prices).
+Custom cost workbooks, which need a `--scenario` name of their own, `--like`, when a new `--run` is needed, disk and time, and the rule for custom cost data are in [Rerunning BOA for Baseload Power Prices](running_simulations_locally.md#rerunning-boa-for-baseload-power-prices).
 
 ## List Available Binaries
 

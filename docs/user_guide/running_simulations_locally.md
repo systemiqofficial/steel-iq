@@ -429,14 +429,14 @@ steelo-boa-run --coverage 0.85 0.95
 # A custom cost workbook, under a cost-set name of its own
 steelo-boa-run --input-file costs.xlsx --scenario my_costs --coverage 0.85
 
-# Rerun the run behind a promoted LCOE file, with its settings
-steelo-boa-run --like ~/.boa/lcoe-only/default_49e8/optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc
+# Rerun the run behind the prepared data's default LCOE file, with its settings, under a new run label
+steelo-boa-run --like $STEELO_HOME/data/outputs/GEO/baseload_lcoe/optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc --run default_rerun
 
 # Check the arguments against the BOA data on disk, without preparing or computing anything
 steelo-boa-run --coverage 0.85 --dry-run
 ```
 
-The command relays BOA's output and ends with the line to run next:
+The command relays BOA's output and, unless it was a dry run, ends with the line to run next:
 
 ```text
 BOA_RUN=my_costs_<hash>
@@ -444,11 +444,13 @@ BOA_RUN_DIR=<BOA data root>/lcoe-only/my_costs_<hash>
 Run the steel simulation with: run_simulation --boa-run my_costs_<hash>
 ```
 
-- **Custom cost workbook**: give it a `--scenario` name of its own. Without one, BOA prepares it as its default cost set, which replaces the default cost data on this machine.
-- **Rerunning a promoted file**: `--like` takes the cost set, weather year, coverage, load density, years and run name from the file; options given on the command line take precedence. It stops when the cost workbook on this machine is not the one the file was produced with; pass that workbook with `--input-file`.
-- **Dry run**: `--dry-run` prints each BOA step and checks the arguments against the BOA data on disk, without preparing data or computing.
+- **Custom cost workbook**: `--input-file` needs a `--scenario` name of its own, or the command stops, so the default cost data on this machine is never replaced. Later runs of that cost set can leave out `--input-file`: BOA keeps its prepared workbook. A cost set not prepared on this machine needs `--input-file`.
+- **Rerunning a promoted file**: `--like` takes the cost set, weather year, coverage, load density, years and run name from the file; options given on the command line take precedence. It stops when the cost workbook on this machine is not the one the file was produced with; pass that workbook with `--input-file`. A file from another BOA version, such as geo-data's default files, may need a new `--run`, as in the example.
+- **Run folders**: BOA refuses, before any step, a run folder made by another BOA version, for another cost set or from another cost workbook; pass a new `--run`.
+- **Dry run**: `--dry-run` prints each BOA step and checks the arguments against the BOA data on disk, without preparing data or computing, and names no run to simulate with.
 - **Where results go**: under `$BOA_DATA_ROOT`, else `~/.boa`. `run_simulation --boa-run <name>` looks the name up under `lcoe-only/` in the same root, so set `$BOA_DATA_ROOT` the same way for both commands, or not at all.
 - **Disk and time**: a full run from 2025 to 2060 takes about 75 minutes per coverage, and one weather year with five coverages needs about 60 GB under the BOA data root. The first run also downloads BOA and its input data; later runs reuse what BOA has already prepared.
+- **Years after the cost data**: BOA holds a cost workbook's last CAPEX year flat for later investment years. With the default cost data, whose CAPEX projections end in 2050, the LCOE from 2051 on equals 2050's; a custom workbook with later years is held flat only after its own last year.
 - **Client data**: a custom cost workbook stays on this machine. Never upload or share it, and do not publish a promoted file built from it.
 
 :::{only} not public
