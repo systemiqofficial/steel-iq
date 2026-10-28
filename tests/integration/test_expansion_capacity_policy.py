@@ -27,7 +27,7 @@ from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import calculate_costs as cc
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year
 from steelo.domain.commands import AddFurnaceGroup
-from steelo.domain.models import Location, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Location, PlantGroup
 
 CAPEX = {"EAF": 400.0, "DRI": 600.0, "MOE": 800.0}
 DEBT_RATES = {"EAF": 0.04, "DRI": 0.04, "MOE": 0.04}
@@ -67,6 +67,11 @@ TECHNOLOGIES = [
         swap_ratio=None,
     ),
 ]
+
+
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +131,7 @@ def run_expansion(
     capacity: float = 2_500_000.0,
     hook=None,
     sizing_query=PAIRED,
+    captive_energy_at=_no_stack,
 ):
     """Drive evaluate_expansion with the NPV fan-out mocked to one winning option.
 
@@ -178,6 +184,7 @@ def run_expansion(
         cost_of_equity_dict={"CHN": EQUITY_RATES, "IND": EQUITY_RATES},
         get_bom_from_avg_boms=MagicMock(),
         reductant_score_series=MagicMock(),
+        captive_energy_at=captive_energy_at,
         capacity_limit_steel=Volumes(1e12),
         capacity_limit_iron=Volumes(1e12),
         installed_capacity_in_year=lambda product: Volumes(0),
@@ -226,6 +233,7 @@ def run_expansion_options(
         cost_of_equity_dict={"CHN": EQUITY_RATES, "IND": EQUITY_RATES},
         get_bom_from_avg_boms=stub_bom,
         reductant_score_series=stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks={},
         fopex_for_iso3={"CHN": fopex, "IND": fopex},
         iso3_to_region_map={"CHN": "Asia", "IND": "Asia"},
@@ -511,3 +519,28 @@ class TestNonChinesePassthrough:
         assert command.capacity == pytest.approx(2_500_000.0)
         assert on_increase_spy.call_count == 0
         assert try_withdraw_spy.call_count == 0
+
+
+def test_expansion_at_a_new_site_carries_the_stack_of_its_year(mocker):
+    """The command of a new site's expansion in 2027 carries the stack of 2027 at the plant's site."""
+    group = make_group(group_id="indi_CHN")
+    stack = CaptiveEnergy(Year(2027), 0.85, 0.04, 0.05, 1.0, None)
+    asked = []
+
+    def stack_at(location, year):
+        asked.append((location, year))
+        return stack
+
+    command = run_expansion(mocker, group, captive_energy_at=stack_at)
+
+    assert isinstance(command, AddFurnaceGroup)
+    assert command.captive_energy is stack
+    assert asked == [(group.plants[0].location, Year(2027))]
+
+
+def test_expansion_at_an_existing_plant_carries_no_stack(mocker):
+    """An existing plant's expansion command carries no stack, and no stack is built."""
+    command = run_expansion(mocker, make_group())
+
+    assert isinstance(command, AddFurnaceGroup)
+    assert command.captive_energy is None

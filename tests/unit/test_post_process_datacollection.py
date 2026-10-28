@@ -162,6 +162,7 @@ def test_commands_column_included_in_output():
                     cost_of_debt_no_subsidy=0.05,  # Same as cost_of_debt if no subsidy
                     capex_subsidies=[],
                     debt_subsidies=[],
+                    captive_energy=None,
                 ),
                 "plant_002_fg_001": RenovateFurnaceGroup(
                     plant_id="plant_002",
@@ -173,6 +174,7 @@ def test_commands_column_included_in_output():
                     cost_of_debt_no_subsidy=0.04,
                     capex_subsidies=[],
                     debt_subsidies=[],
+                    captive_energy=None,
                 ),
             },
             2026: {"plant_002_fg_001": CloseFurnaceGroup(plant_id="plant_002", furnace_group_id="plant_002_fg_001")},

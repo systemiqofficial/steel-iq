@@ -32,6 +32,11 @@ from steelo.domain.models import (
 # ---- Fixtures ----
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
+
+
 def _make_ccs_tech(name: str, reductant: str = "Coke+PCI") -> Technology:
     pf = PrimaryFeedstock(metallic_charge="IO_low", reductant=reductant, technology=name)
     return Technology(name=name, product="hot_metal", dynamic_business_case=[pf])
@@ -133,6 +138,7 @@ def _call_evaluate(
         cost_of_equity_dict=cost_of_equity_dict,
         get_bom_from_avg_boms=None,
         reductant_score_series=reductant_score_series or (lambda *a, **k: ReductantScoreSeries(scores=[], picks=[])),
+        captive_energy_at=_no_stack,
         dynamic_feedstocks={},
         fopex_for_iso3=fopex_for_iso3,
         iso3_to_region_map=iso3_to_region_map,

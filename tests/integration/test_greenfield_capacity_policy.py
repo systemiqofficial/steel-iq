@@ -32,7 +32,7 @@ from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year, events
 from steelo.domain.calculate_costs import calculate_business_opportunity_npvs
 from steelo.domain.commands import UpdateFurnaceGroupStatus
-from steelo.domain.models import Location, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Location, PlantGroup
 from steelo.service_layer.handlers import update_status_of_furnace_group
 from steelo.service_layer.unit_of_work import UnitOfWork
 
@@ -110,7 +110,14 @@ def make_opportunity(*, tech_name: str = "DRI", capacity: float = 2_000_000.0, f
     fg.historical_npv_business_opportunities = {2024: 5_000_000.0, 2025: 5_000_000.0}
     fg.bill_of_materials = BOM
     fg.output_shares = {"scrap": 1.0}
-    fg.energy_costs_no_subsidy = {"electricity": 60.0, "hydrogen": 4.0}
+    fg.captive_energy = CaptiveEnergy(
+        lock_year=Year(2028),
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
     fg.chosen_reductant = "Electricity" if tech_name == "EAF" else "Natural gas"
     return fg
 

@@ -7,12 +7,17 @@ It is computed in two steps:
 Because a BOA run takes hours per simulation year, steel-iq does not run BOA: it reads precomputed LCOE files. BOA is maintained in its own repository, [systemiqofficial/baseload-optimisation-atlas](https://github.com/systemiqofficial/baseload-optimisation-atlas), which documents how to prepare its input data and run it.
 
 ### LCOE files read by steel-iq
-The default files ship in the `geo-data` package, one file per simulation year and coverage, at `p<p>/GLOBAL/optimal_sol_GLOBAL_<year>_p<p>.nc`. Here `p` is 100 minus the coverage in percent, so 85% coverage reads the `p15` files.
+steel-iq reads one promoted BOA file per baseload coverage. A promoted file holds the LCOE of the optimal solar, wind and battery system for every investment year, in USD per MWh delivered; BOA's `docs/promoted-lcoe-file.md` describes its layout. A "Grid only" or "Not included" power mix reads no file.
 
-To run a simulation on another folder with the same layout, pass the folder explicitly:
+- **Default files**: the `geo-data` package (3.0.0 and later) ships the files for 85%, 90% and 95% coverage, and data preparation puts them in the prepared data's `outputs/GEO/baseload_lcoe/`, for example `optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc`. Preparation also writes the geo-data version to `geo_data_version.txt` at the prepared data's root; the run records it in `geo_data_version`, which the scenario viewer compares runs on, so runs on the default files of two geo-data versions are told apart.
+- **Another BOA run**: `run_simulation --boa-run` names a promoted run, by its folder or by its name under `$BOA_DATA_ROOT` (else `~/.boa`) `/lcoe-only/`. An unknown name stops the run before any data preparation and lists the runs there. The run records the folder in `boa_run_dir` and the run's name in `boa_run`, which the scenario viewer compares runs on.
+- **Picking the file**: the coverage token in the file name picks it: `cov0p85` for 85%, `cov0p9` for 90% and `cov0p95` for 95%. No file for the coverage, or more than one, stops the run at bootstrap.
+- **Checks**: the file must state `schema_version` 1, `lcoe_basis` `per_mwh_delivered` and a `coverage_fraction` equal to the coverage priced. A missing attribute is refused like a wrong one, so files promoted before BOA wrote these attributes are refused.
+- **Years**: a year the file holds is read as it is, a year between two of its years is interpolated linearly, and a year outside its span reuses the nearest year, with a warning.
 
 ```bash
-run_simulation --baseload-power-sim-dir path-to-baseload-power-simulation-folder
+run_simulation --boa-run my_run                     # a run under $BOA_DATA_ROOT/lcoe-only/ (else ~/.boa/lcoe-only/)
+run_simulation --boa-run /path/to/lcoe-only/my_run  # a run's folder
 ```
 
 ## Methodology:

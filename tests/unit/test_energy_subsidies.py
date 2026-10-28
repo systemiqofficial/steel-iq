@@ -2,8 +2,20 @@
 
 import pytest
 from steelo.domain import calculate_costs
-from steelo.domain.models import Subsidy, Year
+from steelo.domain.models import CaptiveEnergy, Subsidy, Year
 from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def _stub_series(location, tech, output_shares, start, end, **kwargs):
@@ -808,6 +820,7 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
         plant_lifetime=20,
         construction_time=2,
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.03,
         capex_subsidies={},
@@ -834,10 +847,10 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
 
 
 def test_set_input_cost_indi_uses_no_subsidy_prices():
-    """Test that indi plants preserve pre-subsidy electricity/hydrogen prices.
+    """Test that indi plants rebuild pre-subsidy electricity/hydrogen prices from their stack.
 
     Simulates the yearly cycle: subsidies applied → set_input_cost resets base.
-    Without the fix, the subsidised price becomes next year's base (compounding).
+    The base is the stack's price on the year's grid, never the subsidised price (which would compound).
     """
     from datetime import date
     from steelo.domain.models import (
@@ -863,6 +876,7 @@ def test_set_input_cost_indi_uses_no_subsidy_prices():
         lifetime=lifetime,
         energy_cost_dict={"electricity": 0.028, "hydrogen": 3500.0, "natural_gas": 0.025},
     )
+    fg.captive_energy = CaptiveEnergy(Year(2025), 0.85, 0.024, 0.05, 1.0, None)
     location = Location(lat=24.0, lon=44.0, country="SAU", region="mena", iso3="SAU")
     plant = Plant(
         plant_id="P000000000001",
@@ -903,11 +917,11 @@ def test_set_input_cost_indi_uses_no_subsidy_prices():
     # Run set_input_cost_in_furnace_groups (end-of-year reset)
     env.set_input_cost_in_furnace_groups(world_plants=[plant])
 
-    # Electricity should be reset to the no_subsidy price (0.028), NOT the
-    # subsidised price (0.023) and NOT the country-level price (0.050)
-    assert fg.energy_costs["electricity"] == 0.028
-    # Hydrogen should also use no_subsidy price
-    assert fg.energy_costs["hydrogen"] == 3500.0
+    # Electricity is the stack's price on the 0.050 grid, NOT the subsidised price (0.023)
+    # and NOT the country-level price (0.050)
+    assert fg.energy_costs["electricity"] == pytest.approx(0.85 * 0.024 + 0.15 * 0.050)
+    # Hydrogen is the stack's own electrolyser price on that electricity, NOT the subsidised 3,400
+    assert fg.energy_costs["hydrogen"] == pytest.approx((0.05 * 1000 * (0.85 * 0.024 + 0.15 * 0.050) + 1.0) * 1000)
     # Other carriers should come from country-level input_costs
     assert fg.energy_costs["natural_gas"] == 0.025
 
@@ -1001,6 +1015,7 @@ def test_prepare_cost_data_filters_energy_subsidies_at_operating_start_year():
         plant_lifetime=20,
         construction_time=2,
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         iso3_to_region_map={"USA": "Americas"},
         global_risk_free_rate=0.03,
         capex_subsidies={},

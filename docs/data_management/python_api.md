@@ -273,33 +273,14 @@ except Exception as e:
 
 ### Integration with Existing Code
 
+Code that reads package files takes their paths as arguments; there is no global settings object to override.
+
 ```python
 from steelo.data import DataManager
-from steelo.config import settings
 
-# Override settings to use downloaded data
 manager = DataManager()
 package_path = manager.get_package_path("core-data")
-
-# Temporarily override settings
-original_path = settings.steel_plants_csv
-try:
-    settings.steel_plants_csv = package_path / "steel_plants.csv"
-    # Run existing code that uses settings
-    from steelo.data.recreation_functions import recreate_plants_data
-    from steelo.adapters.dataprocessing.excel_reader import read_plants
-    
-    # First read plants from CSV
-    plants = read_plants(
-        steel_plants_csv=package_path / "steel_plants.csv",
-        # ... other required parameters
-    )
-    
-    # Then write them to JSON
-    recreate_plants_data(plants=plants, json_path=output_path)
-finally:
-    # Restore original settings
-    settings.steel_plants_csv = original_path
+# Hand package_path / "<file>" to the function that reads it
 ```
 
 ## Exceptions

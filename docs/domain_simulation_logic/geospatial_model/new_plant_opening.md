@@ -28,6 +28,8 @@ The system updates the costs and status of business opportunities each simulatio
 - `construction_time`: Years to build plant after announcement (default: 4 years)
 Both the consideration and announcement times can be considerably longer than their set minimums depending on the capacity and probability filters.
 
+On the earliest path, an opportunity created in year t is announced in year t + max(consideration_time - 1, 1), once its window of NPVs exists and no sooner than the next year, and starts construction the year after, in t + max(consideration_time, 2). It operates from that year plus `construction_time`. Opportunity creation and every yearly re-valuation price that path.
+
 ## Process Diagram
 The flow from business opportunity to new plant is as follows: 
 
@@ -40,7 +42,7 @@ The flow from business opportunity to new plant is as follows:
         | - Create new Plant + FurnaceGroup
         |
         v
-    CONSIDERED (years t to t+T for T the consideration time, default: 3 years)
+    CONSIDERED (from year t to at least t+max(T-1, 1) for T the consideration time, default: 3 years)
         |
         | [Each year]:
         | update_dynamic_costs_for_business_opportunities()
@@ -133,7 +135,7 @@ The identification process evaluates potential new plant locations and technolog
 
 **Function:** `get_list_of_allowed_techs_for_target_year()`
 
-Filters technologies based on what will be allowed at the earliest possible construction start year (target year = current year + consideration time + 1), not what's currently allowed.
+Filters technologies based on what will be allowed at the earliest possible construction start year (target year = current year + max(consideration time, 2)), not what's currently allowed.
 
 **Purpose:** Prevents companies from considering plants using technologies that would be illegal to build by the time construction begins. For example, if BF-BOF will be banned in 2034, it won't be considered as an opportunity in 2030 even though it's currently legal.
 
@@ -164,7 +166,8 @@ Gathers all cost inputs needed for NPV calculation for each location-technology 
 
 | Input Category | Components | Source |
 |----------------|-----------|---------|
-| Energy costs | Electricity, hydrogen, gas, coal prices | Geography-resolved data (province row when the site falls in one, else country) + site-specific renewable calculations for electricity and hydrogen |
+| Energy costs | Electricity, hydrogen, gas, coal prices | Geography-resolved data (province row when the site falls in one, else country) + the site's raster electricity and hydrogen of the current year, which the bill of materials reads |
+| Captive stack | The site's power and electrolyser stack locked at the target year (`CaptiveEnergy`): coverage, the cell's LCOE for a system built that year, the electrolyser's use and cost, and the regional hydrogen ceiling as a contract when the site's own price is above it | `Environment.captive_energy_at`; the NPV's electricity and hydrogen in every operating year come from it and that year's grid price (see [Energy Prices](../overarching_elements/energy_prices.md#3-the-npv-at-selection)) |
 | Financial parameters | Cost of debt, cost of equity | Per country and technology (`Cost of capital` sheet) |
 | CAPEX | Capital expenditure per tonne capacity | Regional technology-specific estimates |
 | OPEX | Fixed operating costs per tonne | Country and technology-specific |
@@ -194,7 +197,7 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 | **Cost of Equity** | Return required by investors | No subsidies | Financing period |
 | **OPEX - Variable** | Materials + energy from bill of materials × unit costs | OPEX subsidies: Operation years | Annual (plant lifetime) |
 | **OPEX - Fixed** | Fixed operating costs per tonne | OPEX subsidies: Operation years | Annual (plant lifetime) |
-| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.) | Energy subsidies: Operating start year | Annual (plant lifetime) |
+| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.); a site's electricity and hydrogen from its stack locked at the target year and each year's grid price | Energy subsidies: Operating start year | Annual (plant lifetime) |
 | **Carbon Costs** | Emissions × carbon price trajectory (inside the reductant score series) | No subsidies | Annual (plant lifetime) |
 | **Revenue** | Production capacity × utilization rate × market price projections | N/A | Annual (plant lifetime) |
 | **Discount Rate** | Weighted average cost of capital (WACC = debt share × cost of debt + equity share × cost of equity) | Applied to debt portion only | NPV calculation |
@@ -242,6 +245,8 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
   - `output_energy_costs`: subsidised output prices (increased by subsidy for physical carriers) — used for by-product revenue
   - `energy_costs_no_subsidy`: original unsubsidised prices — used as baseline for yearly refresh
 - Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
+  - Site grid prices and electrolyser CAPEX/OPEX resolve per geo unit where the master has sub-national rows, otherwise per country
+- The site's captive stack (`CaptiveEnergy`), locked at the target year below, which the NPV re-valuation prices electricity and hydrogen from; it is stored even when every other cost repeats the last year's
 - Energy subsidies are collected for the plant's geography (country and province rows apply additively) and filtered at the operating start year (construction start + construction time), matching opportunity creation and the plant agent model
 - Bill of materials (updated with new subsidised input energy prices)
 - Expected utilisation, refreshed from `Environment.avg_utilization` (the operating fleet's average for the technology, with the same 0.6 fallback as opportunity creation) — CONSIDERED opportunities only. ANNOUNCED ones keep their value: the build decision is already taken, and utilisation is reset to 0 at construction start. A fleet average of zero flows into the zero-utilisation guard in the NPV re-valuation (−inf → discard).
@@ -254,8 +259,8 @@ The system uses CAPEX and debt subsidies from the earliest construction start ye
 
 | Status | Target Year (construction start) | Reasoning |
 |--------|---------------------------------|-----------|
-| CONSIDERED | `max(current + consideration_time + 1 - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
-| ANNOUNCED | `current + 1` | Next year (announcement time = 1) |
+| CONSIDERED | `max(current + consideration_time - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
+| ANNOUNCED | `current` | This year: the construction draw runs after the re-valuation in the same year, and the capex and cost of debt that re-valuation writes are the ones the plant is built with |
 
 **Process:**
 For each business opportunity:
@@ -340,6 +345,7 @@ Models real-world risk factors: financing may fall through, permits may be denie
 ## Related Documentation
 
 - [Priority Location Selection](priority_location_selection.md) - How candidate locations are identified
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - A new plant's electricity and hydrogen prices from selection to operation
 - [Calculate Cost](../plant_agent_model/calculate_costs.md) - NPV, subsidy, and carbon costs calculation details
 - [Baseload Power Optimization](baseload_optimization_atlas.md) - Renewable energy cost calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

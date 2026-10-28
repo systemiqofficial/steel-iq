@@ -26,6 +26,11 @@ from steelo.domain.models import (
 MATERIALS = {"iron_ore": {"unit_cost": 100.0, "demand": 1.0}}
 
 
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
+
+
 def _stub_score_series(tech, output_shares, start, end):
     n = int(end) - int(start)
     return ReductantScoreSeries(scores=[0.0] * n, picks=["hydrogen"] * n)
@@ -241,6 +246,7 @@ def test_expansion_candidates_count_full_fixed_cost(monkeypatch):
         cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
         get_bom_from_avg_boms=_mock_get_bom(util_rate=0.9),
         reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
+        captive_energy_at=_no_stack,
         dynamic_feedstocks={},
         fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
         iso3_to_region_map={"NZL": "Region"},
@@ -283,6 +289,7 @@ def test_expansion_zero_utilisation_candidates_are_skipped_not_fatal(monkeypatch
         cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
         get_bom_from_avg_boms=_mock_get_bom(util_rate=0.0),
         reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
+        captive_energy_at=_no_stack,
         dynamic_feedstocks={},
         fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
         iso3_to_region_map={"NZL": "Region"},

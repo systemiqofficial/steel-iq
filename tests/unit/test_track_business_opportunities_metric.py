@@ -17,12 +17,19 @@ from steelo.domain.calculate_costs import (
     scale_fopex_to_production,
 )
 from steelo.domain.commands import UpdateFurnaceGroupStatus
-from steelo.domain.models import Location
+from steelo.domain.models import CaptiveEnergy, Location
 from steelo.devdata import get_furnace_group, PointInTime, TimeFrame, Year
 
 LOCATION = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
 MARKET_PRICE = {"steel": [600.0] * 12, "iron": [400.0] * 12}
-SITE_PRICES = {"electricity": 0.05, "hydrogen": 3500.0}
+SITE_STACK = CaptiveEnergy(
+    lock_year=Year(2028),
+    coverage=0.85,
+    lcoe=0.04,
+    electrolyser_use=0.05,
+    electrolyser_cost=1.0,
+    hydrogen_contract=None,
+)
 BOM = {
     "materials": {
         "scrap": {
@@ -72,7 +79,7 @@ def _make_opportunity_fg(*, utilization_rate: float = 0.7):
     fg.chosen_reductant = "scrap"
     fg.bill_of_materials = BOM
     fg.output_shares = {"scrap": 1.0}
-    fg.energy_costs_no_subsidy = dict(SITE_PRICES)
+    fg.captive_energy = SITE_STACK
     return fg
 
 
@@ -125,7 +132,7 @@ def test_re_check_npv_equals_creation_npv():
     """The first re-check reproduces the creation NPV to machine precision.
 
     Notes:
-        Creation values at target_year = current + consideration_time + 1 with the
+        Creation values at target_year = current + max(consideration_time, 2) with the
         operating window [target_year + construction_time, + plant_lifetime); the
         re-check's sliding window lands on the same absolute years, so with identical
         inputs the two metrics must agree exactly. This pins the fopex scaling and
@@ -151,7 +158,7 @@ def test_re_check_npv_equals_creation_npv():
     }
     npv_dict = calculate_business_opportunity_npvs(
         cost_data=cost_data,
-        target_year=2029,  # 2025 + consideration_time (3) + 1
+        target_year=2028,  # 2025 + consideration_time (3)
         market_price=MARKET_PRICE,
         steel_plant_capacity=100_000.0,
         plant_lifetime=5,
@@ -168,11 +175,33 @@ def test_re_check_npv_equals_creation_npv():
 
     assert fg.historical_npv_business_opportunities[Year(2026)] == pytest.approx(creation_npv, rel=1e-12)
     call = stub.calls[0]
-    assert (call["start"], call["end"]) == (Year(2031), Year(2036))
+    assert (call["start"], call["end"]) == (Year(2030), Year(2035))
     assert call["location"] is LOCATION
     assert call["output_shares"] == {"scrap": 1.0}
-    assert call["overrides"] == SITE_PRICES
-    assert call["override_reference_year"] == Year(2026)
+    assert call["captive"] is SITE_STACK
+    assert "overrides" not in call
+
+
+def test_opportunity_announced_at_earliest_moment_is_valued_from_year_after_announcement():
+    """An opportunity announced as soon as its window allows prices construction from the next year.
+
+    Notes:
+        Created in 2025 and re-valued in 2026, the opportunity holds its third NPV in 2027 with
+        consideration_time 3, so the draw announces it in 2027 and construction can start in 2028.
+        With construction_time 2 the valued operating window starts in 2030, not a year later.
+    """
+    fg = _make_opportunity_fg()
+    fg.technology.capex = 100.0
+    fg.historical_npv_business_opportunities = {Year(2025): 1.0, Year(2026): 1.0}
+    stub = _recording_stub([10.0] * 5)
+
+    with patch("random.random", return_value=0.0):
+        command = _track(fg, 2027, stub)
+
+    assert fg.historical_npv_business_opportunities[Year(2027)] > 0
+    assert isinstance(command, UpdateFurnaceGroupStatus)
+    assert command.new_status == "announced"
+    assert (stub.calls[0]["start"], stub.calls[0]["end"]) == (Year(2030), Year(2035))
 
 
 def test_improving_scores_announce_where_frozen_metric_would_discard():

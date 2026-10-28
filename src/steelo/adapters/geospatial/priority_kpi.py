@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from steelo.simulation import GeoConfig
     from steelo.domain.models import GeoDataPaths
 
+from steelo.adapters.geospatial.geospatial_calculations import coverage_to_percentile
 from steelo.utilities.plotting import plot_screenshot
 from steelo.domain.models import PlotPaths
 from steelo.domain.constants import (
@@ -122,7 +123,7 @@ def calculate_outgoing_cashflow_proxy(
         or year == end_year
         or (year - start_year) % 10 == 0
     )
-    p = int((1 - baseload_coverage) * 100)
+    p = coverage_to_percentile(baseload_coverage)
     if is_milestone_year:
         plot_screenshot(
             masked_cashflow * USD_TO_BioUSD,

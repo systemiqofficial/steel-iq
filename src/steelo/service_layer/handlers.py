@@ -13,6 +13,7 @@ from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
 from steelo.domain.calculate_costs import collect_subsidies_for_geo, filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
 from steelo.capacity_policy import handlers as capacity_policy_handlers
+from steelo.utilities import energy_trace
 import logging
 
 if TYPE_CHECKING:
@@ -44,11 +45,13 @@ def renovate_furnace_group(cmd: commands.RenovateFurnaceGroup, uow: UnitOfWork, 
     Side Effects:
         - Updates the furnace group's lifetime, last_renovation_date, and financial parameters.
         - Changes the technology CAPEX type to "brownfield".
+        - Installs the new site's stack of the renovation year, traced as ``greenfield_relock``.
         - Logs a FurnaceGroupRenovated event.
         - Commits the changes to the repository.
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
         plant.renovate_furnace_group(
             cmd.furnace_group_id,
             env.config.plant_lifetime,
@@ -59,7 +62,10 @@ def renovate_furnace_group(cmd: commands.RenovateFurnaceGroup, uow: UnitOfWork, 
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
+            captive_energy=cmd.captive_energy,
         )
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        energy_trace.greenfield_relock("renovation", plant, fg, env.year, old_captive, cmd.captive_energy, env.year)
         uow.commit()
 
 
@@ -83,6 +89,7 @@ def change_furnace_group_status_to_switching_technology(
     Side Effects:
         - Changes the furnace group's status to 'operating switching technology'.
         - Stores the year_of_switch and embedded command for future execution.
+        - Traces a new site's stack locked for the switch as ``greenfield_relock``; the old one stays installed.
         - Tracks the switched capacity using the new technology name and capacity from the embedded command.
         - Commits the changes to the repository.
 
@@ -96,6 +103,10 @@ def change_furnace_group_status_to_switching_technology(
         fg = plant.get_furnace_group(cmd.furnace_group_id)
         old_reductant = fg.chosen_reductant
         plant.change_furnace_group_status_to_switching_technology(cmd.furnace_group_id, cmd.year_of_switch, cmd.cmd)
+        # The old technology keeps its stack until the switch executes
+        energy_trace.greenfield_relock(
+            "switch_decision", plant, fg, env.year, fg.captive_energy, cmd.cmd.captive_energy, env.year
+        )
 
         # Track the switched capacity - use the NEW technology name and capacity from the embedded command
         if cmd.cmd and hasattr(cmd.cmd, "technology_name") and hasattr(cmd.cmd, "capacity"):
@@ -126,6 +137,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
 
     Side Effects:
         - Changes the furnace group's technology and associated parameters.
+        - Installs a new site's stack carried by the command, traced as ``greenfield_relock``.
         - Updates the bill of materials and financial metrics.
         - Applies dynamic feedstock data if available for the new technology.
         - Logs a FurnaceGroupTechnologyChanged event.
@@ -149,6 +161,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
                 f"Empty BOM passed to technology change for {cmd.technology_name} "
                 f"(materials={len(bom_materials)}, energy={len(bom_energy)})"
             )
+        old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
         plant.change_furnace_group_technology(
             furnace_group_id=cmd.furnace_group_id,
             technology_name=cmd.technology_name,
@@ -165,9 +178,14 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+            captive_energy=cmd.captive_energy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
             legacy_years=cmd.remaining_lifetime,
+        )
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        energy_trace.greenfield_relock(
+            "switch_execution", plant, fg, env.year, old_captive, cmd.captive_energy, env.year
         )
         uow.commit()
 
@@ -193,7 +211,9 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             dynamic_feedstocks data, and bill of materials information.
 
     Side Effects:
-        - Creates a new furnace group in construction status with zero utilization.
+        - Creates a new furnace group in construction status with zero utilization. At a new site the group
+          holds the command's stack and its electricity and hydrogen without subsidy come from it and the
+          year's grid price; the expansion is traced as ``greenfield_relock``.
         - Sets applied_subsidies["capex"] to the capex_subsidies list from the command.
         - Sets applied_subsidies["debt"] to the debt_subsidies list from the command.
         - Adds the furnace group to the plant.
@@ -220,6 +240,15 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             cmd.capacity,
             cmd.chosen_reductant,
         )
+        # A new site's group pays its own stack's prices on the year's grid, every other carrier at its sibling's
+        # prices without subsidy, so the year-start loop applies each subsidy once; an existing plant's group
+        # takes the plant's prices, which the year-end refresh re-bases on the input costs
+        site_prices: dict[str, float] | None = None
+        if cmd.captive_energy is not None:
+            site_prices = dict(plant.furnace_groups[-1].energy_costs_no_subsidy)
+            grid = env.grid_electricity_for_year(plant.location, env.year)
+            site_prices["electricity"] = cmd.captive_energy.electricity(grid)
+            site_prices["hydrogen"] = cmd.captive_energy.hydrogen(grid)
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
             product=cmd.product,
@@ -241,11 +270,14 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             bill_of_materials=avg_bom_result[0],
             chosen_reductant=cmd.chosen_reductant,
             disposal_cost_outputs=env.config.disposal_cost_outputs,
+            energy_costs=site_prices,
         )
+        new_furnace.captive_energy = cmd.captive_energy
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
         new_furnace.applied_subsidies["debt"] = cmd.debt_subsidies
         plant.add_furnace_group(new_furnace)
+        energy_trace.greenfield_relock("expansion", plant, new_furnace, env.year, None, cmd.captive_energy, env.year)
         plant.added_capacity = Volumes(plant.added_capacity + cmd.capacity)
 
         # Debit the group treasury AFTER the furnace has been attached — factory exceptions
@@ -404,7 +436,8 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
     Applies the stored ChangeFurnaceGroupTechnology command exactly as the direct
     handler would - in particular the evaluated reductant (C7) must land with the
     new technology instead of surfacing with the old one and waiting for the
-    year-start re-pick to correct it.
+    year-start re-pick to correct it. A new site installs the stack it locked in the
+    decision year, traced as ``greenfield_relock``.
 
     Args:
         cmd: The furnace group's stored future_switch_cmd.
@@ -414,6 +447,7 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
     if not isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
         return
     plant = uow.plants.get(cmd.plant_id)
+    old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
     plant.change_furnace_group_technology(
         furnace_group_id=cmd.furnace_group_id,
         technology_name=cmd.technology_name,
@@ -430,10 +464,21 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
         capex_no_subsidy=cmd.capex_no_subsidy,
         cost_of_debt=cmd.cost_of_debt,
         cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+        captive_energy=cmd.captive_energy,
         capex_subsidies=cmd.capex_subsidies,
         debt_subsidies=cmd.debt_subsidies,
         # Anchor the old technology's debt tail to the decision-time lifetime
         legacy_years=max(0, cmd.remaining_lifetime - env.config.construction_time),
+    )
+    # A new site installs the stack it locked when it decided the switch, construction_time years ago
+    energy_trace.greenfield_relock(
+        "switch_execution",
+        plant,
+        plant.get_furnace_group(cmd.furnace_group_id),
+        env.year,
+        old_captive,
+        cmd.captive_energy,
+        env.year - env.config.construction_time,
     )
 
 
@@ -735,6 +780,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                         ),
                         plant_lifetime=env.config.plant_lifetime,
                     )
+                    energy_trace.greenfield_build(plant, fg, year, env)
 
                     # New plants start at 0% utilization, will be ramped up by trade module
                     fg.utilization_rate = 0.0
@@ -775,6 +821,7 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
         - CAPEX (with subsidies, if applicable)
         - Energy costs for all carriers (subsidised input, output, and unsubsidised)
         - Expected utilisation (fleet average for the technology)
+        - The site's power and electrolyser stack, which the NPV re-valuation prices it with
     """
     logger = logging.getLogger(f"{__name__}.update_dynamic_costs")
     with uow:
@@ -789,6 +836,7 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
                 fg.output_energy_costs = cmd.new_output_energy_costs
                 fg.energy_costs_no_subsidy = cmd.new_energy_costs_no_subsidy
                 fg.utilization_rate = cmd.new_utilization_rate
+                fg.captive_energy = cmd.new_captive_energy
                 logger.debug(
                     "[HANDLER] UpdateDynamicCosts %s/%s: energy_costs=%s output=%s no_sub=%s",
                     cmd.plant_id,

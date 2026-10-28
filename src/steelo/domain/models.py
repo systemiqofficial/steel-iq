@@ -1,16 +1,18 @@
 # TODO: Move FurnaceGroup, Plant, PlantGroup, and Environment classes to separate files
 from __future__ import annotations
+import dataclasses
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 import copy
+import csv
 import math
 import logging
 import random
 import time
 import uuid
 from geopy.distance import geodesic  # type: ignore
-from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional
+from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional, TypedDict
 from collections import defaultdict, Counter
 from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
@@ -41,6 +43,7 @@ from steelo.utilities.utils import normalize_name
 from steelo.domain.carbon_cost import CarbonCost, CarbonCostService
 from steelo.domain import diagnostics as diag
 from steelo.utilities.utils import merge_two_dictionaries
+from steelo.utilities import energy_trace
 from steelo.core.parse import normalize_code
 from steelo.simulation_types import TechSettingsMap
 
@@ -55,9 +58,14 @@ from steelo.domain.constants import (
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
     CLOSELY_ALLOCATED_PRODUCTS,
+    MWH_TO_KWH,
+    PERkWh_TO_PERMWh,
+    PERMWh_TO_PERkWh,
 )
 
 if TYPE_CHECKING:
+    import xarray as xr
+
     from steelo.capacity_policy.pool import Credit
     from steelo.simulation import SimulationConfig
 
@@ -340,6 +348,18 @@ class Location:
         return lookup.get(self.iso3)
 
 
+class HydrogenPriceInputs(TypedDict):
+    """The inputs behind one geo key's hydrogen price in one year: power in USD/kWh, hydrogen in USD/kg."""
+
+    coverage: float
+    grid: float
+    lcoe: float | None  # None when the power mix has no baseload share
+    electricity: float
+    lcoh: float
+    ceiling: float  # the effective ceiling the LCOH is capped against, trade-adjusted when trade is allowed
+    capped_lcoh: float
+
+
 @dataclass
 class GeoDataPaths:
     """Configuration for all geospatial data paths"""
@@ -358,7 +378,7 @@ class GeoDataPaths:
     disputed_areas_shapefile_dir: Path
 
     # Output paths for different analyses
-    baseload_power_sim_dir: Path
+    baseload_lcoe_dir: Path  # Folder of the promoted BOA LCOE files: the named run's, else the prepared data's
     static_layers_dir: (
         Path  # Directory for static geospatial layers (feasibility_mask.nc, rail_cost.nc, global_grid_with_iso3.nc)
     )
@@ -1077,6 +1097,58 @@ class Technology:
             self.product = Commodities.STEEL.value
 
 
+@dataclass(frozen=True)
+class CaptiveEnergy:
+    """
+    The power system and electrolyser a new site owns, at the values of the year it invested.
+
+    Attributes:
+        lock_year: The year the stack was locked: the construction start, or the start of a later investment.
+        coverage: The share of power demand the site's own baseload system covers (fraction); 0 under a power
+            mix without a baseload share.
+        lcoe: The levelised cost of the site's baseload system built in ``lock_year`` (USD/kWh); 0 when
+            ``coverage`` is 0.
+        electrolyser_use: The electrolyser's electricity use in ``lock_year`` (MWh/kg).
+        electrolyser_cost: The electrolyser's capital and operating cost in ``lock_year`` (USD/kg).
+        hydrogen_contract: The region's hydrogen ceiling in ``lock_year`` (USD/kg) when the site's own hydrogen
+            price in that year was above it, else None.
+    """
+
+    lock_year: Year
+    coverage: float
+    lcoe: float
+    electrolyser_use: float
+    electrolyser_cost: float
+    hydrogen_contract: float | None
+
+    def electricity(self, grid: float) -> float:
+        """
+        The site's electricity price in a year.
+
+        Args:
+            grid: The year's grid price at the site (USD/kWh).
+
+        Returns:
+            The baseload share at the locked LCOE plus the grid share at the year's grid price (USD/kWh).
+        """
+        return self.coverage * self.lcoe + (1 - self.coverage) * grid
+
+    def hydrogen(self, grid: float) -> float:
+        """
+        The site's hydrogen price in a year.
+
+        Args:
+            grid: The year's grid price at the site (USD/kWh).
+
+        Returns:
+            The contract price when the site holds one, else its own electrolyser's cost at the year's
+            electricity price, in USD/t.
+        """
+        if self.hydrogen_contract is not None:
+            return self.hydrogen_contract * T_TO_KG
+        return (self.electrolyser_use * MWH_TO_KWH * self.electricity(grid) + self.electrolyser_cost) * T_TO_KG
+
+
 @dataclass
 class ProductionThreshold:
     """Production thresholds for the utilization rate of a furnace group."""
@@ -1175,6 +1247,8 @@ class FurnaceGroup:
         }
         # Original energy prices before subsidies (for verification)
         self.energy_costs_no_subsidy: dict[str, float] = {}
+        # A new site's locked power and electrolyser stack; None for every existing plant
+        self.captive_energy: CaptiveEnergy | None = None
         # Energy costs used for output revenue (by-product sales)
         self.output_energy_costs: dict[str, float] = {}
         self.set_energy_costs(**energy_cost_dict)  # must follow output_energy_costs init
@@ -3113,11 +3187,13 @@ class FurnaceGroup:
             1. Re-value the opportunity (status: considered) each year with the same metric used at
                creation: materials-only variable OPEX plus fixed OPEX (scaled to production terms)
                plus the year-wise reductant score over the earliest possible operating window.
-               Energy, carbon and by-products enter through the score; the series re-optimises the
+               It starts construction_time years after the earliest construction start,
+               [year + consideration_time - years considered] floored at [year + 1]. Energy,
+               carbon and by-products enter through the score; the series re-optimises the
                reductant per year by design, while the committed ``chosen_reductant`` stays what
-               conversion uses. The site's own pixel electricity/hydrogen prices (refreshed each
-               year by ``update_dynamic_costs_for_business_opportunities``) enter as overrides on
-               the country trajectory.
+               conversion uses. The site's electricity and hydrogen come from its stack
+               (``captive_energy``), locked at that construction start by the same year's
+               ``update_dynamic_costs_for_business_opportunities``, and the grid price of each year.
             2. Business opportunities whose last X (=consideration_time) NPVs are all positive
                (a rolling window, not necessarily the first years) are announced with a given
                probability (uniformly sampled), reflecting that not all opportunities are taken
@@ -3138,8 +3214,8 @@ class FurnaceGroup:
             consideration_time: Number of years to track NPV before decision
             probability_of_announcement: Probability that a viable opportunity will be announced
             all_opex_subsidies: List of available OPEX subsidies
-            reductant_score_series: ``(location, tech, output_shares, start, end, *, overrides,
-                override_reference_year) -> ReductantScoreSeries`` (``Environment.reductant_score_series``)
+            reductant_score_series: ``(location, tech, output_shares, start, end, *, captive)
+                -> ReductantScoreSeries`` (``Environment.reductant_score_series``)
             permitted_greenfield_capacity: China capacity-policy withdrawal gate, called once
                 when the announcement draw succeeds (capacities in model tonnes end-to-end).
                 Returns ``(build_capacity, attributed_owner_id, withdrew, credits_consumed)``
@@ -3170,6 +3246,9 @@ class FurnaceGroup:
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
+
+        Raises:
+            ValueError: If the opportunity holds no ``captive_energy`` stack when its NPV is re-valued.
 
         Note: This results in an adjusted NPV metric, which proved to be best to ensure the right plants
         are opened, because subsidized technologies would otherwise suffer a too long delay until the
@@ -3218,10 +3297,10 @@ class FurnaceGroup:
             years_already_considered = len(self.historical_npv_business_opportunities)
             earliest_operation_start_year = Year(
                 max(
-                    year + consideration_time + construction_time + 1 - years_already_considered,
+                    year + consideration_time + construction_time - years_already_considered,
                     year + 1 + construction_time,
                 )
-            )  # 1 year of announcement time
+            )
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
             # Get OPEX (with subsidies) for the years the plant would be operational
@@ -3234,17 +3313,16 @@ class FurnaceGroup:
             # by-products enter through the per-year reductant score
             unit_vopex = calculate_variable_opex(self.bill_of_materials["materials"], {})
             unit_fopex = scale_fopex_to_production(self.tech_unit_fopex, self.utilization_rate)
-            # Opportunity FGs always carry their own pixel prices; a missing carrier is a bug
-            site_prices = self.energy_costs_no_subsidy or self.energy_costs
-            site_overrides = {carrier: site_prices[carrier] for carrier in ("electricity", "hydrogen")}
+            # Every opportunity gets its stack at creation and each re-valuation; a missing one is a bug
+            if self.captive_energy is None:
+                raise ValueError(f"Business opportunity {self.furnace_group_id} has no captive energy stack")
             score_series = reductant_score_series(
                 location,
                 self.technology.name,
                 self.output_shares,
                 earliest_operation_start_year,
                 earliest_operation_end_year,
-                overrides=site_overrides,
-                override_reference_year=year,
+                captive=self.captive_energy,
             )
             unit_total_opex_list = calculate_opex_list_with_subsidies(
                 opex=[unit_vopex + unit_fopex + score for score in score_series.scores],
@@ -3829,6 +3907,7 @@ class Plant:
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
+        captive_energy: CaptiveEnergy | None,
         capex_subsidies: list[Subsidy] = [],
         debt_subsidies: list[Subsidy] = [],
     ) -> None:
@@ -3855,13 +3934,16 @@ class Plant:
             capex_no_subsidy (float): Unsubsidized capital expenditure for the renovation.
             cost_of_debt (float): Subsidized cost of debt financing for the renovation.
             cost_of_debt_no_subsidy (float): Unsubsidized cost of debt financing for the renovation.
+            captive_energy (CaptiveEnergy | None): The stack a new site locks in the renovation year, which
+                replaces its old one; None for an existing plant.
             capex_subsidies (list[Subsidy], optional): List of subsidies applied to CAPEX. Defaults to empty list.
             debt_subsidies (list[Subsidy], optional): List of subsidies applied to debt financing. Defaults to empty
                 list.
 
         Side Effects:
             - Modifies the furnace group's last_renovation_date, lifetime, technology.capex_type, technology.capex,
-              technology.capex_no_subsidy, cost_of_debt, cost_of_debt_no_subsidy, and applied_subsidies.
+              technology.capex_no_subsidy, cost_of_debt, cost_of_debt_no_subsidy, captive_energy and
+              applied_subsidies.
             - Appends a FurnaceGroupRenovated event to the plant's event list.
 
         Note:
@@ -3897,6 +3979,7 @@ class Plant:
         furnace_group.technology.capex_no_subsidy = capex_no_subsidy
         furnace_group.cost_of_debt = cost_of_debt
         furnace_group.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
+        furnace_group.captive_energy = captive_energy
 
         # Track which subsidies were applied to this renovation for transparency and reporting
         furnace_group.applied_subsidies["capex"] = capex_subsidies
@@ -3961,6 +4044,7 @@ class Plant:
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
+        captive_energy: CaptiveEnergy | None,
         capex_subsidies: list[Subsidy] = [],
         debt_subsidies: list[Subsidy] = [],
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
@@ -3997,6 +4081,8 @@ class Plant:
             capex_no_subsidy (float): Capital expenditure without subsidies applied.
             cost_of_debt (float): Cost of debt percentage for the new technology (after subsidies).
             cost_of_debt_no_subsidy (float): Cost of debt percentage without subsidies applied.
+            captive_energy (CaptiveEnergy | None): The stack a new site locked when it decided the switch,
+                which replaces its old one with the new technology; None for an existing plant.
             capex_subsidies (list[Subsidy]): List of subsidies applied to capital expenditure. Defaults to [].
             debt_subsidies (list[Subsidy]): List of subsidies applied to debt costs. Defaults to [].
             dynamic_business_case (list[PrimaryFeedstock] | None): Dynamic business case feedstock options.
@@ -4009,7 +4095,8 @@ class Plant:
                 falls back to the current lifetime's remaining years (same-tick execution).
 
         Side Effects:
-            - Updates furnace group's technology, lifetime, status, utilization rate, and debt schedules.
+            - Updates furnace group's technology, lifetime, status, utilization rate, captive energy stack and
+              debt schedules.
             - Appends FurnaceGroupTechChanged event to the plant's event list.
             - Marks furnace group as created_by_PAM.
 
@@ -4073,6 +4160,7 @@ class Plant:
         # legacy-debt capture above, which must price the outgoing technology's remaining
         # debt on the old capacity; a shrink materialises only from here on
         furnace_group.technology = technology
+        furnace_group.captive_energy = captive_energy
         furnace_group.capacity = Volumes(capacity)
         if bom is not None:
             furnace_group.bill_of_materials = bom
@@ -4116,6 +4204,24 @@ class Plant:
             )
         )
 
+    def investment_captive_energy(
+        self, captive_energy_at: Callable[[Location, Year], CaptiveEnergy], year: Year
+    ) -> CaptiveEnergy | None:
+        """
+        The stack a new investment at this plant locks: a switch, a renovation or an expansion.
+
+        Args:
+            captive_energy_at: ``Environment.captive_energy_at``.
+            year: The investment's start year.
+
+        Returns:
+            The stack of ``year`` at the plant's site for a new site (``parent_gem_id`` starting with ``indi``),
+            None for an existing plant, which pays market prices.
+        """
+        if self.parent_gem_id.lower().startswith("indi"):
+            return captive_energy_at(self.location, year)
+        return None
+
     def evaluate_furnace_group_strategy(
         self,
         furnace_group_id: str,
@@ -4130,6 +4236,7 @@ class Plant:
             tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         probabilistic_agents: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         chosen_emissions_boundary_for_carbon_costs: str,
@@ -4189,6 +4296,11 @@ class Plant:
             cost_of_debt_by_tech: Interest rate for debt financing by technology (before subsidies), for this plant's country
             cost_of_equity_by_tech: Required return on equity by technology, for this plant's country
             get_bom_from_avg_boms: Function to retrieve bill of materials for technologies
+            reductant_score_series: ``Environment.reductant_score_series``, the year-wise score every candidate,
+                the CO2 gate and the capacity-policy pick are priced with
+            captive_energy_at: ``Environment.captive_energy_at``. A new site builds one stack for the current
+                year, the start of the investment, and every candidate is priced from it; the renovation and
+                switch commands carry it. An existing plant builds none.
             probabilistic_agents: Whether to use probabilistic (weighted random) decision making
             dynamic_business_cases: Technology-specific feedstock options mapping technology names to primary feedstocks
             chosen_emissions_boundary_for_carbon_costs: Emissions scope for carbon pricing (e.g., "Scope 1", "Scope 2")
@@ -4292,27 +4404,14 @@ class Plant:
         if not allowed_techs_in_year:
             raise ValueError(f"[FG STRATEGY] No allowed techs in {current_year}")
 
-        # Bind the score-series provider to this plant's location; GEO ("indi") sites keep
-        # their own power/hydrogen prices, trajectory-scaled from the current year
-        site_overrides: dict[str, float] | None = None
-        if self.parent_gem_id.lower().startswith("indi"):
-            site_prices = furnace_group.energy_costs_no_subsidy or furnace_group.energy_costs
-            site_overrides = {
-                carrier: site_prices[carrier] for carrier in ("electricity", "hydrogen") if carrier in site_prices
-            }
+        # Bind the score-series provider to this plant's location; a GEO ("indi") site invests now,
+        # so every candidate is priced from the stack it would lock this year
+        captive = self.investment_captive_energy(captive_energy_at, current_year)
 
         def score_series_for_tech(
             tech_name: str, output_shares: dict[str, float], start: Year, end: Year
         ) -> ReductantScoreSeries:
-            return reductant_score_series(
-                self.location,
-                tech_name,
-                output_shares,
-                start,
-                end,
-                overrides=site_overrides,
-                override_reference_year=current_year if site_overrides else None,
-            )
+            return reductant_score_series(self.location, tech_name, output_shares, start, end, captive=captive)
 
         # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom,
         # sized with the reductant that would actually be built (operating-start-year pick)
@@ -4528,6 +4627,7 @@ class Plant:
                 cost_of_debt_no_subsidy=incumbent_cost_of_debt,
                 capex_subsidies=incumbent_capex_subs,
                 debt_subsidies=incumbent_debt_subs,
+                captive_energy=captive,
             )
 
         # ===== STAGE 5: Check if any technology option is profitable =====
@@ -4811,6 +4911,7 @@ class Plant:
                 cost_of_debt_no_subsidy=cost_of_debt,
                 capex_subsidies=capex_subs,
                 debt_subsidies=debt_subs,
+                captive_energy=captive,
                 competing_npvs=dict(valid_techs),
             )
         else:
@@ -5119,18 +5220,23 @@ class Plant:
 
     def update_furnace_hydrogen_costs(self, capped_hydrogen_cost_dict: dict[str, float]) -> None:
         """
-        Update hydrogen costs for all furnace groups in the plant using country-specific capped prices.
+        Update hydrogen costs for all furnace groups of an existing plant using country-specific capped prices.
 
         Args:
             capped_hydrogen_cost_dict (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
                 Prices are converted internally to USD/t before being written to `energy_costs`.
 
         Side Effects:
-            Updates the "hydrogen" entry in energy_costs dictionary for each furnace group in the plant.
+            Updates the "hydrogen" entry in energy_costs, output_energy_costs and energy_costs_no_subsidy
+            for each furnace group of an existing plant.
 
         Notes:
-            Raises ValueError if the plant's ISO3 code is not found in the capped_hydrogen_cost_dict.
+            A new site (``parent_gem_id`` starting with ``indi``) is left unchanged: the year-end refresh
+            prices its electricity and hydrogen from its stack (``set_input_cost_in_furnace_groups``).
+            Raises ValueError if an existing plant's geo key is not found in the capped_hydrogen_cost_dict.
         """
+        if self.parent_gem_id.lower().startswith("indi"):
+            return
         logger = logging.getLogger(f"{__name__}.Plant.update_furnace_hydrogen_costs")
         capped_lcoh_usd_per_kg = self.location.resolve(capped_hydrogen_cost_dict, what="hydrogen price")
         if capped_lcoh_usd_per_kg is None:
@@ -5553,7 +5659,8 @@ class PlantGroup:
             New Plant object with a single furnace group.
 
         Note: The status is set to considered and the plant id is set to the next available id in the
-        plant group. The utilization rate is set to the average utilization rate for the technology to
+        plant group. The furnace group keeps the stack its NPV was priced with (``captive_energy``).
+        The utilization rate is set to the average utilization rate for the technology to
         calculate realistic NPVs for business opportunities, refreshed yearly from the fleet average
         while considered (update_dynamic_costs_for_business_opportunities), and reset to 0 when the
         plant is made operational by PAM.
@@ -5621,6 +5728,7 @@ class PlantGroup:
         new_furnace.created_by_PAM = True
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts
         new_furnace.railway_cost = cost_data[product][site_id][technology_name]["railway_cost"]  # type: ignore[assignment]
+        new_furnace.captive_energy = cost_data[product][site_id][technology_name]["captive_energy"]  # type: ignore[assignment]
         new_plant.add_furnace_group(new_furnace)
         return new_plant
 
@@ -5652,6 +5760,7 @@ class PlantGroup:
         allowed_techs: dict[Year, list[str]],
         active_statuses: list[str],
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -5700,6 +5809,10 @@ class PlantGroup:
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
             active_statuses (list[str]): Status strings whose furnace groups vote in the
                 group's most-common-reductant aggregation
+            reductant_score_series (Callable): ``Environment.reductant_score_series``
+            captive_energy_at (Callable): ``Environment.captive_energy_at``. Each new site builds one stack for
+                the current year, the expansion's start, and every candidate at it, the CO2 gate included, is
+                priced from it; an existing plant builds none.
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
@@ -5776,14 +5889,8 @@ class PlantGroup:
             base_energy_costs = plant.furnace_groups[-1].energy_costs_no_subsidy
             operating_start_year = Year(current_year + construction_time)
             operating_end_year = Year(current_year + construction_time + plant_lifetime)
-            # GEO ("indi") sites keep their own power/hydrogen prices, trajectory-scaled
-            site_overrides: dict[str, float] | None = None
-            if plant.parent_gem_id.lower().startswith("indi"):
-                site_overrides = {
-                    carrier: base_energy_costs[carrier]
-                    for carrier in ("electricity", "hydrogen")
-                    if carrier in base_energy_costs
-                }
+            # A GEO ("indi") site's expansion is priced from the stack it would lock this year
+            captive = plant.investment_captive_energy(captive_energy_at, current_year)
             reductant_by_tech: dict[str, str] = {}
             npv_capacity_by_tech: dict[str, Volumes] = {}
 
@@ -5838,8 +5945,7 @@ class PlantGroup:
                             {},
                             operating_start_year,
                             Year(operating_start_year + 1),
-                            overrides=site_overrides,
-                            override_reference_year=current_year if site_overrides else None,
+                            captive=captive,
                         )
                         gate_pick = gate_series.picks[0] if gate_series.picks else ""
                         need = get_co2_need_by_name(tech, float(capacity), gate_pick)
@@ -5890,8 +5996,7 @@ class PlantGroup:
                     output_shares,
                     operating_start_year,
                     operating_end_year,
-                    overrides=site_overrides,
-                    override_reference_year=current_year if site_overrides else None,
+                    captive=captive,
                 )
                 committed_reductant = score_series.picks[0] if score_series.picks else ""
                 if committed_reductant != reductant:
@@ -6070,6 +6175,7 @@ class PlantGroup:
         cost_of_equity_dict: dict[str, dict[str, float]],
         get_bom_from_avg_boms: Callable,
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capacity_limit_steel: Volumes,
         capacity_limit_iron: Volumes,
         installed_capacity_in_year: Callable[[str], Volumes],
@@ -6129,6 +6235,9 @@ class PlantGroup:
             cost_of_debt_dict (dict[str, dict[str, float]]): Cost of debt by ISO3 country code and technology
             cost_of_equity_dict (dict[str, dict[str, float]]): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable): Function to retrieve bill of materials for a technology
+            reductant_score_series (Callable): ``Environment.reductant_score_series``
+            captive_energy_at (Callable): ``Environment.captive_energy_at``; the chosen new site's stack for the
+                current year goes on the command, so the new group locks it
             capacity_limit_steel (Volumes): Maximum allowed steel capacity from expansions/switches (PAM share)
             capacity_limit_iron (Volumes): Maximum allowed iron capacity from expansions/switches (PAM share)
             installed_capacity_in_year (Callable[[str], Volumes]): Function to get total installed capacity for product
@@ -6186,6 +6295,7 @@ class PlantGroup:
             allowed_techs=allowed_techs,
             active_statuses=active_statuses,
             reductant_score_series=reductant_score_series,
+            captive_energy_at=captive_energy_at,
             capex_subsidies=capex_subsidies,
             opex_subsidies=opex_subsidies,
             debt_subsidies=debt_subsidies,
@@ -6461,6 +6571,8 @@ class PlantGroup:
             cost_of_debt_no_subsidy=cost_of_debt_original,
             capex_subsidies=selected_capex_subsidies,
             debt_subsidies=selected_debt_subsidies,
+            # The stack its options were priced with: the same site and year
+            captive_energy=plant.investment_captive_energy(captive_energy_at, current_year),
         )
 
     # ------------------------------------------------------------- New plant opening logic ------------------------------------------------------------- #
@@ -6487,6 +6599,7 @@ class PlantGroup:
             tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
         reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         global_risk_free_rate: float,
         tech_to_product: dict[str, str],
         allowed_techs: dict[Year, list[str]],
@@ -6513,7 +6626,8 @@ class PlantGroup:
         Identifies new business opportunities for plants at given locations with specific technologies.
 
         Steps:
-            1. Find allowed technologies for the target year.
+            1. Find allowed technologies for the target year, the earliest construction start the
+               opportunity can reach: current_year + max(consideration_time, 2).
             2. Randomly select a subset of top locations for a more in-depth assessment to reduce runtime.
             3. Prepare all required inputs (input costs with electricity and hydrogen costs from own parc,
                capex and cost of debt with subsidies, cost of equity, fixed OPEX, market price of product,
@@ -6547,6 +6661,9 @@ class PlantGroup:
             equity_share: Share of investment financed by equity
             dynamic_feedstocks: Dictionary mapping technology to list of primary feedstocks
             get_bom_from_avg_boms: Callable to get bill of materials from average BOMs
+            reductant_score_series: ``Environment.reductant_score_series``
+            captive_energy_at: ``Environment.captive_energy_at``, the stack each site locks at its earliest
+                construction start, which its NPV is priced with and its furnace group keeps
             global_risk_free_rate: Global risk-free interest rate
             tech_to_product: Dictionary mapping technology to product type
             allowed_techs: Dictionary mapping year to list of allowed technologies
@@ -6621,8 +6738,9 @@ class PlantGroup:
         for product, value in initial_counts.items():
             candidate_stats[f"input_sites_{product}"] = value
 
-        # Set target year for technology filtering
-        target_year = Year(current_year + consideration_time + 1)
+        # Earliest construction start: announcement once the consideration window's NPVs exist,
+        # no sooner than next year, then construction the year after
+        target_year = Year(current_year + max(consideration_time, 2))
 
         # Step 1: Find allowed technologies for the target year
         product_to_tech = get_list_of_allowed_techs_for_target_year(
@@ -6660,6 +6778,7 @@ class PlantGroup:
             construction_time=construction_time,
             get_bom_from_avg_boms=get_bom_from_avg_boms,
             reductant_score_series=reductant_score_series,
+            captive_energy_at=captive_energy_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=global_risk_free_rate,
             capex_subsidies=capex_subsidies,
@@ -6779,6 +6898,7 @@ class PlantGroup:
         iso3_to_region_map: dict[str, str],
         global_risk_free_rate: float,
         avg_utilization: dict[str, dict[str, float]],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
@@ -6794,13 +6914,18 @@ class PlantGroup:
             - Expected utilisation, refreshed from the current fleet average for the
               technology (considered opportunities only — announced ones keep their value,
               which is reset to 0 at construction anyway)
+            - The site's power and electrolyser stack (``CaptiveEnergy``), locked at the construction
+              start year below, which the NPV re-valuation prices the site with
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
-              current year.
-            - CAPEX and debt subsidies: set to the construction start year, which is the [current year
-              + consideration time + announcement time - years considered] for considered BOs and
-              [current year + 1] for announced BOs, floored at [current year + 1].
+              current year. Hydrogen is the site's ``capped_lcoh`` (USD/kg) × ``T_TO_KG``, in USD/t
+              as every energy cost dict holds it and as opportunity creation writes it; a site with
+              no raster value keeps its stored no-subsidy price.
+            - CAPEX and debt subsidies: set to the construction start year, which is the earliest
+              one a considered BO can reach, [current year + consideration time - years considered]
+              floored at [current year + 1], and [current year] for announced BOs, since the
+              construction draw that can start them runs later in the same year.
             - Energy subsidies: set to the operating start year [construction start + construction
               time], since subsidised carrier prices are what the plant pays once running. This matches
               opportunity creation, PAM and the window the score series prices.
@@ -6816,13 +6941,15 @@ class PlantGroup:
             global_risk_free_rate: Global risk-free interest rate
             avg_utilization: Fleet-average utilisation per technology
                 (``Environment.avg_utilization``: tech -> {"utilization_rate": rate})
+            captive_energy_at: ``(location, lock year) -> CaptiveEnergy`` (``Environment.captive_energy_at``)
             capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
                 (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
             debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
             energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
 
         Returns:
-            List of UpdateDynamicCosts commands for each furnace group that was updated.
+            List of UpdateDynamicCosts commands for each furnace group that was updated. A furnace group whose
+            costs, utilisation and stack all repeat what it holds gets none.
 
         Note: This results in an adjusted NPV metric, which proved to be best to ensure the right
         plants are opened, because subsidized technologies would otherwise suffer a too long delay
@@ -6879,7 +7006,7 @@ class PlantGroup:
                     )
 
                     if fg.status == "announced":
-                        year = Year(current_year + 1)  # announcement_time = 1
+                        year = current_year
                     elif fg.status == "considered":
                         if fg.historical_npv_business_opportunities:
                             years_already_considered = len(fg.historical_npv_business_opportunities)
@@ -6887,10 +7014,9 @@ class PlantGroup:
                             years_already_considered = 0
                         # Floored at the soonest path still open to a considered opportunity:
                         # announce now, construct from next year (mirrors track_business_opportunities)
-                        year = Year(
-                            max(current_year + consideration_time + 1 - years_already_considered, current_year + 1)
-                        )  # announcement_time = 1
+                        year = Year(max(current_year + consideration_time - years_already_considered, current_year + 1))
                     operating_start_year = Year(year + construction_time)
+                    captive = captive_energy_at(plant.location, year)
 
                     selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
                     selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
@@ -6922,7 +7048,7 @@ class PlantGroup:
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
-                    hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
+                    hydrogen_price = float(raw_hydrogen_price) * T_TO_KG if raw_hydrogen_price is not None else None
                     if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
                         hydrogen_price = no_sub.get("hydrogen")
 
@@ -6960,6 +7086,16 @@ class PlantGroup:
                         new_energy_costs = dict(base_costs)
                         new_output_energy_costs = dict(base_costs)
                         new_energy_costs_no_subsidy = dict(base_costs)
+                    energy_trace.greenfield_revalue(
+                        plant,
+                        fg,
+                        current_year,
+                        raw_power_price,
+                        raw_hydrogen_price,
+                        new_energy_costs_no_subsidy,
+                        captive,
+                        custom_energy_costs,
+                    )
 
                     # Refresh the expected utilisation from the current fleet average
                     if fg.status == "considered":
@@ -6974,6 +7110,7 @@ class PlantGroup:
                         "energy_costs": fg.energy_costs,
                         "output_energy_costs": fg.output_energy_costs,
                         "utilization_rate": fg.utilization_rate,
+                        "captive_energy": fg.captive_energy,
                     }
                     new_costs_cmp = {
                         "cost_of_debt": new_costs["cost_of_debt"],
@@ -6981,6 +7118,7 @@ class PlantGroup:
                         "energy_costs": new_energy_costs,
                         "output_energy_costs": new_output_energy_costs,
                         "utilization_rate": new_utilization_rate,
+                        "captive_energy": captive,
                     }
                     if old_costs_cmp == new_costs_cmp:
                         continue  # Skip if no changes
@@ -7000,6 +7138,7 @@ class PlantGroup:
                             new_output_energy_costs=new_output_energy_costs,
                             new_energy_costs_no_subsidy=new_energy_costs_no_subsidy,
                             new_utilization_rate=new_utilization_rate,
+                            new_captive_energy=captive,
                         )
                     )
         return update_commands
@@ -7824,6 +7963,16 @@ class Environment:
         self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
         # Precomputed capped-LCOH series (year -> geo_key -> USD/kg), filled at bootstrap
         self.capped_hydrogen_costs_by_year: dict[Year, dict[str, float]] = {}
+        # Baseload LCOE the hydrogen price blends with the grid (year -> geo_key -> USD/kWh), filled at bootstrap
+        self.baseload_lcoe_by_geo_key: dict[Year, dict[str, float]] = {}
+        # The inputs behind each hydrogen price (year -> geo_key -> HydrogenPriceInputs)
+        self.hydrogen_price_inputs_by_year: dict[Year, dict[str, HydrogenPriceInputs]] = {}
+        # Every year's baseload LCOE grid (year, lat, lon; USD/MWh) new sites lock, loaded at bootstrap
+        self.baseload_lcoe_grid: xr.DataArray | None = None
+        # New sites' effective hydrogen ceiling (year -> TIAM-UCL region -> USD/kg), from the first geospatial step
+        self.site_hydrogen_ceilings: dict[Year, dict[str, float]] = {}
+        # The region whose ceiling each country's sites read (ISO3 -> TIAM-UCL region)
+        self.site_hydrogen_region_by_iso3: dict[str, str] = {}
         self.clear_reductant_score_cache()
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -8607,8 +8756,9 @@ class Environment:
         This method is called twice in the simulation lifecycle:
         1. **At Bootstrap** (before simulation years start): Initializes all furnace groups with input costs
            from the Excel "Input costs" tab. At this point, furnace groups have empty energy_costs dictionaries.
-        2. **At Each Year Start** (during simulation loop): Updates input costs for the current year, while
-           preserving previously calculated hydrogen costs that account for interregional trade.
+        2. **At Each Year End** (``finalise_iteration`` step 6c, after the year advances): Sets the new year's
+           input costs before the year-start hydrogen refresh, keeping existing plants' stored hydrogen prices
+           and pricing a new site's electricity and hydrogen from its stack.
 
         Process:
             1. Retrieve country-specific input costs (electricity, hydrogen, coke, pci, natural_gas, coal, bio_pci)
@@ -8616,8 +8766,12 @@ class Environment:
             2. Handle special cases based on plant type:
 
                **New GEO Plants (parent_gem_id starts with "indi"):**
-               - These plants have their own power infrastructure (renewable energy park)
-               - Preserve electricity and hydrogen costs from their own power generation if previously set
+               - These plants own their power system and electrolyser (``FurnaceGroup.captive_energy``)
+               - Past construction start, each furnace group's electricity and hydrogen without subsidy come
+                 from its stack and the year's grid price at the plant's geo key
+               - A considered or announced opportunity keeps its stored electricity and hydrogen without subsidy,
+                 which the next re-valuation replaces; any other furnace group without a stack raises
+               - Each furnace group starts from its own copy of the input costs
 
                **Existing Plants (all others):**
                - Use grid electricity costs from Excel input costs
@@ -8628,14 +8782,19 @@ class Environment:
             - Bootstrap: Uses hydrogen from Excel input costs
             - Year Start: the year's capped prices are read from the series precomputed at bootstrap
               (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
-              fg.energy_costs["hydrogen"] with them
-            - This method: Preserves those capped prices instead of overwriting with Excel's static values
+              fg.energy_costs["hydrogen"] with them for existing plants; new sites keep the price this
+              method set
+            - This method, at the year end: keeps existing plants' stored hydrogen instead of Excel's static
+              values, until the year-start refresh replaces it, and prices a new site's from its stack
 
         Args:
             world_plants (list[Plant]): All plants in the simulation to update.
 
         Side Effects:
             - Updates fg.energy_costs dictionary via set_energy_costs() for each furnace group
+
+        Raises:
+            ValueError: If a new site's furnace group past construction start holds no stack.
 
         Notes:
             - Plants with missing ISO3 codes in input_costs (e.g., Kosovo/XKX) are skipped with a warning
@@ -8666,27 +8825,25 @@ class Environment:
                 )
                 logged_countries.add(plant.location.iso3)
 
-            # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
+            # New GEO plants: each furnace group prices its own electricity and hydrogen, without subsidy
             if plant.parent_gem_id.lower().startswith("indi"):
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
-                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-                    if "electricity" in no_sub:
-                        input_costs["electricity"] = no_sub["electricity"]
-                    if "hydrogen" in no_sub:
-                        input_costs["hydrogen"] = no_sub["hydrogen"]
-                    if fg.energy_costs_no_subsidy and "electricity" in no_sub:
-                        sub_elec = fg.energy_costs.get("electricity", 0)
-                        if sub_elec != no_sub["electricity"]:
-                            logger.debug(
-                                "[INPUT COSTS] indi %s FG:%s elec no_sub=$%.6f (was sub=$%.6f)",
-                                plant.location.iso3,
-                                fg.furnace_group_id,
-                                no_sub["electricity"],
-                                sub_elec,
+                    fg_costs = input_costs.copy()
+                    if fg.status in ("considered", "announced"):
+                        # The year's re-valuation writes an opportunity's prices from the year's rasters
+                        self._keep_stored_site_prices(fg, fg_costs)
+                    else:
+                        if fg.captive_energy is None:
+                            raise ValueError(
+                                f"New-site furnace group {fg.furnace_group_id} of plant {plant.plant_id} holds no "
+                                "captive energy stack: every build, switch, renovation and expansion locks one"
                             )
-                    fg.set_energy_costs(**input_costs)
+                        grid = self.grid_electricity_for_year(plant.location, self.year)
+                        fg_costs["electricity"] = fg.captive_energy.electricity(grid)
+                        fg_costs["hydrogen"] = fg.captive_energy.hydrogen(grid)
+                    fg.set_energy_costs(**fg_costs)
 
             # Existing plants: Preserve calculated hydrogen costs if set (only not at bootstrap)
             else:
@@ -8697,13 +8854,34 @@ class Environment:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)
 
+    @staticmethod
+    def _keep_stored_site_prices(fg: FurnaceGroup, fg_costs: dict[str, float]) -> None:
+        """
+        Carry a new site's stored electricity and hydrogen without subsidy into its next input costs.
+
+        Args:
+            fg: A new site's furnace group.
+            fg_costs: The furnace group's own copy of the year's input costs, changed in place.
+
+        Returns:
+            None.
+
+        Raises:
+            KeyError: If the furnace group holds no electricity or hydrogen price without subsidy.
+
+        Notes:
+            The prices without subsidy are carried, not the subsidised ones, so subsidies never compound.
+        """
+        fg_costs["electricity"] = fg.energy_costs_no_subsidy["electricity"]
+        fg_costs["hydrogen"] = fg.energy_costs_no_subsidy["hydrogen"]
+
     def calculate_capped_hydrogen_costs_per_country(self, year: Year | None = None) -> dict[str, float]:
         """
         Calculate country-level hydrogen prices with regional ceilings and trade adjustments.
 
         Steps:
-            1. Extract electricity prices for all countries in the given year and calculate Levelized Cost of Hydrogen
-            (LCOH) for each country using electricity prices, CAPEX, and OPEX.
+            1. Price electrolysis power per geo key at the power mix, (1 - c) x grid + c x baseload LCOE, and
+            calculate the Levelised Cost of Hydrogen (LCOH) from it with the electrolyser's CAPEX and OPEX.
             2. Determine regional hydrogen price ceilings based on percentile thresholds
             3. Apply price caps considering regional ceilings, interregional trade options, and pipeline transport costs. Pipeline
             transport costs are added when importing hydrogen from trading partners.
@@ -8716,14 +8894,26 @@ class Environment:
             capped_hydrogen_prices (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
 
         Side Effects:
-            Logs info messages about calculation progress.
+            Logs info messages about calculation progress. Records the inputs behind every price in
+            self.hydrogen_price_inputs_by_year[year].
+
+        Raises:
+            ValueError: If a prerequisite is missing, a geo key has no electricity price, or the power mix has a
+                baseload share and the baseload LCOE series lacks the year or a geo key.
 
         Notes:
-            - Requires self.config with geo_config settings for hydrogen ceiling percentile and trade parameters
+            - Requires self.config with geo_config settings for power mix, hydrogen ceiling percentile and trade
             - Requires self.country_mappings for regional groupings
             - Requires self.hydrogen_efficiency and self.hydrogen_capex_opex data for LCOH calculation
+            - Requires self.baseload_lcoe_by_geo_key whenever the power mix has a baseload share; the baseload share
+              is priced at the LCOE even where the grid is cheaper
+            - A region's ceiling is the ceiling percentile of its countries' LCOH, which a province inherits. At the
+              100th percentile it is raised to the highest LCOH of all the region's geo keys, provinces included, so
+              no price is capped by its own region; a partner region's ceiling under intraregional trade counts its
+              provinces too
         """
         logger = logging.getLogger(f"{__name__}.Environment.calculate_capped_hydrogen_costs_per_country")
+        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
         from steelo.domain.calculate_costs import (
             calculate_lcoh_from_electricity_country_level,
             calculate_regional_hydrogen_ceiling_country_level,
@@ -8742,15 +8932,37 @@ class Environment:
         geo_config = self.config.geo_config
         target_year = self.year if year is None else year
 
-        # Step 1: LCOH per geo_key (country rows + any authored sub-national rows)
-        electricity_by_geo_key = {}
+        # Step 1: electrolysis power per geo_key (country rows + any authored sub-national rows) at the power mix,
+        # then the LCOH from it
+        coverage = get_baseload_coverage(geo_config.included_power_mix)
+        if coverage > 0 and not self.baseload_lcoe_by_geo_key:
+            raise ValueError(
+                f"Power mix '{geo_config.included_power_mix}' prices hydrogen off the baseload LCOE; "
+                "call initiate_baseload_lcoe_by_geo_key first"
+            )
+        electricity_by_geo_key: dict[str, float] = {}
+        grid_by_geo_key: dict[str, float] = {}
+        lcoe_by_geo_key: dict[str, float | None] = {}
         for geo_key, year_costs in self.input_costs.items():
             if geo_key is None:
                 continue
             if target_year in year_costs:
                 if "electricity" not in year_costs[target_year]:
                     raise ValueError(f"Electricity price not found for {geo_key} in year {target_year}")
-                electricity_by_geo_key[geo_key] = year_costs[target_year]["electricity"]
+                grid_price = year_costs[target_year]["electricity"]
+                grid_by_geo_key[geo_key] = grid_price
+                if coverage > 0:
+                    if (
+                        target_year not in self.baseload_lcoe_by_geo_key
+                        or geo_key not in self.baseload_lcoe_by_geo_key[target_year]
+                    ):
+                        raise ValueError(f"No baseload LCOE for {geo_key} in year {target_year}")
+                    lcoe = self.baseload_lcoe_by_geo_key[target_year][geo_key]
+                    lcoe_by_geo_key[geo_key] = lcoe
+                    electricity_by_geo_key[geo_key] = (1 - coverage) * grid_price + coverage * lcoe
+                else:
+                    lcoe_by_geo_key[geo_key] = None
+                    electricity_by_geo_key[geo_key] = grid_price
         lcoh_by_geo_key = calculate_lcoh_from_electricity_country_level(
             electricity_by_country=electricity_by_geo_key,
             hydrogen_efficiency=self.hydrogen_efficiency,
@@ -8758,20 +8970,27 @@ class Environment:
             year=target_year,
         )
 
-        # Step 2: ceilings from country-level LCOH only; a province inherits its country's ceiling
+        # Step 2: ceilings from country-level LCOH; a province inherits its country's region and ceiling. At the
+        # 100th percentile, which promises no cap, the ceiling also counts the region's provinces, so none is capped
         lcoh_by_country = {k: v for k, v in lcoh_by_geo_key.items() if ":" not in k}
         regional_ceilings, country_to_region = calculate_regional_hydrogen_ceiling_country_level(
             lcoh_by_country=lcoh_by_country,
             country_mappings=self.country_mappings,
             hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
         )
+        if geo_config.hydrogen_ceiling_percentile >= 100:
+            for geo_key, lcoh in lcoh_by_geo_key.items():
+                iso3 = geo_key.split(":", 1)[0]
+                if iso3 in country_to_region:  # an unmapped country stops the run in the cap below
+                    region = country_to_region[iso3]
+                    regional_ceilings[region] = max(regional_ceilings[region], lcoh)
 
         # Step 3: Apply hydrogen price caps
         # Filter out None values from intraregional_trade_matrix
         intraregional_trade_matrix_clean = {
             k: v for k, v in geo_config.intraregional_trade_matrix.items() if v is not None
         }
-        capped_hydrogen_prices = apply_hydrogen_price_cap_country_level(
+        capped_hydrogen_prices, ceilings = apply_hydrogen_price_cap_country_level(
             lcoh_by_country=lcoh_by_geo_key,
             regional_ceilings=regional_ceilings,
             country_to_region=country_to_region,
@@ -8780,34 +8999,341 @@ class Environment:
             long_dist_pipeline_transport_cost=geo_config.long_dist_pipeline_transport_cost,
         )
 
+        price_inputs = {
+            geo_key: HydrogenPriceInputs(
+                coverage=coverage,
+                grid=grid_by_geo_key[geo_key],
+                lcoe=lcoe_by_geo_key[geo_key],
+                electricity=electricity_by_geo_key[geo_key],
+                lcoh=lcoh_by_geo_key[geo_key],
+                ceiling=ceilings[geo_key],
+                capped_lcoh=capped,
+            )
+            for geo_key, capped in capped_hydrogen_prices.items()
+        }
+        self.hydrogen_price_inputs_by_year[target_year] = price_inputs
+
         logger.info(f"Calculated capped hydrogen prices for {len(capped_hydrogen_prices)} countries")
+        energy_trace.country_hydrogen(
+            target_year,
+            geo_config.included_power_mix,
+            self.input_costs,
+            self.baseload_lcoe_by_geo_key,
+            self.hydrogen_efficiency,
+            self.hydrogen_capex_opex,
+            price_inputs,
+            lcoh_by_geo_key,
+            regional_ceilings,
+            country_to_region,
+            capped_hydrogen_prices,
+        )
         return capped_hydrogen_prices
 
-    def initiate_capped_hydrogen_costs_by_year(self) -> None:
+    def hydrogen_price_years(self) -> range:
         """
-        Precompute the capped-LCOH series for the full data horizon.
-
-        Every input to the capped hydrogen price is exogenous (Excel trajectories,
-        static geo config), so the whole series is knowable at bootstrap. Covers
-        config.start_year through the last year present in input_costs.
+        The years the hydrogen price series covers.
 
         Returns:
-            None. Fills self.capped_hydrogen_costs_by_year.
+            config.start_year through the last year present in input_costs.
+
+        Raises:
+            ValueError: If there is no config, the input costs are empty, or they end before the start year.
 
         Notes:
-            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex and
-            country_mappings to be initiated first; raises if input costs are empty.
+            An empty range would leave existing plants without a hydrogen price in any year, so it stops the
+            run here, naming both years, rather than later.
         """
         if self.config is None:
             raise ValueError("SimulationConfig is required to precompute hydrogen prices")
         data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
         if not data_years:
             raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
+        start_year, last_year = int(self.config.start_year), int(max(data_years))
+        if last_year < start_year:
+            raise ValueError(
+                f"The input costs end in {last_year}, before the start year {start_year}; "
+                "hydrogen prices cannot be precomputed"
+            )
+        return range(start_year, last_year + 1)
+
+    def initiate_baseload_lcoe_by_geo_key(self, series: dict[Year, dict[str, float]]) -> None:
+        """
+        Store the baseload LCOE series the hydrogen price blends with the grid.
+
+        Args:
+            series: Year to geo key to baseload LCOE (USD/kWh), as
+                ``hydrogen_lcoe.baseload_lcoe_by_geo_key_series`` returns it.
+
+        Returns:
+            None.
+        """
+        self.baseload_lcoe_by_geo_key = series
+
+    def initiate_baseload_lcoe_grid(self, grid: xr.DataArray) -> None:
+        """
+        Store every year's baseload LCOE grid, from which new sites lock their power cost.
+
+        Args:
+            grid: The LCOE (year, lat, lon) in USD/MWh, as ``boa_lcoe.load_lcoe_grid`` returns it.
+
+        Returns:
+            None.
+        """
+        self.baseload_lcoe_grid = grid
+
+    def site_hydrogen_ceiling_years(self) -> range:
+        """
+        The lock years for which new sites' hydrogen ceilings are precomputed.
+
+        Returns:
+            The current year through the last year the electrolyser's electricity use, its cost for every geo key
+            and the input costs of every geo key all cover, and no further than
+            ``end_year + max(consideration_time, 2)``, the last year a lock can reach.
+
+        Raises:
+            ValueError: If there is no config, or an input is empty.
+
+        Notes:
+            Called in the first geospatial step, so the current year is the first year a site is priced. The LCOE
+            file does not limit the range: past its last year the yearly raster, the precompute and every lock
+            hold that year's LCOE.
+        """
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to precompute site hydrogen ceilings")
+        if not self.hydrogen_efficiency or not self.hydrogen_capex_opex or not self.input_costs:
+            raise ValueError("Hydrogen and input costs must be initiated before precomputing site hydrogen ceilings")
+        last_years = [
+            max(self.hydrogen_efficiency),
+            min(max(by_year) for by_year in self.hydrogen_capex_opex.values()),
+            min(max(by_year) for by_year in self.input_costs.values()),
+            self.config.end_year + max(self.config.consideration_time, 2),
+        ]
+        return range(int(self.year), int(min(last_years)) + 1)
+
+    def initiate_site_hydrogen_ceilings(
+        self, ceilings: dict[Year, dict[str, float]], region_by_iso3: dict[str, str]
+    ) -> None:
+        """
+        Store new sites' effective hydrogen ceilings for every lock year.
+
+        Args:
+            ceilings: Year to TIAM-UCL region to effective ceiling (USD/kg), as
+                ``geospatial_layers.site_hydrogen_ceilings`` returns it.
+            region_by_iso3: ISO3 to TIAM-UCL region, the mapping the ceilings were computed with.
+
+        Returns:
+            None.
+        """
+        self.site_hydrogen_ceilings = ceilings
+        self.site_hydrogen_region_by_iso3 = region_by_iso3
+
+    def site_hydrogen_ceilings_for_year(self, year: Year) -> dict[str, float]:
+        """
+        New sites' effective hydrogen ceiling per region for a year.
+
+        Args:
+            year: A lock year or a simulation year.
+
+        Returns:
+            TIAM-UCL region to ceiling (USD/kg); a year past the last stored year takes that year's.
+
+        Raises:
+            ValueError: If the ceilings were not precomputed.
+            KeyError: If the year is inside the stored range but absent from it.
+        """
+        if not self.site_hydrogen_ceilings:
+            raise ValueError("Site hydrogen ceilings not precomputed; the first geospatial step stores them")
+        return self.site_hydrogen_ceilings[min(year, max(self.site_hydrogen_ceilings))]
+
+    def captive_energy_at(self, location: "Location", year: Year) -> CaptiveEnergy:
+        """
+        The power system and electrolyser stack a new site at a location locks in a year.
+
+        Args:
+            location: The site; ``lat`` and ``lon`` are a cell of the LCOE grid.
+            year: The lock year: the expected construction start, or the start of a later investment.
+
+        Returns:
+            The stack: the cell's LCOE for a system built in ``year``, the electrolyser's use and cost of
+            ``year``, and the region's ceiling of ``year`` as a contract when the site's own hydrogen price in
+            ``year`` is above it.
+
+        Raises:
+            ValueError: If the cell's LCOE in ``year`` is not finite, or no electrolyser cost row covers the
+                site's geo key or country.
+            KeyError: If the site's cell is not on the LCOE grid, or its country has no ceiling region.
+
+        Notes:
+            The grid price and the electrolyser cost resolve at the site's geo key, else its country, as every
+            other carrier and subsidy of the site. The electrolyser's use and cost and the ceiling hold their
+            last data year past it; the grid price holds the last input-cost year.
+        """
+        from steelo.adapters.geospatial import boa_lcoe
+        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+        assert self.config is not None
+        coverage = get_baseload_coverage(self.config.geo_config.included_power_mix)
+        lcoe = 0.0
+        if coverage > 0:
+            assert self.baseload_lcoe_grid is not None, "the baseload LCOE grid is loaded at bootstrap"
+            lcoe_per_mwh = boa_lcoe.lcoe_at_cell(self.baseload_lcoe_grid, location.lat, location.lon, year)
+            if not math.isfinite(lcoe_per_mwh):
+                raise ValueError(
+                    f"No finite baseload LCOE at ({location.lat}, {location.lon}) for {year}: "
+                    f"{location.geo_key} cannot lock its power cost"
+                )
+            lcoe = lcoe_per_mwh * PERMWh_TO_PERkWh
+        capex_opex_key = location.geo_key if location.geo_key in self.hydrogen_capex_opex else location.iso3
+        if capex_opex_key not in self.hydrogen_capex_opex:
+            raise ValueError(f"No electrolyser cost row for {location.geo_key} or {location.iso3}")
+        capex_opex = self.hydrogen_capex_opex[capex_opex_key]
+        stack = CaptiveEnergy(
+            lock_year=year,
+            coverage=coverage,
+            lcoe=lcoe,
+            electrolyser_use=self.hydrogen_efficiency[min(year, max(self.hydrogen_efficiency))],
+            electrolyser_cost=capex_opex[min(year, max(capex_opex))],
+            hydrogen_contract=None,
+        )
+        ceiling = self.site_hydrogen_ceilings_for_year(year)[self.site_hydrogen_region_by_iso3[location.iso3]]
+        own_hydrogen = stack.hydrogen(self.grid_electricity_for_year(location, year))
+        if own_hydrogen > ceiling * T_TO_KG:
+            return dataclasses.replace(stack, hydrogen_contract=ceiling)
+        return stack
+
+    def grid_electricity_for_year(self, location: "Location", year: Year) -> float:
+        """
+        The grid price at a location for a year, before any subsidy.
+
+        Args:
+            location: Plant or site location.
+            year: The year to price; clamped to the last input-cost year.
+
+        Returns:
+            The input costs' electricity price at the location's geo key, else its country (USD/kWh).
+        """
+        key = location.geo_key if location.geo_key in self.input_costs else location.iso3
+        year_costs = self.input_costs[key]
+        return abs(year_costs[min(year, max(year_costs))]["electricity"])
+
+    def initiate_capped_hydrogen_costs_by_year(self) -> None:
+        """
+        Precompute the capped-LCOH series for the full data horizon.
+
+        Every input to the capped hydrogen price is exogenous (Excel trajectories, the
+        baseload LCOE series, static geo config), so the whole series is knowable at
+        bootstrap. Covers config.start_year through the last year present in input_costs.
+
+        Returns:
+            None. Fills self.capped_hydrogen_costs_by_year and self.hydrogen_price_inputs_by_year.
+
+        Notes:
+            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex, country_mappings
+            and, for a power mix with a baseload share, baseload_lcoe_by_geo_key to be
+            initiated first; raises if input costs are empty. Logs one INFO line naming the
+            power mix and how electrolysis power is priced.
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.initiate_capped_hydrogen_costs_by_year")
+        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
         self.capped_hydrogen_costs_by_year = {
-            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y))
-            for y in range(int(self.config.start_year), int(max(data_years)) + 1)
+            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y)) for y in self.hydrogen_price_years()
         }
         self.clear_reductant_score_cache()
+        assert self.config is not None  # hydrogen_price_years raised otherwise
+        geo_config = self.config.geo_config
+        coverage = get_baseload_coverage(geo_config.included_power_mix)
+        if coverage > 0:
+            logger.info(
+                "[H2 PRICE] Existing plants' hydrogen priced at '%s': coverage %g at each geo key's LCOE "
+                "percentile %g, the rest at the grid price",
+                geo_config.included_power_mix,
+                coverage,
+                geo_config.hydrogen_lcoe_percentile,
+            )
+        else:
+            logger.info(
+                "[H2 PRICE] Existing plants' hydrogen priced at grid electricity ('%s')", geo_config.included_power_mix
+            )
+
+    def export_lcoh_existing_plants(self, path: Path) -> None:
+        """
+        Write existing plants' hydrogen price and its inputs per country and geo unit, for the simulated years.
+
+        Args:
+            path: Output CSV, ``<output_dir>/data/LCOH/lcoh_existing_plants.csv``.
+
+        Returns:
+            None. One row per priced geo key per year; power prices in USD/MWh, hydrogen in USD/kg.
+
+        Notes:
+            Reads ``hydrogen_price_inputs_by_year``, which the precompute fills to the last input-cost year;
+            the file keeps only the simulated years, so it stops at that year when the run ends later. A geo
+            unit's CAPEX/OPEX is its own row where the master has one, else its country's. Numbers are written
+            with four decimals, like the cell-based files. Logs one INFO line naming the file and the first and
+            last year written.
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.export_lcoh_existing_plants")
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to export existing plants' hydrogen prices")
+        geo_config = self.config.geo_config
+        start_year, end_year = int(self.config.start_year), int(self.config.end_year)
+        years = sorted(y for y in self.hydrogen_price_inputs_by_year if start_year <= int(y) <= end_year)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "level",
+                    "country",
+                    "subregion",
+                    "year",
+                    "baseload_coverage_pct",
+                    "grid_share_pct",
+                    "hydrogen_ceiling_pct",
+                    "intraregional_trade_allowed",
+                    "hydrogen_lcoe_percentile",
+                    "grid_usd_per_mwh",
+                    "pure_lcoe_usd_per_mwh",
+                    "grid_mix_usd_per_mwh",
+                    "electrolyser_kwh_per_kg",
+                    "capex_opex_usd_per_kg",
+                    "uncapped_usd_per_kg",
+                    "ceiling_usd_per_kg",
+                    "capped_usd_per_kg",
+                ]
+            )
+            for year in years:
+                for geo_key, row in sorted(self.hydrogen_price_inputs_by_year[year].items()):
+                    iso3, _, code = geo_key.partition(":")
+                    lcoe = row["lcoe"]
+                    capex_opex = self.hydrogen_capex_opex[geo_key if geo_key in self.hydrogen_capex_opex else iso3]
+                    writer.writerow(
+                        [
+                            "geo_unit" if code else "country",
+                            iso3,
+                            code,
+                            int(year),
+                            *(f"{value:.4f}" for value in (row["coverage"] * 100, 100 - row["coverage"] * 100)),
+                            f"{geo_config.hydrogen_ceiling_percentile:.4f}",
+                            geo_config.intraregional_trade_allowed,
+                            f"{geo_config.hydrogen_lcoe_percentile:.4f}",
+                            f"{row['grid'] * PERkWh_TO_PERMWh:.4f}",
+                            "" if lcoe is None else f"{lcoe * PERkWh_TO_PERMWh:.4f}",
+                            *(
+                                f"{value:.4f}"
+                                for value in (
+                                    row["electricity"] * PERkWh_TO_PERMWh,
+                                    self.hydrogen_efficiency[year] * MWH_TO_KWH,
+                                    capex_opex[year],
+                                    row["lcoh"],
+                                    row["ceiling"],
+                                    row["capped_lcoh"],
+                                )
+                            ),
+                        ]
+                    )
+        logger.info(f"Wrote existing plants' hydrogen prices, {int(years[0])} to {int(years[-1])}, to {path}")
 
     def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
         """
@@ -8873,13 +9399,38 @@ class Environment:
         base["hydrogen"] = capped_lcoh * T_TO_KG
         return base
 
+    def site_energy_costs_for_year(
+        self,
+        location: "Location",
+        year: Year,
+        captive: CaptiveEnergy | None = None,
+    ) -> dict[str, float]:
+        """
+        Exogenous per-carrier prices at a location for a year, before any subsidy, with a new site's own prices.
+
+        Args:
+            location: Plant/site location (geo_key resolution, finest available).
+            year: The year to price.
+            captive: A new site's locked stack. Electricity and hydrogen of ``year``
+                come from it and the year's grid price at the location; None prices
+                every carrier from the input costs and the capped hydrogen series.
+
+        Returns:
+            Normalised carrier -> price for that year.
+        """
+        base = self._unsubsidised_energy_costs_for_year(location, year)
+        if captive is not None:
+            grid = base["electricity"]
+            base["electricity"] = captive.electricity(grid)
+            base["hydrogen"] = captive.hydrogen(grid)
+        return base
+
     def candidate_energy_costs_for_year(
         self,
         location: "Location",
         technology_name: str,
         year: Year,
-        overrides: dict[str, float] | None = None,
-        override_reference_year: Year | None = None,
+        captive: CaptiveEnergy | None = None,
     ) -> tuple[dict[str, float], dict[str, float]]:
         """
         Candidate energy prices (input and output side) at a location for any year.
@@ -8894,12 +9445,8 @@ class Environment:
             location: Plant/site location (geo_key resolution, finest available).
             technology_name: Candidate technology whose energy subsidies apply.
             year: The year to price.
-            overrides: Site-specific current prices per carrier (e.g. a GEO site's
-                own power price). Each override replaces the country level but keeps
-                the country trajectory: price_t = override x country_t / country_ref,
-                both sides unsubsidised; year-t subsidies apply after scaling.
-            override_reference_year: Year the override prices belong to; required
-                when overrides are given.
+            captive: A new site's own prices, see site_energy_costs_for_year; year-t
+                subsidies apply after them.
 
         Returns:
             (input_costs, output_costs) per normalised carrier for that year.
@@ -8907,21 +9454,7 @@ class Environment:
         Notes:
             Years missing inside the input-cost trajectory raise (no silent gaps).
         """
-        base = self._unsubsidised_energy_costs_for_year(location, year)
-
-        if overrides:
-            if override_reference_year is None:
-                raise ValueError("override_reference_year is required when overrides are given")
-            reference = self._unsubsidised_energy_costs_for_year(location, override_reference_year)
-            for carrier, site_price in overrides.items():
-                normalized_carrier = normalize_name(carrier)
-                reference_price = reference[normalized_carrier]
-                if reference_price == 0.0:
-                    raise ValueError(
-                        f"Cannot trajectory-scale '{normalized_carrier}' for {location.geo_key}: "
-                        f"reference price in {override_reference_year} is zero"
-                    )
-                base[normalized_carrier] = site_price * base[normalized_carrier] / reference_price
+        base = self.site_energy_costs_for_year(location, year, captive)
 
         active_subsidies: dict[str, list[Subsidy]] = {}
         for carrier, subsidies_by_geo in self.energy_subsidies.items():
@@ -8941,8 +9474,7 @@ class Environment:
         output_shares: dict[str, float],
         start_year: Year,
         end_year: Year,
-        overrides: dict[str, float] | None = None,
-        override_reference_year: Year | None = None,
+        captive: CaptiveEnergy | None = None,
     ) -> "ReductantScoreSeries":
         """
         Year-wise reductant-optimised score series for a candidate technology.
@@ -8962,8 +9494,7 @@ class Environment:
                 BOM build; reductant-invariant).
             start_year: First operating year (inclusive).
             end_year: Last operating year (exclusive).
-            overrides / override_reference_year: Site-price overrides, see
-                candidate_energy_costs_for_year.
+            captive: A new site's own prices, see site_energy_costs_for_year.
 
         Returns:
             ReductantScoreSeries with one score and one pick per operating year.
@@ -8981,17 +9512,9 @@ class Environment:
             raise ValueError("SimulationConfig is required for reductant score series")
         self._validate_reductant_score_cache()
         cache = self._reductant_score_cache
-        # The year's pick and scores depend on the site only through its geo key and price overrides,
+        # The year's pick and scores depend on the site only through its geo key and its stack,
         # and not on output_shares (those only weight the picked scores).
-        if overrides:
-            site_key: tuple = (
-                location.geo_key,
-                technology_name,
-                tuple(sorted(overrides.items())),
-                override_reference_year,
-            )
-        else:
-            site_key = (location.geo_key, technology_name, None, None)
+        site_key = (location.geo_key, technology_name, captive)
         scores: list[float] = []
         picks: list[str] = []
         for year in range(int(start_year), int(end_year)):
@@ -9003,8 +9526,7 @@ class Environment:
                     technology_name,
                     dynamic_business_case,
                     Year(year),
-                    overrides,
-                    override_reference_year,
+                    captive,
                 )
                 if len(cache) >= self._REDUCTANT_CACHE_MAX_ENTRIES:
                     cache.clear()
@@ -9083,12 +9605,18 @@ class Environment:
         technology_name: str,
         dynamic_business_case: list["PrimaryFeedstock"],
         year: Year,
-        overrides: dict[str, float] | None,
-        override_reference_year: Year | None,
+        captive: CaptiveEnergy | None,
     ) -> tuple[str | None, dict[str, dict[str, float]]]:
         """Reductant pick and per-(charge, reductant) scores of a candidate technology in one year.
 
         The pick is the mode over charges of each charge's cheapest reductant, as in the annual re-pick.
+
+        Args:
+            location: Plant/site location.
+            technology_name: Candidate technology.
+            dynamic_business_case: The technology's business cases.
+            year: The year to score.
+            captive: A new site's own prices, see site_energy_costs_for_year.
 
         Returns:
             (pick, score_by_input); the pick is None when no charge has a scored reductant.
@@ -9098,8 +9626,7 @@ class Environment:
             location,
             technology_name,
             year,
-            overrides=overrides,
-            override_reference_year=override_reference_year,
+            captive=captive,
         )
         carbon_price = self.carbon_price_for_year(location.iso3, year)
         year_scores = score_compiled_reductant_business_cases(
@@ -11372,8 +11899,8 @@ class Environment:
         allowed_by_year: dict[Year, list[str]] = {}
 
         # Generate for FULL simulation range (not from current year!)
-        # Note: add extra [+ consideration_time + 2] to be able to consider new plants until the end of the simulation
-        # 1st +1 beacuse of fixed 1y announcement time and 2nd +1 because range is exclusive at the end
+        # Runs to end_year + consideration_time + 1 (the range's end is exclusive), which covers the latest
+        # opportunity target year, end_year + max(consideration_time, 2), for a consideration_time of 1 or more
         for year in range(self.config.start_year, self.config.end_year + self.config.consideration_time + 2):
             allowed_techs = []
 

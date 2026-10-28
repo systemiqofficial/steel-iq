@@ -4,6 +4,29 @@ global_level: WARNING
 features:
   furnace_group_breakdown: true
   dump_failed_lp: false  # Write TM/trade_lp_failed_<year>.mps (large) when the trade LP does not solve optimally
+  energy_trace: false  # Trace electricity and hydrogen prices to energy_trace.csv in the run folder and the log
+
+# Followed when energy_trace is on: listed countries get raster summaries and checks on every
+# active furnace group; listed plants get a row and a log line per active furnace group.
+energy_trace:
+  countries: [CHN, IND, USA, JPN, RUS, IRN, DEU, BRA, SAU, AUS]
+  plants:
+    - P100000120219
+    - P100000120085
+    - P100000120161
+    - P100000120519
+    - P100000120513
+    - P100000120966
+    - P100000120928
+    - P100000120649
+    - P100000120808
+    - P100000120823
+    - P100000120613
+    - P100000120421
+    - P100000120034
+    - P100000120833
+    - P100000120850
+    - P100000121161
 
 modules:
   core: INFO

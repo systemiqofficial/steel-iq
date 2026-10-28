@@ -11,10 +11,22 @@ from steelo.domain.new_plant_opening import (
     summarise_opportunity_pool,
     NewPlantLocation,
 )
-from steelo.domain.models import Subsidy, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Subsidy, PlantGroup
 from steelo.devdata import Year
 from steelo.simulation import GeoConfig
 from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def _stub_series(location, tech, output_shares, start, end, **kwargs):
@@ -307,6 +319,56 @@ class TestPrepareDataForBusinessOpportunity:
 
         return _get_bom
 
+    def test_npv_is_priced_from_the_stack_locked_at_the_target_year(self, mock_get_bom):
+        """Each site locks one stack at the target year; the score series is priced from it, without overrides."""
+        stacks_asked = []
+        series_calls = []
+
+        def recording_stack_at(location, year):
+            stacks_asked.append((location.lat, location.lon, location.iso3, year))
+            return _stack_at(location, year)
+
+        def recording_series(location, tech, output_shares, start, end, **kwargs):
+            series_calls.append((start, end, kwargs))
+            return _stub_series(location, tech, output_shares, start, end, **kwargs)
+
+        cost_data = prepare_cost_data_for_business_opportunity(
+            product_to_tech={"steel": ["EAF"]},
+            best_locations_subset={
+                "steel": [
+                    NewPlantLocation(
+                        Latitude=40.0, Longitude=-100.0, iso3="USA", power_price=0.05, capped_lcoh=3.0, rail_cost=10.0
+                    )
+                ]
+            },
+            current_year=Year(2025),
+            target_year=Year(2028),
+            energy_costs={"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},
+            capex_dict_all_locs_techs={"Americas": {"EAF": 1000.0}},
+            cost_of_debt_all_locs={"USA": {"EAF": 0.05}},
+            cost_of_equity_all_locs={"USA": {"EAF": 0.08}},
+            fopex_all_locs_techs={"USA": {"eaf": 50.0}},
+            steel_plant_capacity=100.0,
+            get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=4,
+            reductant_score_series=recording_series,
+            captive_energy_at=recording_stack_at,
+            iso3_to_region_map={"USA": "Americas"},
+            global_risk_free_rate=0.03,
+            capex_subsidies={},
+            debt_subsidies={},
+            opex_subsidies={},
+            energy_subsidies={},
+            most_common_reductant={},
+            environment_most_common_reductant={},
+        )
+
+        stack = cost_data["steel"][(40.0, -100.0, "USA")]["EAF"]["captive_energy"]
+        assert stacks_asked == [(40.0, -100.0, "USA", Year(2028))]
+        assert stack == _stack_at(None, Year(2028))
+        assert series_calls == [(Year(2032), Year(2052), {"captive": stack})]
+
     def test_prepare_costs_for_single_location_tech(self, mock_get_bom):
         """Test preparing cost data for a single location-technology pair."""
         product_to_tech = {"steel": ["EAF"]}
@@ -381,6 +443,7 @@ class TestPrepareDataForBusinessOpportunity:
             plant_lifetime=20,
             construction_time=2,
             reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -483,6 +546,7 @@ class TestPrepareDataForBusinessOpportunity:
                 plant_lifetime=20,
                 construction_time=2,
                 reductant_score_series=_stub_series,
+                captive_energy_at=_stack_at,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
@@ -578,6 +642,7 @@ class TestPrepareDataForBusinessOpportunity:
             plant_lifetime=20,
             construction_time=2,
             reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={"USA": {"EAF": [capex_subsidy]}},
@@ -696,6 +761,7 @@ class TestPrepareDataForBusinessOpportunity:
             plant_lifetime=20,
             construction_time=2,
             reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -795,6 +861,7 @@ class TestPrepareDataForBusinessOpportunity:
                 plant_lifetime=20,
                 construction_time=2,
                 reductant_score_series=_stub_series,
+                captive_energy_at=_stack_at,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
@@ -990,6 +1057,7 @@ class TestPrepareDataForBusinessOpportunity:
             plant_lifetime=20,
             construction_time=2,
             reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -1273,6 +1341,7 @@ class TestGenerateNewPlant:
                         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                         "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},  # USD/kWh, USD/t
                         "output_shares": {"scrap": 1.0},
+                        "captive_energy": _stack_at(None, Year(2028)),
                     }
                 }
             }
@@ -1304,6 +1373,25 @@ class TestGenerateNewPlant:
         assert new_plant.parent_gem_id == "PG001"
         assert new_plant.soe_status == "private"
         assert new_plant.power_source == "grid"
+
+    def test_furnace_group_keeps_the_stack_its_npv_was_priced_with(self, plant_group, cost_data):
+        """The new furnace group holds the cost data's stack, which tracking re-values it with."""
+        new_plant = plant_group.generate_new_plant(
+            site_id=(40.0, -100.0, "USA"),
+            technology_name="EAF",
+            product="steel",
+            npv=1000.0,
+            current_year=2025,
+            existent_plant_ids=[],
+            cost_data=cost_data,
+            equity_share=0.2,
+            steel_plant_capacity=100.0,
+            dynamic_feedstocks=[],
+            plant_lifetime=20,
+        )
+
+        stack = cost_data["steel"][(40.0, -100.0, "USA")]["EAF"]["captive_energy"]
+        assert new_plant.furnace_groups[0].captive_energy is stack
 
     def test_creates_furnace_group_with_correct_attributes(self, plant_group, cost_data):
         """Test that generate_new_plant creates a furnace group with correct attributes."""
@@ -1483,6 +1571,7 @@ def _complete_cost_data_entry():
         "no_subsidy_prices": {"electricity": 0.05},
         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
         "output_shares": {"scrap": 1.0},
+        "captive_energy": _stack_at(None, Year(2028)),
     }
 
 
@@ -1645,6 +1734,7 @@ def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
         "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},
         "output_shares": {"scrap": 1.0},
+        "captive_energy": _stack_at(None, Year(2028)),
     }
     cost_data = {"steel": {site_id: {"EAF": dict(tech_entry), "BOF": dict(tech_entry)}}}
     npv_dict = {"steel": {site_id: {"EAF": 100.0, "BOF": 90.0}}}
@@ -1686,9 +1776,10 @@ def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
         dynamic_feedstocks={},
         get_bom_from_avg_boms=lambda *args, **kwargs: (None, 0.7, "scrap", {}),
         reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
         global_risk_free_rate=0.03,
         tech_to_product={"EAF": "steel", "BOF": "steel"},
-        allowed_techs={Year(2028): ["EAF", "BOF"]},
+        allowed_techs={Year(2027): ["EAF", "BOF"]},
         technology_emission_factors=[],
         chosen_emissions_boundary_for_carbon_costs="scope_1",
         active_statuses=["operating"],

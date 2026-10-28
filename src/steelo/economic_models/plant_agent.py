@@ -8,10 +8,7 @@ from typing import cast
 
 from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
-from steelo.adapters.geospatial.geospatial_statistics import (
-    export_lcoe_lcoh_statistics_by_country,
-    export_overbuild_factor_statistics_by_country,
-)
+from steelo.adapters.geospatial.geospatial_statistics import export_lcoe_lcoh_outputs, load_ne_region_by_geo_key
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.capacity_policy.handlers import (
     expansion_capacity_hook,
@@ -95,7 +92,7 @@ class GeospatialModel:
             1. Produces all geospatial input layers (LCOE, transport costs, etc.) and calculates outgoing cashflow proxies
             to select the best locations globally and per country.
             2. Identifies new business opportunities in top locations for technologies that will be allowed at the earliest possible
-            construction start (current year + consideration time + announcement time). These are marked as 'considered'.
+            construction start (current year + consideration time, at least 2 years ahead). These are marked as 'considered'.
             3. Updates dynamic costs (e.g., grid cell-specific power and hydrogen prices, CAPEX, cost of debt, and subsidies) for all
             business opportunities yearly (status: considered and announced).
             4. Updates the NPV of all potential business opportunities each year with new costs (status: considered).
@@ -117,6 +114,8 @@ class GeospatialModel:
 
         Side effects: Opens new plants and furnace groups, updates their energy costs (power and hydrogen), and manages
         the status progression of business opportunities through consideration, announcement, and construction.
+        Appends the year's rows to data/LCOE/lcoe_summary.csv, lcoe_detailed.csv, data/LCOH/lcoh_summary.csv and
+        lcoh_new_sites_detailed.csv in the output folder; the start year writes them afresh.
         """
         logger = logging.getLogger(f"{__name__}.GeospatialModel.run")
         logger.info(f"\n\n[GEO] ========== 🗺️  Starting GeospatialModel.run for Year {bus.env.year} ========== \n")
@@ -142,7 +141,8 @@ class GeospatialModel:
                 input_costs_converted[iso3] = {Year(year): costs for year, costs in year_costs.items()}
         ## Make a price series for COSA and NPV calculations, anchored at the current year.
         ## Extended by consideration_time + 1 so the opportunity paths can re-anchor it at
-        ## their construction start (up to target_year) and still cover the operating window.
+        ## their construction start (up to target_year, current year + max(consideration_time, 2))
+        ## and still cover the operating window.
         future_price_series: dict[str, list[float]] = {}
         start_year = bus.env.year
         end_year = (
@@ -185,30 +185,21 @@ class GeospatialModel:
             if not top_locations.get(product):
                 logger.warning(f"[GEO] No {product} locations found! This will cause NPV error.")
 
-        # Export LCOE/LCOH statistics every 5 years (matching cost curve export frequency)
-        years_since_start = bus.env.year - bus.env.config.start_year
-        if years_since_start % 5 == 0:
-            try:
-                export_lcoe_lcoh_statistics_by_country(
-                    energy_prices=custom_energy_costs,
-                    year=bus.env.year,
-                    output_dir=bus.env.config.output_dir,
-                    hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
-
-            # Export overbuild factor statistics for solar, wind, and battery
-            for factor_name in ["solar_factor", "wind_factor", "battery_factor"]:
-                try:
-                    export_overbuild_factor_statistics_by_country(
-                        energy_prices=custom_energy_costs,
-                        year=bus.env.year,
-                        output_dir=bus.env.config.output_dir,
-                        factor_name=factor_name,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to export {factor_name} statistics for year {bus.env.year}: {e}")
+        # Append this year's rows to the all-years LCOE and LCOH files; a failure to write them stops the run
+        step_start = time.time()
+        export_lcoe_lcoh_outputs(
+            energy_prices=custom_energy_costs,
+            year=bus.env.year,
+            start_year=bus.env.config.start_year,
+            output_dir=bus.env.config.output_dir,
+            geo_config=geo_config,
+            irena_region_by_iso3=bus.env.country_mappings.code_to_irena_region_map,
+            ne_region_by_geo_key=load_ne_region_by_geo_key(
+                bus.env.geo_paths.data_dir / "fixtures" / "geo_hierarchy.json"
+            ),
+            existing_plant_lcoh=bus.env.capped_hydrogen_costs_for_year(bus.env.year),
+        )
+        logger.info(f"operation=lcoe_lcoh_outputs year={bus.env.year} duration_s={time.time() - step_start:.3f}")
 
         # Update dynamic costs for all existing business opportunities yearly
         step_start = time.time()
@@ -225,6 +216,7 @@ class GeospatialModel:
                     iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                     global_risk_free_rate=bus.env.config.global_risk_free_rate,
                     avg_utilization=bus.env.avg_utilization,
+                    captive_energy_at=bus.env.captive_energy_at,
                     capex_subsidies=bus.env.capex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
                     energy_subsidies=bus.env.energy_subsidies,
@@ -301,6 +293,7 @@ class GeospatialModel:
                 dynamic_feedstocks=bus.env.dynamic_feedstocks,
                 get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                 reductant_score_series=bus.env.reductant_score_series,
+                captive_energy_at=bus.env.captive_energy_at,
                 global_risk_free_rate=bus.env.config.global_risk_free_rate,
                 tech_to_product={
                     tech: product
@@ -894,6 +887,7 @@ class PlantAgentsModel:
                             capex_renovation_share=capex_renovation_share,
                             get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                             reductant_score_series=bus.env.reductant_score_series,
+                            captive_energy_at=bus.env.captive_energy_at,
                             allowed_furnace_transitions=bus.env.allowed_furnace_transitions,
                             dynamic_business_cases=bus.env.dynamic_feedstocks,
                             probabilistic_agents=bus.env.config.probabilistic_agents,
@@ -989,6 +983,7 @@ class PlantAgentsModel:
                     cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
                     get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                     reductant_score_series=bus.env.reductant_score_series,
+                    captive_energy_at=bus.env.captive_energy_at,
                     capex_subsidies=bus.env.capex_subsidies,
                     opex_subsidies=bus.env.opex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,

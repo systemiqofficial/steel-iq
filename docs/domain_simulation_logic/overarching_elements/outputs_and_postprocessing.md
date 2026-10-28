@@ -1,6 +1,6 @@
 # Outputs and Post-Processing
 
-This page describes the artefacts a simulation produces — in-memory traces during the run, plot files written by `SteelPlotter`, the post-processed CSVs assembled at the end, and the scenario viewer's files in `viewer/`. The model also writes geospatial statistics (LCOE / LCOH / overbuild factors) per-year and aggregated.
+This page describes the artefacts a simulation produces — in-memory traces during the run, plot files written by `SteelPlotter`, the post-processed CSVs assembled at the end, and the scenario viewer's files in `viewer/`. The model also writes LCOE and LCOH files covering every simulation year.
 
 For where individual costs and emissions originate, see [Cost Calculation Functions](../plant_agent_model/calculate_costs.md). For how the trade LP feeds these traces, see [Trade Model Overview](../trade_model/overview_trade_model.md) and [TM-PAM Connector](../plant_agent_model/trade_model_connector.md).
 
@@ -310,20 +310,115 @@ A matching matplotlib chart is also produced.
 
 ---
 
-## Geospatial statistics: LCOE, LCOH, overbuild factors
+## Geospatial statistics: LCOE and LCOH files
 
-`src/steelo/adapters/geospatial/geospatial_statistics.py` exports per-country statistics every modelled geospatial year (typically every 5 years where the geospatial pipeline runs):
+Five files hold the power and hydrogen prices of every simulation year, one file each, under `output/data/`:
 
-- `output/data/LCOE/lcoe_stats_{year}.csv` — average / min / max / p10 / p20 / p25 / p50 LCOE in **USD/MWh** plus `n_grid_points`. Source LCOE is the `power_price` variable in `energy_prices` (USD/kWh, multiplied ×1000 on export).
-- `output/data/LCOH/lcoh_stats_{year}.csv` — same statistics in **USD/kg** for the `capped_lcoh` variable, plus a `hydrogen_ceiling_pct` column reflecting the configured `GeoConfig` percentile cap.
-- `output/data/{factor}_factors/{factor}_stats_{year}.csv` — overbuild-factor statistics (e.g. `solar_factor`, `wind_factor`, `battery_factor`) at LCOE percentile points (`avg`, `min`, `max`, `p10`, `p20`, `p25`, `p50`). Each value is the mean factor across grid points within ±5 % of the LCOE percentile in that country (with a closest-point fallback when the band is empty).
+| File | Open it for | One row per |
+|---|---|---|
+| `LCOE/lcoe_summary.csv` | A quick look at power prices: what renewables cost, what the grid costs, what new sites pay | area, year |
+| `LCOH/lcoh_summary.csv` | A quick look at hydrogen prices: new sites against existing plants | area, year |
+| `LCOE/lcoe_detailed.csv` | Analysis of power prices: the full distribution of each price type | area, year, `price_type` (`pure_lcoe`, `grid`, `grid_mix`) |
+| `LCOH/lcoh_new_sites_detailed.csv` | Analysis of new sites' hydrogen prices, before and after the ceiling | area, year, `price_type` (`uncapped`, `capped`) |
+| `LCOH/lcoh_existing_plants.csv` | Existing plants' hydrogen price and every input behind it | country or geo unit, year |
 
-At end-of-run, `aggregate_lcoe_lcoh_statistics(output_dir, start_year, end_year)` concatenates the per-year files into:
+Start with the two summaries. The geospatial step appends the four cell-based files every simulation year (`geospatial_statistics.export_lcoe_lcoh_outputs`); the start year writes them afresh, so a rerun into the same folder starts clean. A failure to write them stops the run. `lcoh_existing_plants.csv` is written once at bootstrap (`Environment.export_lcoh_existing_plants`), for the simulated years the input costs cover.
 
-- `output/data/LCOE/lcoe_stats_{start_year}_{end_year}.csv`
-- `output/data/LCOH/lcoh_stats_{start_year}_{end_year}.csv`
+New-site statistics are taken over the 0.25° cells that carry a country, a power price and a capped hydrogen price; all price types of an area use the same cells. **Every cell weighs the same**, and cells cover less ground towards the poles, so an area's average is a cell average, not an area-weighted one.
 
-sorted by `(year, country)`, formatted to 4 decimals. Per-year files are kept; aggregated files are recognised and excluded from the next aggregation pass via the `_<digits>` filename suffix check.
+Runs made before these files existed have per-year `LCOE/lcoe_stats_{year}.csv` and `LCOH/lcoh_stats_{year}.csv` files (every five years, with `*_{start}_{end}.csv` roll-ups) instead.
+
+### Areas (rows)
+
+| `level` | `country` | `subregion` | Cells |
+|---|---|---|---|
+| `world` | `World` | empty | all cells |
+| `irena_region` | `irena_<IRENA region>` | empty | cells of countries in that IRENA region; countries without one are in no IRENA row |
+| `country` | ISO3 | empty | the country's cells |
+| `geo_unit_region` | ISO3 | Natural Earth region, e.g. `East China` | cells of the country's geo units in that region |
+| `geo_unit` | ISO3 | ISO 3166-2 code, e.g. `CN-XJ` | cells inside that geo unit |
+
+- Cells outside every geo unit polygon count in the world, IRENA and country rows only.
+- Only China has declared geo units today, so only China has `geo_unit_region` and `geo_unit` rows. Natural Earth groups China into six regions; BOA uses seven.
+- Without `geo_hierarchy.json` there are no `geo_unit_region` or `geo_unit` rows.
+- The summaries cover areas with at least one cell. `lcoh_existing_plants.csv` covers every country and geo unit the model prices hydrogen for, including those without cells.
+
+### Columns shared by all five files
+
+| Column | Meaning |
+|---|---|
+| `level` | Type of area: `world`, `irena_region`, `country`, `geo_unit_region` or `geo_unit` |
+| `country` | `World`, `irena_<IRENA region>` or the ISO3 country code |
+| `subregion` | Empty for world, IRENA and country rows; Natural Earth region name for `geo_unit_region` rows; ISO 3166-2 code for `geo_unit` rows |
+| `year` | Simulation year |
+| `baseload_coverage_pct` | Share of a site's electricity demand that the BOA renewable system is sized to cover, in %: `c × 100`. 85 for "85% baseload + 15% grid"; 0 for "Grid only" and "Not included" |
+| `grid_share_pct` | Share of the priced electricity bought from the grid, in %: `(1 - c) × 100`. 0 on `pure_lcoe` rows |
+| `n_grid_points` | Number of 0.25° cells in the area that carry a price. Statistics weight every cell equally. Not in `lcoh_existing_plants.csv`, which has no cell statistics |
+
+**Statistic columns.** `avg` is the mean over the area's cells. `pN` is the Nth percentile (`np.percentile`, linear interpolation, the same method as the BOA summaries). `p0` is the cheapest cell and `p100` the most expensive. Detailed files carry `avg`, `p0`, `p10`, `p20`, `p25`, `p30`, `p40`, `p50`, `p60`, `p70`, `p75`, `p80`, `p90` and `p100`.
+
+### `lcoe_detailed.csv`
+
+Shared columns, `price_type`, then `<stat>_usd_per_mwh` (USD/MWh), then `n_grid_points`.
+
+| `price_type` | Per-cell value |
+|---|---|
+| `pure_lcoe` | BOA LCOE of the optimal renewable system at the cell, in USD per MWh delivered by that system, interpolated to the year. Not written when the coverage is 0 |
+| `grid` | Grid electricity price at the cell: the master's `Input costs` electricity for the cell's geo unit where it has a row, otherwise for its country |
+| `grid_mix` | Price of 1 MWh of a new site's electricity demand: `grid_share × grid + coverage × pure_lcoe`. The cell's own price, which a new site's NPV at selection uses for electricity and electrolysis power; operating new sites pay the existing-plant series for hydrogen (see [Energy Prices](energy_prices.md), step 8). Equals `grid` when the coverage is 0 |
+
+### `lcoe_summary.csv`
+
+Shared columns, then the following (USD/MWh), each equal to the matching cell in `lcoe_detailed.csv`.
+
+| Column | Meaning |
+|---|---|
+| `pure_lcoe_avg_usd_per_mwh`, `pure_lcoe_p50_usd_per_mwh` | Mean and median BOA LCOE across the area's cells |
+| `grid_avg_usd_per_mwh` | Mean grid price across the area's cells. For a geo unit this is its grid price. For a country with geo unit prices it is the cell-weighted mean of those prices, not the national price |
+| `grid_mix_avg_usd_per_mwh`, `grid_mix_p10_usd_per_mwh`, `grid_mix_p50_usd_per_mwh`, `grid_mix_p90_usd_per_mwh` | Mean, 10th, 50th and 90th percentile of what new sites pay for power |
+
+### `lcoh_new_sites_detailed.csv`
+
+Shared columns, `hydrogen_ceiling_pct`, `intraregional_trade_allowed`, `price_type`, `ceiling_usd_per_kg`, then `<stat>_usd_per_kg` (USD/kg), then `n_grid_points`.
+
+| Column | Meaning |
+|---|---|
+| `hydrogen_ceiling_pct` | Percentile of hydrogen costs within each hydrogen trade region (TIAM-UCL) used as that region's price ceiling. For new sites the percentile is taken across the region's cells. 100 means no ceiling |
+| `intraregional_trade_allowed` | `True` if a region may import hydrogen from linked regions at their ceiling plus the long-distance pipeline cost |
+| `price_type` = `uncapped` | Electrolyser energy (kWh/kg) × the cell's `grid_mix` price + electrolyser CAPEX/OPEX for the cell's geo unit, otherwise its country |
+| `price_type` = `capped` | `min(uncapped, ceiling)`: the cell's own price, which a new site's NPV at selection uses; operating new sites pay the existing-plant series for hydrogen (see [Energy Prices](energy_prices.md), step 8) |
+| `ceiling_usd_per_kg` | Effective ceiling applied to the area's cells, trade-adjusted when trade is allowed. Empty when the area's cells span several hydrogen trade regions, as World and most IRENA rows do |
+
+A cell whose geo unit and country both lack an electrolyser CAPEX/OPEX row has no uncapped price and so no capped price either: it counts in no row. No cell is in this case with the current master data.
+
+### `lcoh_existing_plants.csv`
+
+`level` (`country` or `geo_unit`), `country`, `subregion`, `year`, `baseload_coverage_pct`, `grid_share_pct`, `hydrogen_ceiling_pct`, `intraregional_trade_allowed`, `hydrogen_lcoe_percentile`, then the following.
+
+| Column | Meaning |
+|---|---|
+| `baseload_coverage_pct`, `grid_share_pct` | As above, at the run's power mix |
+| `hydrogen_lcoe_percentile` | Percentile of the area's cell LCOEs taken as existing plants' renewable price; default 50 (median) |
+| `grid_usd_per_mwh` | Grid electricity price (USD/MWh) for the geo unit where the master has a row, otherwise for the country |
+| `pure_lcoe_usd_per_mwh` | That percentile of the area's BOA cell LCOEs (USD/MWh). A country's value spans all its cells, including those in its geo units. Areas without an LCOE cell of their own take the mean of their 8 nearest cells. Empty when the coverage is 0 |
+| `grid_mix_usd_per_mwh` | `grid_share × grid + coverage × pure_lcoe` (USD/MWh): the electrolysis power price for existing plants |
+| `electrolyser_kwh_per_kg` | Electrolyser energy use in the year (master `Hydrogen efficiency` × 1000; the same everywhere) |
+| `capex_opex_usd_per_kg` | Electrolyser CAPEX/OPEX (USD/kg) for the geo unit where the master has a row, otherwise for the country |
+| `uncapped_usd_per_kg` | `electrolyser_kwh_per_kg × grid_mix + capex_opex` (USD/kg) |
+| `ceiling_usd_per_kg` | Effective ceiling (USD/kg), trade-adjusted when allowed. For existing plants the percentile is taken across the region's country-level prices, not cells, and a geo unit inherits its country's ceiling; at the 100th percentile it is the highest price over the region's countries and geo units, so it caps nothing in its own region |
+| `capped_usd_per_kg` | `min(uncapped, ceiling)` (USD/kg): what existing plants pay for hydrogen |
+
+The file stops at the last year of the input costs when the run ends later.
+
+### `lcoh_summary.csv`
+
+`level`, `country`, `subregion`, `year`, `baseload_coverage_pct`, `grid_share_pct`, `hydrogen_ceiling_pct`, `intraregional_trade_allowed`, then the following.
+
+| Column | Meaning |
+|---|---|
+| `new_site_avg_usd_per_kg`, `new_site_p10_usd_per_kg`, `new_site_p50_usd_per_kg`, `new_site_p90_usd_per_kg` | Mean, 10th, 50th and 90th percentile of the capped new-site hydrogen price across the area's cells (USD/kg); equal to the matching cells in `lcoh_new_sites_detailed.csv` |
+| `existing_plant_usd_per_kg` | What existing plants in the country or geo unit pay for hydrogen that year, the `capped_usd_per_kg` of `lcoh_existing_plants.csv`; beyond the last input-cost year, the last covered year's price, as plants pay it. Empty on world, IRENA and `geo_unit_region` rows, and on a geo unit row whose geo unit has no row of its own in the master (its existing plants pay the country's price) |
+| `n_grid_points` | As above |
 
 ---
 

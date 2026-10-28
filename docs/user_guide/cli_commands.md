@@ -18,8 +18,7 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--resume-from-year RESUME_FROM_YEAR]
                       [--master-excel MASTER_EXCEL] [--no-cache]
                       [--force-refresh] [--steelo-home STEELO_HOME]
-                      [--cache-stats] [--clear-cache]
-                      [--baseload-power-sim-dir BASELOAD_POWER_SIM_DIR]
+                      [--cache-stats] [--clear-cache] [--boa-run BOA_RUN]
                       [--clustering | --no-clustering] [--plot-tm]
                       [--plot-geo]
                       [--clustering-scope {iso3,plant_group,plant}]
@@ -79,9 +78,10 @@ options:
                         $STEELO_HOME)
   --cache-stats         Show cache statistics and exit
   --clear-cache         Clear preparation cache and exit
-  --baseload-power-sim-dir BASELOAD_POWER_SIM_DIR
-                        Path to BOA-generated baseload power simulation output
-                        directory (overrides default)
+  --boa-run BOA_RUN     Promoted BOA run that prices baseload power: a folder,
+                        or a run name under $BOA_DATA_ROOT (else ~/.boa)/lcoe-
+                        only/ (default: the LCOE files geo-data ships in the
+                        prepared data)
   --clustering, --no-clustering
                         Cluster furnace groups to reduce LP complexity
                         (default: on)

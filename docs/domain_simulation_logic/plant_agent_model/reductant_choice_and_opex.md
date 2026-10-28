@@ -76,13 +76,16 @@ The series lets an NPV follow changing prices over the asset life. A DRI plant c
 
 ### Site prices for geospatial sites
 
-Sites from the geospatial model carry their own power and hydrogen prices, which differ from the country average. For these sites the series keeps the site price level but follows the country trajectory:
+Sites from the geospatial model own their power system and electrolyser, so their power and hydrogen prices differ from the country average. A new-plant opportunity's NPV, at selection and at each yearly re-valuation, prices the site as a system built at its expected construction start b. The series takes the site's stack (`CaptiveEnergy`, built by `Environment.captive_energy_at`): the coverage c of the power mix, the LCOE L of the site's cell for a system built in b, the electrolyser's electricity use e(b) in MWh/kg and cost k(b) in USD/kg, and the region's hydrogen ceiling of b as a contract when the site's own price in b is above it. Each year t then reads the grid price g(t) at the site's geo key:
 
 ```
-site price in year t = site price today × country price in year t / country price today
+electricity in year t = c × L(site, b) + (1 − c) × g(t)
+hydrogen in year t    = e(b) × 1,000 × electricity in year t + k(b), or the contract price, flat
 ```
 
-Both country prices on the right are unsubsidised, so a candidate subsidy active today does not distort the ratio. Candidate subsidies for year t apply after scaling. This scaling is temporary: a later version will read each site's own price series from the rasters.
+The grid share follows the grid; nothing else moves after b. Candidate subsidies for year t apply after these prices. The memo keys a site's entries on its stack, so two stacks never share one.
+
+A switch, renovation or expansion at a new site's plant is a new investment, so its candidates are priced the same way from the stack the site would lock in the investment's start year, the current year. See [Energy Prices](../overarching_elements/energy_prices.md#10-a-switch-renovation-or-expansion). Candidates at an existing plant follow the country prices.
 
 ### How the NPVs use the series
 
@@ -165,7 +168,7 @@ The reductant score looks up emission factors strictly, and the score series nee
 
 The error message gives the number of missing combinations and up to five examples. To fix it, add the missing rows to the "Technology emission factors" sheet.
 
-**Capped hydrogen price series.** `Environment.initiate_capped_hydrogen_costs_by_year()` computes the capped LCOH for every year from the simulation start year to the last year of the input-cost data. Every input to it is exogenous, so the full series is known at bootstrap. It raises an error when the input costs are empty, or when a region has input costs for a year but no electricity price in that year. During the run, each year's price refresh and the score series read from this stored series. Years beyond the end of the data reuse the last year, and a year missing inside the covered range raises an error.
+**Capped hydrogen price series.** `Environment.initiate_capped_hydrogen_costs_by_year()` computes the capped LCOH for every year from the simulation start year to the last year of the input-cost data. Every input to it is exogenous, so the full series is known at bootstrap. With a power mix that has a baseload share, it also needs the baseload LCOE of every geo key and year, which bootstrap builds first from the run's LCOE file (`hydrogen_lcoe.baseload_lcoe_by_geo_key_series`). It raises an error when the input costs are empty, when a region has input costs for a year but no electricity price in that year, or, with a baseload share, when the LCOE series is missing or lacks a geo key in a year. Building the LCOE series raises an error when a geo key has neither a cell nor an admin-1 shape to take its nearest cells from, when it has no LCOE or one that is not finite in a year, or when the LCOE file is not on the iso3 grid's lattice. During the run, each year's price refresh and the score series read from this stored series. Years beyond the end of the data reuse the last year, and a year missing inside the covered range raises an error.
 
 ### Checks that warn only
 
@@ -181,5 +184,6 @@ The run continues, but the reductant score assumes every reductant shares the sa
 - [Furnace Group Strategy](furnace_group_strategy.md): switch and renovation NPVs
 - [Plant Expansions](plant_expansions.md): expansion NPVs
 - [New Plant Opening](../geospatial_model/new_plant_opening.md): new-plant NPVs
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md): the electricity and hydrogen prices the picks and score series read
 - [Cost Calculation Functions](calculate_costs.md): OPEX, subsidy and NPV functions
 - [Economic Considerations](economic_considerations.md): carbon pricing and subsidies

@@ -335,6 +335,7 @@ def test_switching_tech_to_ccs_adds_to_firm_using_old_reductant(tmp_path):
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
     outer_cmd = ChangeFurnaceGroupStatusToSwitchingTechnology(
         plant_id="p1",
@@ -377,6 +378,7 @@ def test_switching_tech_to_non_ccs_is_noop(tmp_path):
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
     outer_cmd = ChangeFurnaceGroupStatusToSwitchingTechnology(
         plant_id="p1",
@@ -452,6 +454,7 @@ def test_handler_scan_bit_identity_after_switching_technology(tmp_path):
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
     outer_cmd = ChangeFurnaceGroupStatusToSwitchingTechnology(
         plant_id="p1",

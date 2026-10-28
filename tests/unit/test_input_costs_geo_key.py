@@ -148,7 +148,7 @@ def test_lcoh_raises_when_capex_missing_for_country_and_province():
 
 def test_province_inherits_country_ceiling_without_trade():
     """A province key resolves its region via iso3 and is capped by its country's ceiling."""
-    capped = apply_hydrogen_price_cap_country_level(
+    capped, ceilings = apply_hydrogen_price_cap_country_level(
         lcoh_by_country={"CHN": 3.5, "CHN:CN-HE": 2.5},
         regional_ceilings={"China": 3.0},
         country_to_region={"CHN": "China"},
@@ -159,11 +159,12 @@ def test_province_inherits_country_ceiling_without_trade():
 
     assert capped["CHN"] == pytest.approx(3.0)  # capped at ceiling
     assert capped["CHN:CN-HE"] == pytest.approx(2.5)  # below ceiling, kept
+    assert ceilings == {"CHN": pytest.approx(3.0), "CHN:CN-HE": pytest.approx(3.0)}
 
 
 def test_province_inherits_country_intraregional_trade_ceiling():
     """With intraregional trade, a province inherits its country's trade-adjusted ceiling."""
-    capped = apply_hydrogen_price_cap_country_level(
+    capped, ceilings = apply_hydrogen_price_cap_country_level(
         lcoh_by_country={"CHN": 3.5, "CHN:CN-HE": 2.5},
         regional_ceilings={"China": 3.0, "RoW": 1.0},
         country_to_region={"CHN": "China"},
@@ -175,3 +176,4 @@ def test_province_inherits_country_intraregional_trade_ceiling():
     # China's effective ceiling = min(3.0, RoW 1.0 + 0.5 transport) = 1.5; the province inherits it.
     assert capped["CHN"] == pytest.approx(1.5)
     assert capped["CHN:CN-HE"] == pytest.approx(1.5)
+    assert ceilings == {"CHN": pytest.approx(1.5), "CHN:CN-HE": pytest.approx(1.5)}  # the trade-adjusted ceiling

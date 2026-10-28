@@ -1,109 +1,28 @@
 # Configuration
 
-The `steelo.config` module provides centralized settings management for our Python
-application using Pydantic's `BaseSettings`. It is designed to:
+The `steelo.config` module gives the application the two folders it needs before any run is configured. Everything a simulation can vary is passed through `SimulationConfig`.
 
-- **Load Configuration**: Read settings from a `.env` file and environment variables.
-- **Environment Precedence**: Environment variables override values from `.env` files.
-- **Dynamic Source Selection**: Choose between a user-specific `.env` file and a
-  project-level `.env` file based on availability.
-- **Type Validation**: Ensure that settings are of the correct type and meet specified constraints.
-- **Easy Access**: Allow settings to be easily imported and used throughout the application.
+- **`get_steelo_home()`**: `$STEELO_HOME` when it is set, else `~/.steelo`. Commands such as `run_simulation` also take `--steelo-home`.
+- **`root`**: the same folder, read once when the module is imported.
+- **`project_root`**: the repository root. In the Windows standalone app it is the STEELO_HOME folder, since the install folder may not be writable.
 
-## Overview
+## The STEELO_HOME Folder
 
-The module performs the following steps to manage application settings:
-
-1. **Determine the `.env` File Location**:
-   - Checks if a `.env` file exists in the user's home directory at `~/.steelo/.env`.
-   - If not found, falls back to the project's root directory at `<project_root>/.env`.
-
-2. **Load Settings**:
-   - Reads settings from the selected `.env` file.
-   - Overrides these settings with any matching environment variables.
-
-3. **Validate Settings**:
-   - Uses Pydantic to validate types and values.
-   - Ensures required settings are provided.
-   - Applies any custom validation logic.
-
-4. **Provide Access to Settings**:
-   - Exposes a `settings` object that can be imported and used throughout the application.
-
-## Usage
-
-To use the settings in your application, simply import the `settings` object:
-
-```python
-from steelo.config import settings
-
-# Example usage
-print(settings.project_root)
 ```
-
-This allows you to access configuration values like, `project_root`, etc.
-
-## Settings Fields
-
-The `Settings` class defines the following configuration fields:
-
-- **`project_root`** (`Path`):
-  - Description: The root directory of the project.
-  - Default: Automatically set to the parent directory of the module's parent (`ROOT_DIR`).
-
-- **`root`** (`DirectoryPath`):
-  - Description: The directory where steelo-specific files are stored.
-  - Default: `~/.steelo`
-  - Environment Variable: `STEELO_HOME`
-  - Notes: The directory is created if it does not exist.
-  - Structure:
-    ```
-    $STEELO_HOME/
-    ├── preparation_cache/     # Cached data preparations
-    │   ├── index.json        # Fast lookup index
-    │   └── prep_<hash>/      # Individual cache entries
-    ├── output/               # Simulation outputs
-    │   └── sim_<timestamp>/  # Individual simulation runs
-    ├── data_cache/           # Downloaded S3 packages
-    ├── data/                 # Symlink to latest preparation
-    └── output_latest/        # Symlink to latest output
-    ```
-
-## Custom Validation
-
-- **`root_must_exist`**:
-  - Purpose: Ensures that the `root` directory exists by creating it if necessary.
-  - Behavior: Invoked before assignment to the `root` field.
-
-## Customizing Settings Sources
-
-The `Settings` class customizes the order and source of configuration values by overriding the `settings_customise_sources` method:
-
-1. **Initialization Arguments**:
-   - Values provided directly when instantiating the `Settings` class.
-
-2. **Environment Variables**:
-   - Variables from the system environment.
-
-3. **`.env` File**:
-   - Checks for `~/.steelo/.env`.
-   - If not found, uses `<project_root>/.env`.
-
-4. **File Secret Settings**:
-   - Not utilized in this configuration.
-
-This custom source order allows for flexible configuration management, prioritizing user-specific settings over project defaults.
-
-## Error Handling
-
-If validation fails (e.g., required settings are missing), the module:
-
-- Prints a validation error message using `rich.print`.
-- Exits the application with a status code of `1`.
+$STEELO_HOME/
+├── preparation_cache/     # Cached data preparations
+│   ├── index.json        # Fast lookup index
+│   └── prep_<hash>/      # Individual cache entries
+├── output/               # Simulation outputs
+│   └── sim_<timestamp>/  # Individual simulation runs
+├── data_cache/           # Downloaded S3 packages
+├── data/                 # Symlink to latest preparation
+└── output_latest/        # Symlink to latest output
+```
 
 ## Trade Solver Environment Variables
 
-Two environment variables tune the trade LP solver. They are read directly from the process environment, not from the settings above, so set them in the shell (for example `STEELO_LP_SOLVER=simplex run_simulation ...`) rather than in a `.env` file.
+Two environment variables tune the trade LP solver. They are read directly from the process environment, so set them in the shell (for example `STEELO_LP_SOLVER=simplex run_simulation ...`).
 
 | Variable | Values | Effect |
 |---|---|---|
@@ -111,15 +30,6 @@ Two environment variables tune the trade LP solver. They are read directly from 
 | `STEELO_HIGHS_LOG` | `1`, `true` or `yes` to enable | Mirrors HiGHS's own log to the console (it always reaches the run log) |
 
 See [Solver Details](../domain_simulation_logic/trade_model/overview_trade_model.md#solver-details) for what each algorithm does and the fallback on a failed solve.
-
-## Example `.env` File
-
-An example of what the `.env` file might contain:
-
-```dotenv
-# ~/.steelo/.env or <project_root>/.env
-STEELO_HOME=/custom/path/to/steelo
-```
 
 ## Backward Compatibility
 

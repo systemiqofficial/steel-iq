@@ -2,6 +2,7 @@ import xarray as xr
 import numpy as np
 import pandas as pd
 import logging
+import time
 
 # Set up SSL for bundled environments - do this BEFORE any imports that might use HTTPS
 import os
@@ -24,13 +25,18 @@ if getattr(sys, "frozen", False) or "steelo-electron" in sys.executable or "STEE
 
 from steelo.adapters.geospatial.geospatial_toolbox import create_global_grid_with_iso
 from steelo.adapters.geospatial.geospatial_calculations import (
+    coverage_to_percentile,
     calculate_lcoh_from_power_price,
     calculate_regional_hydrogen_ceiling,
+    effective_hydrogen_ceilings,
+    add_tiam_ucl_region,
     apply_hydrogen_price_cap,
     calculate_distance_to_demand_and_feedstock,
 )
 from steelo.adapters.repositories.interface import Repository
 from steelo.domain.models import CountryMappingService, Environment, PlotPaths
+from steelo.adapters.geospatial import boa_lcoe
+from steelo.utilities import energy_trace
 from steelo.utilities.variable_matching import LULC_LABELS_TO_NUM
 from steelo.utilities.plotting import (
     plot_screenshot,
@@ -374,120 +380,45 @@ def add_baseload_power_price(
     geo_paths: "GeoDataPaths",
     start_year: int | None = None,
     end_year: int | None = None,
-) -> xr.Dataset:
+) -> tuple[xr.Dataset, str]:
     """
-    Add pre-calculated baseload power price to the dataset.
+    Add the baseload LCOE of the year to the dataset, from the promoted BOA file for the coverage.
 
-    The baseload power price is the LCOE (Levelized Cost of Energy) of the optimal renewable energy solution
-    for the given coverage percentage. LCOE values are pre-calculated for select years and linearly interpolated
-    for in-between years to reduce computational cost. Target years outside the pre-calculated span reuse the
-    nearest snapshot unchanged — so a simulation running past the last BOA year holds that year's LCOE flat.
+    The baseload power price is the LCOE (levelised cost of electricity) of the optimal solar, wind and battery
+    system for the given coverage, in USD per MWh delivered by that system. One promoted file per coverage holds
+    every investment year; a year the file does not hold is interpolated linearly, and a year outside its span
+    reuses the nearest year, so a simulation running past the file's last year holds that LCOE flat.
 
     Args:
         ds: Dataset to add baseload power price to
         baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
         target_year: Simulation year for which to retrieve/interpolate LCOE
-        geo_paths: Paths to geospatial data files (baseload power simulation directory)
+        geo_paths: Paths to geospatial data files; ``baseload_lcoe_dir`` holds the promoted files
         start_year: Simulation start year. Used together with ``end_year`` to limit the
             optimal-LCOE map plot to milestone years (start, end, and every 5 years after
             start). If either bound is None, every year is plotted.
         end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
-        Dataset with added 'lcoe' variable containing baseload power price (USD/kWh)
+        The dataset with an added ``lcoe`` variable (USD/kWh), and the file's ``lcoe_basis``.
 
     Side Effects:
         - Generates and saves plot of optimal LCOE (milestone years only) and histogram
+
+    Notes:
+        The file is picked by its coverage token and refused unless it states the contract steel-iq reads
+        (``boa_lcoe.open_lcoe_file``).
     """
     logger = logging.getLogger(f"{__name__}.add_baseload_power_price")
-    # Ensure required paths are provided
-    if not geo_paths or not geo_paths.baseload_power_sim_dir:
-        raise ValueError(
-            "baseload_power_sim_dir is required for baseload power cost calculations. "
-            "Ensure geo_paths is provided and contains baseload_power_sim_dir."
-        )
-    baseload_dir = geo_paths.baseload_power_sim_dir
-
-    # Find all available LCOE files and their years
-    p = int((1 - baseload_coverage) * 100)
-    lcoe_dir = baseload_dir / f"p{str(p)}" / "GLOBAL"
-    lcoe_files = list(lcoe_dir.glob(f"optimal_sol_GLOBAL_*_p{str(p)}.nc"))
-    available_years = []
-    file_map = {}
-    for f in lcoe_files:
-        try:
-            year_str = f.name.split("_")[3]
-            year = int(year_str)
-            available_years.append(year)
-            file_map[year] = f
-        except Exception:
-            continue
-    if not available_years:
-        raise FileNotFoundError(f"No LCOE files found in {lcoe_dir}")
-
-    # Outside the span BOA has snapshots for, hold the nearest endpoint flat. Interpolating past
-    # the last snapshot would silently yield an all-NaN LCOE grid rather than failing.
-    effective_year = min(max(target_year, min(available_years)), max(available_years))
-    if effective_year != target_year:
-        logger.warning(
-            f"[GEO LAYERS] No baseload LCOE snapshot at or beyond year {target_year}; "
-            f"reusing the {effective_year} values."
-        )
-
-    if effective_year in available_years:
-        # Choose the data for the target year if available
-        logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {effective_year}.")
-        baseload_lcoe_path = file_map[effective_year]
-        baseload_data = xr.open_dataset(baseload_lcoe_path)
-        baseload_lcoe_year = baseload_data["lcoe"]
-        # Also extract overbuild factors if available
-        has_overbuild_factors = all(
-            factor in baseload_data for factor in ["solar_factor", "wind_factor", "battery_factor"]
-        )
-        if has_overbuild_factors:
-            solar_factor_year = baseload_data["solar_factor"]
-            wind_factor_year = baseload_data["wind_factor"]
-            battery_factor_year = baseload_data["battery_factor"]
-    else:
-        # If not, interpolate among the two closest years to the target year (below and above).
-        # Clamping above guarantees both neighbours exist.
-        years_sorted = sorted(available_years)
-        low_year = max(y for y in years_sorted if y <= effective_year)
-        high_year = min(y for y in years_sorted if y >= effective_year)
-        logger.info(
-            f"[GEO LAYERS] Interpolating baseload LCOE for year {effective_year} from years {low_year} and {high_year}."
-        )
-        baseload_lcoe = []
-        solar_factors = []
-        wind_factors = []
-        battery_factors = []
-        has_overbuild_factors = False
-        for ref_year in sorted(set([low_year, high_year])):
-            baseload_lcoe_path = file_map[ref_year]
-            baseload_data = xr.open_dataset(baseload_lcoe_path)
-            baseload_lcoe.append(baseload_data["lcoe"].expand_dims(year=[ref_year]))
-            # Check if overbuild factors are available
-            if all(factor in baseload_data for factor in ["solar_factor", "wind_factor", "battery_factor"]):
-                has_overbuild_factors = True
-                solar_factors.append(baseload_data["solar_factor"].expand_dims(year=[ref_year]))
-                wind_factors.append(baseload_data["wind_factor"].expand_dims(year=[ref_year]))
-                battery_factors.append(baseload_data["battery_factor"].expand_dims(year=[ref_year]))
-        baseload_lcoe_concat = xr.concat(baseload_lcoe, dim="year")
-        baseload_lcoe_year = baseload_lcoe_concat.interp(year=effective_year, method="linear").drop_vars("year")
-        if has_overbuild_factors:
-            solar_factor_concat = xr.concat(solar_factors, dim="year")
-            solar_factor_year = solar_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
-            wind_factor_concat = xr.concat(wind_factors, dim="year")
-            wind_factor_year = wind_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
-            battery_factor_concat = xr.concat(battery_factors, dim="year")
-            battery_factor_year = battery_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
+    p = coverage_to_percentile(baseload_coverage)
+    lcoe_file = boa_lcoe.pick_lcoe_file(geo_paths.baseload_lcoe_dir, baseload_coverage)
+    with boa_lcoe.open_lcoe_file(lcoe_file, baseload_coverage) as lcoe_ds:
+        lcoe_basis = lcoe_ds.attrs["lcoe_basis"]
+        baseload_lcoe_year = boa_lcoe.lcoe_for_year(lcoe_ds, target_year).load()
+    logger.info(f"[GEO LAYERS] Baseload LCOE for {target_year} from {lcoe_file}.")
     baseload_lcoe_year = baseload_lcoe_year * PERMWh_TO_PERkWh  # USD/MWh to USD/kWh (BOA in USD/MWh, PAM in USD/kWh)
-
-    # Merge LCOE and overbuild factors if available
-    if has_overbuild_factors:
-        ds = xr.merge([ds, baseload_lcoe_year, solar_factor_year, wind_factor_year, battery_factor_year])
-    else:
-        ds = xr.merge([ds, baseload_lcoe_year])
+    ds = xr.merge([ds, baseload_lcoe_year])
+    energy_trace.lcoe_source_medians(ds, target_year)
 
     # Only plot the optimal-LCOE map on milestone years to avoid one map per simulation year.
     is_milestone_year = (
@@ -519,7 +450,7 @@ def add_baseload_power_price(
         xlabel="LCOE (USD/kWh)",
     )
 
-    return ds
+    return ds, lcoe_basis
 
 
 def add_grid_power_price(
@@ -529,11 +460,14 @@ def add_grid_power_price(
     geo_paths: "GeoDataPaths",
 ) -> xr.Dataset:
     """
-    Assign country-level grid power prices to each grid cell based on ISO3 codes.
+    Assign grid power prices to each grid cell, at the cell's geo key where the input costs have a row, else its
+    country.
 
     Args:
-        ds: Dataset to add grid prices to (must contain 'iso3' and 'feasibility_mask' variables)
-        input_costs: Dictionary mapping ISO3 codes to year-specific costs including electricity prices
+        ds: Dataset to add grid prices to (must contain 'iso3' and 'feasibility_mask' variables, and optionally
+            'geo_key' from ``hydrogen_lcoe.build_geo_key_grid``)
+        input_costs: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to year-specific
+            costs including electricity prices
         year: Simulation year
         geo_paths: Paths to geospatial data files for plotting outputs
 
@@ -542,28 +476,26 @@ def add_grid_power_price(
 
     Side Effects:
         - Generates and saves plot of grid power prices
+        - Traces the raster as the ``site_grid`` stage
 
-    Note:
-        For grid cells without a matching ISO3 code, the maximum grid price is used as a fallback.
+    Notes:
+        Each cell resolves at its geo key, then its iso3. Cells with neither get the highest country-level grid
+        price as a never-site-here fallback, so a province priced above every country never sets it. Without a
+        'geo_key' variable every cell resolves at its iso3.
     """
     logger = logging.getLogger(f"{__name__}.add_grid_power_price")
-    # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
-    grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
-    iso3_vals = ds["iso3"].values
-    # Hash lookup; np.isin sorts the million object strings and takes about 30 s per call
-    known_mask = pd.Series(iso3_vals.ravel()).isin(grid_price.index).to_numpy().reshape(iso3_vals.shape)
+    prices, known_mask = _grid_prices(ds, input_costs, year)
     fallback_mask = ~known_mask & (ds["feasibility_mask"].values > 0)
     fallback_count = int(fallback_mask.sum())
     if fallback_count:
-        fallback_iso3 = sorted(set(iso3_vals[fallback_mask].tolist()))
+        keys = _grid_price_keys(ds, input_costs)
+        fallback_iso3 = sorted(set(keys[fallback_mask].tolist()))
         logger.warning(
             f"[GEO LAYERS] {fallback_count} feasible cells have no grid price for iso3 {fallback_iso3}; "
-            f"assigning the maximum grid price as a never-site-here fallback."
+            f"assigning the maximum country grid price as a never-site-here fallback."
         )
-    # One reindex over the flattened grid replaces a per-cell Python lambda (~1M calls/year)
-    prices = grid_price.reindex(iso3_vals.ravel()).to_numpy(dtype=float)
-    prices[~known_mask.ravel()] = grid_price.max()
-    ds["grid_price"] = (("lat", "lon"), prices.reshape(iso3_vals.shape))
+    ds["grid_price"] = (("lat", "lon"), prices)
+    energy_trace.site_grid(ds, year, input_costs)
 
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
     plot_screenshot(
@@ -574,6 +506,116 @@ def add_grid_power_price(
         plot_paths=plot_paths_obj,
     )
     return ds
+
+
+def _grid_price_keys(ds: xr.Dataset, input_costs: dict[str, dict[int, dict[str, float]]]) -> np.ndarray:
+    """
+    The input-cost key each cell's grid price resolves at.
+
+    Args:
+        ds: Dataset with 'iso3' and optionally 'geo_key'.
+        input_costs: Geo key to year to carrier price.
+
+    Returns:
+        Per cell (lat, lon), its geo key where the input costs have a row for it, else its iso3.
+    """
+    priced = pd.Index(list(input_costs))
+    keys = ds["iso3"].values
+    if "geo_key" in ds:
+        geo_keys = ds["geo_key"].values
+        # Hash lookup; np.isin sorts the million object strings and takes about 30 s per call
+        is_priced = pd.Series(geo_keys.ravel()).isin(priced).to_numpy().reshape(geo_keys.shape)
+        keys = np.where(is_priced, geo_keys, keys)
+    return keys
+
+
+def _grid_prices(
+    ds: xr.Dataset, input_costs: dict[str, dict[int, dict[str, float]]], year: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Each cell's grid power price, without plots, trace or logging.
+
+    Args:
+        ds: Dataset with 'iso3' and optionally 'geo_key'.
+        input_costs: Geo key to year to carrier price, electricity in USD/kWh.
+        year: Simulation year.
+
+    Returns:
+        The grid price per cell (lat, lon) in USD/kWh, and whether the cell's key has a row. A cell without one
+        takes the highest country-level grid price.
+    """
+    grid_price = pd.Series({key: input_costs[key][year]["electricity"] for key in input_costs})
+    keys = _grid_price_keys(ds, input_costs)
+    known_mask = pd.Series(keys.ravel()).isin(grid_price.index).to_numpy().reshape(keys.shape)
+    # One reindex over the flattened grid replaces a per-cell Python lambda (~1M calls/year)
+    prices = grid_price.reindex(keys.ravel()).to_numpy(dtype=float)
+    prices[~known_mask.ravel()] = grid_price[[":" not in key for key in grid_price.index]].max()
+    return prices.reshape(keys.shape), known_mask
+
+
+def site_hydrogen_ceilings(
+    base_ds: xr.Dataset,
+    years: range,
+    input_costs: dict[str, dict[int, dict[str, float]]],
+    baseload_coverage: float,
+    baseload_lcoe_grid: xr.DataArray | None,
+    hydrogen_efficiency: dict[Year, float],
+    hydrogen_capex_opex: dict[str, dict[Year, float]],
+    country_mappings: CountryMappingService,
+    geo_config: "GeoConfig",
+) -> dict[Year, dict[str, float]]:
+    """
+    New sites' effective hydrogen ceiling of every region in every year, as each year's site raster sets it.
+
+    Args:
+        base_ds: The geospatial step's base layers, with 'iso3' and 'geo_key'.
+        years: The years to compute (``Environment.site_hydrogen_ceiling_years``).
+        input_costs: Geo key to year to carrier price, electricity in USD/kWh.
+        baseload_coverage: Share of power demand the baseload system covers (0.0 to 1.0).
+        baseload_lcoe_grid: Every year's baseload LCOE (year, lat, lon) in USD/MWh; None without a baseload share.
+        hydrogen_efficiency: Year to the electrolyser's electricity use (MWh/kg).
+        hydrogen_capex_opex: Geo key to year to the electrolyser's capital and operating cost (USD/kg).
+        country_mappings: CountryMappingService with region mappings.
+        geo_config: Configuration with the ceiling percentile and the trade settings.
+
+    Returns:
+        Year to TIAM-UCL region to effective ceiling (USD/kg).
+
+    Raises:
+        ValueError: As ``calculate_lcoh_from_power_price``, for a year without electrolyser data; or if a baseload
+            share has no LCOE grid.
+
+    Notes:
+        Prices the cells as the yearly step does (the grid price, the baseload LCOE blended at the coverage,
+        then the LCOH), takes each region's percentile and lowers it by the trade option. A year past the LCOE
+        file's last year holds that year's LCOE, as ``boa_lcoe.lcoe_for_year`` does for the raster. Only the pure parts
+        run: no plot, map or trace stage. Logs its wall time at INFO.
+    """
+    logger = logging.getLogger(f"{__name__}.site_hydrogen_ceilings")
+    start = time.time()
+    ceilings: dict[Year, dict[str, float]] = {}
+    for year in years:
+        ds = base_ds[["iso3", "geo_key"]].copy()
+        prices, _ = _grid_prices(ds, input_costs, year)
+        ds["grid_price"] = (("lat", "lon"), prices)
+        if baseload_coverage > 0:
+            if baseload_lcoe_grid is None:
+                raise ValueError("A power mix with a baseload share needs the baseload LCOE grid loaded at bootstrap")
+            lcoe = boa_lcoe.lcoe_for_year(baseload_lcoe_grid.to_dataset(), year) * PERMWh_TO_PERkWh
+            ds = xr.merge([ds, lcoe])
+            ds["power_price"] = (1 - baseload_coverage) * ds["grid_price"] + baseload_coverage * ds["lcoe"]
+        else:
+            ds["power_price"] = ds["grid_price"]
+        ds = calculate_lcoh_from_power_price(ds, year, hydrogen_efficiency, hydrogen_capex_opex)
+        regional_ceiling = calculate_regional_hydrogen_ceiling(
+            ds, country_mappings, geo_config.hydrogen_ceiling_percentile
+        )
+        ceilings[Year(year)] = effective_hydrogen_ceilings(regional_ceiling, geo_config)
+    logger.info(
+        f"[GEO LAYERS] Precomputed site hydrogen ceilings for {years.start} to {years.stop - 1} "
+        f"({len(years)} years) in {time.time() - start:.1f} s"
+    )
+    return ceilings
 
 
 def add_power_price(
@@ -593,9 +635,10 @@ def add_power_price(
         where p = baseload_coverage
 
     Args:
-        ds: Dataset to add power prices to
+        ds: Dataset to add power prices to (with 'iso3', 'feasibility_mask' and optionally 'geo_key')
         year: Simulation year
-        input_costs: Dictionary mapping ISO3 codes to year-specific costs including electricity prices
+        input_costs: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to year-specific
+            costs including electricity prices
         baseload_coverage: Percentage of power requirement covered by own baseload installation (0.0 to 1.0)
         geo_paths: Paths to geospatial data files
         start_year: Simulation start year. Used together with ``end_year`` to limit the
@@ -611,8 +654,8 @@ def add_power_price(
         - Generates and saves plot of power prices (milestone years only) and histogram (final year only)
 
     Note:
-        The baseload LCOE is already calculated for the specified coverage percentage, so no additional
-        multiplication by (1-p) is needed.
+        The promoted LCOE files price the MWh the baseload system delivers, which covers the share p of demand,
+        so the LCOE is weighted by p and the grid price by 1 - p.
     """
     logger = logging.getLogger(f"{__name__}.add_power_price")
     logger.info(
@@ -621,7 +664,7 @@ def add_power_price(
     )
     ds = add_grid_power_price(ds, input_costs, year, geo_paths=geo_paths)
     if baseload_coverage > 0:
-        ds = add_baseload_power_price(
+        ds, lcoe_basis = add_baseload_power_price(
             ds,
             baseload_coverage,
             year,
@@ -629,7 +672,8 @@ def add_power_price(
             start_year=start_year,
             end_year=end_year,
         )
-        ds["power_price"] = ds["grid_price"] * (1 - baseload_coverage) + ds["lcoe"]
+        ds["power_price"] = (1 - baseload_coverage) * ds["grid_price"] + baseload_coverage * ds["lcoe"]
+        energy_trace.site_power(ds, year, baseload_coverage, lcoe_basis)
         title = "Power Price - combination of baseload and grid for full coverage (USD/MWh)"
     else:
         ds["power_price"] = ds["grid_price"]
@@ -650,7 +694,7 @@ def add_power_price(
             plot_paths=plot_paths_obj,
         )
     if end_year is None or year == end_year:
-        p = int((1 - baseload_coverage) * 100)
+        p = coverage_to_percentile(baseload_coverage)
         plot_value_histogram(
             ds,
             var_name="power_price",
@@ -674,26 +718,30 @@ def add_capped_hydrogen_price(
     baseload_coverage: float,
     geo_config: "GeoConfig",
     geo_paths: "GeoDataPaths",
+    hydrogen_ceiling: dict[str, float],
     start_year: int | None = None,
     end_year: int | None = None,
 ) -> xr.Dataset:
     """
-    Calculate and apply regional ceilings to hydrogen prices for each grid cell.
+    Calculate hydrogen prices for each grid cell and cap them at the year's regional ceilings.
 
     Steps:
         1. Calculate the LCOH per grid cell based on the power price
-        2. Calculate the hydrogen ceiling for each interconnected region
-        3. Apply regional ceilings and intraregional trade options to set capped hydrogen price
+        2. Add each cell's interconnected trade region
+        3. Cap each cell's LCOH at its region's effective ceiling of the year
 
     Args:
-        ds: Dataset with power prices (must contain 'power_price' and 'iso3' variables)
+        ds: Dataset with power prices (must contain 'power_price' and 'iso3' variables, optionally 'geo_key')
         year: Simulation year
         hydrogen_efficiency: Dictionary mapping years to electrolyser efficiency values (MWh/kg)
-        hydrogen_capex_opex: Dictionary mapping country codes to year-specific CAPEX and OPEX values (USD/kg)
+        hydrogen_capex_opex: Dictionary mapping geo keys (ISO3, or ``ISO3:CODE`` for a sub-national row) to
+            year-specific CAPEX and OPEX values (USD/kg)
         country_mappings: CountryMappingService with region mappings for hydrogen trade
         baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
         geo_config: Configuration containing hydrogen ceiling percentile and trade settings
         geo_paths: Paths to geospatial data files for plotting outputs
+        hydrogen_ceiling: Region to its effective ceiling of the year (USD/kg), precomputed by
+            ``site_hydrogen_ceilings`` (``Environment.site_hydrogen_ceilings_for_year``)
         start_year: Simulation start year. Used together with ``end_year`` to limit the
             capped-LCOH map plot to milestone years (start, end, and every 5 years after
             start). If either bound is None, every year is plotted.
@@ -704,13 +752,18 @@ def add_capped_hydrogen_price(
 
     Side Effects:
         - Generates and saves plot of capped LCOH (milestone years only)
+        - Traces the rasters as the ``site_hydrogen`` stage
+
+    Notes:
+        The ceilings are the ones new sites lock, so the raster and every lock read one source.
     """
     logger = logging.getLogger(f"{__name__}.add_capped_hydrogen_price")
     logger.info("[GEO LAYERS] Adding (capped) LCOH (Levelized Cost of Hydrogen) to the dataset.")
 
     ds = calculate_lcoh_from_power_price(ds, year, hydrogen_efficiency, hydrogen_capex_opex)
-    regional_ceiling = calculate_regional_hydrogen_ceiling(ds, country_mappings, geo_config.hydrogen_ceiling_percentile)
-    ds = apply_hydrogen_price_cap(ds, regional_ceiling, geo_config)
+    ds = add_tiam_ucl_region(ds, country_mappings)
+    ds = apply_hydrogen_price_cap(ds, hydrogen_ceiling)
+    energy_trace.site_hydrogen(ds, year, hydrogen_ceiling, hydrogen_efficiency, hydrogen_capex_opex, geo_config)
 
     is_milestone_year = (
         start_year is None or end_year is None or year == start_year or year == end_year or (year - start_year) % 5 == 0
@@ -724,7 +777,7 @@ def add_capped_hydrogen_price(
             var_type="sequential",
             min_val=1,
             max_val=7,
-            save_name=f"lcoh_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
+            save_name=f"lcoh_{str(year)}_p{str(coverage_to_percentile(baseload_coverage))}",
             plot_paths=plot_paths_obj,
         )
 

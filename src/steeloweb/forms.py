@@ -8,6 +8,7 @@ from steelo.capacity_policy.config import CapacityPolicyConfig
 from steelo.capacity_policy.pool import BANKED_CREDIT_RULES
 from steelo.domain.constants import END_YEAR_DEFAULT, MT_TO_T, START_YEAR_DEFAULT
 from steelo.simulation import config_default
+from steelo.utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 
 from .models import ModelRun, DataPreparation, MasterExcelFile
 
@@ -164,10 +165,9 @@ FIELD_EXPLANATIONS: dict[str, str] = {
         "Caps the levelised cost of hydrogen in each region of the master's country mapping at this percentile of the "
         "region's costs: across its countries for operating plants, and across its grid cells for new plant sites. "
         "Costs above the cap fall to it, so lower values make hydrogen cheaper in a region's dearest places. 100 "
-        "leaves national and grid-cell costs uncapped unless intraregional trade is allowed, which can lower the cap "
-        "to a linked region's cap plus the pipeline transport cost. A sub-national price row is capped at its region's "
-        "ceiling too, which is taken over national costs only, so even at 100 one dearer than its region's dearest "
-        "country falls to that country's cost."
+        "leaves national, sub-national and grid-cell costs uncapped unless intraregional trade is allowed, which can "
+        "lower the cap to a linked region's cap plus the pipeline transport cost. Below 100, a sub-national price row "
+        "is capped at its region's ceiling too, which is taken over national costs only."
     ),
     "geographical_clustering_scope": (
         "With clustering on, the trade allocation merges furnace groups of one technology and feedstock; this scope "
@@ -197,8 +197,8 @@ FIELD_EXPLANATIONS: dict[str, str] = {
     "consideration_time": (
         "A considered new plant has its NPV recalculated every year; once its last N NPVs are all positive it enters "
         "the announcement draw, and once they are all negative it is dropped, while mixed results keep it under "
-        "consideration. The technologies on offer are those allowed N + 1 years ahead. Higher values slow the uptake "
-        "of new plants and filter out one-off good years."
+        "consideration. The technologies on offer are those allowed N years ahead (2 when N is 1). Higher values slow "
+        "the uptake of new plants and filter out one-off good years."
     ),
     "new_capacity_share_from_new_plants": (
         "Splits each year's iron and steel capacity limits: a new plant starts construction only if it fits within "
@@ -289,6 +289,7 @@ class ModelRunCreateForm(forms.ModelForm):
     # Geospatial section choices
     INCLUDED_POWER_MIX_CHOICES = [
         ("85% baseload + 15% grid", "85% baseload + 15% grid"),
+        ("90% baseload + 10% grid", "90% baseload + 10% grid"),
         ("95% baseload + 5% grid", "95% baseload + 5% grid"),
         ("Not included", "Not included"),
         ("Grid only", "Grid only"),
@@ -1142,7 +1143,8 @@ class ModelRunCreateForm(forms.ModelForm):
         Notes:
             A lever set that ``CapacityPolicyConfig`` refuses, the switch on a preparation without the capacity pool
             fixtures, a credit validity without the switch, a preparation whose emission factors cannot be read,
-            one without the scenario index and a scenario pair its index lacks are form errors. A blank steel demand
+            one without the scenario index, a scenario pair its index lacks and a baseload power mix (a blank one
+            reads as the class default) on a preparation without the default LCOE files are form errors. A blank steel demand
             scenario takes the field's initial (the class default when the preparation holds it, else its first),
             and a blank scrap scenario ("Same as demand") the steel demand one.
         """
@@ -1166,6 +1168,19 @@ class ModelRunCreateForm(forms.ModelForm):
                         f"This data preparation has no {self.fields[name].label.lower()} named "
                         f"{cleaned_data[name]!r}; pick one it holds.",
                     )
+        # Bootstrap stops a baseload mix without its LCOE files, so the form says so before the run starts
+        if "data_preparation" in cleaned_data and "included_power_mix" in cleaned_data:
+            power_mix = cleaned_data["included_power_mix"] or self.fields["included_power_mix"].initial
+            if (
+                POWER_MIX_TO_COVERAGE_MAP[power_mix] > 0
+                and not cleaned_data["data_preparation"].has_default_baseload_lcoe_files()
+            ):
+                self.add_error(
+                    "included_power_mix",
+                    "This data preparation was made before geo-data 3.0.0, which ships the baseload LCOE files a "
+                    "baseload power mix reads. Pick Grid only, or upload the master again under a new name and "
+                    "prepare it; this preparation and its runs stay.",
+                )
         start_year = cleaned_data.get("start_year")
         end_year = cleaned_data.get("end_year")
 

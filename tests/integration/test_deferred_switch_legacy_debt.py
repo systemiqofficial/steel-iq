@@ -74,6 +74,7 @@ def make_switch_command(plant, furnace_group) -> commands.ChangeFurnaceGroupTech
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
 
 
@@ -99,6 +100,7 @@ def run_deferred_switch(plant, furnace_group, decision_year: int = 2025):
     uow = SimpleNamespace(plants=SimpleNamespace(get=lambda plant_id: plant))
 
     for env_year in range(decision_year + 1, year_of_switch + 1):
+        env.year = Year(env_year)
         furnace_group.lifetime.current = Year(env_year)
         if furnace_group.future_switch_year == env_year and furnace_group.future_switch_cmd is not None:
             execute_scheduled_technology_switch(furnace_group.future_switch_cmd, uow=uow, env=env)
@@ -186,6 +188,7 @@ def test_second_switch_combines_existing_legacy_debt_once():
         capex_no_subsidy=NEW_CAPEX,
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
+        captive_energy=None,
         bom=BOM,
         legacy_years=furnace_group.lifetime.remaining_number_of_years,
     )

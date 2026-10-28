@@ -42,13 +42,16 @@ Not all locations are suitable for building steel plants. The feasibility mask f
 
 ### Power Prices
 Electricity costs vary by location and depend on the user-configured power mix. Three options are available:
-- **Baseload renewable** (85% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
+- **Baseload renewable** (85%, 90% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
 `power_price = baseload_coverage × lcoe_baseload + (1 - baseload_coverage) × grid_price`
-- **Grid only**: Uses country-level grid electricity prices from input data
+  The BOA LCOE is the cost per MWh delivered by the renewable system, so it is weighted by the share it delivers.
+- **Grid only**: Uses grid electricity prices from input data
 - **Not included**: Sets power price to zero. This is only valid for the selection of best locations. New plant energy costs are set to the grid power price in this case since they cannot be zero.
 
+The grid price of a cell is the master's `Input costs` electricity for the cell's geo unit (for example `CHN:CN-XJ`) where the master has a sub-national row, otherwise for its country. Cells are tagged with their geo unit by point-in-polygon against the Natural Earth admin-1 layer, gated by `geo_hierarchy.json`. Unlike plant locations, a cell whose centre falls outside every admin-1 polygon (some coastal cells) gets no nearest-unit fallback and stays at country level. A feasible cell whose country has no price takes the highest country-level grid price, never a province's, so it is never chosen as a site.
+
 ### Hydrogen Costs
-The levelized cost of hydrogen (LCOH) is calculated from the power prices set above based on country-specific electrolyzer efficiency and electricity consumption. To prevent unrealistically high costs in regions with poor renewable resources, a regional ceiling can be applied: a percentile of the region's LCOH below 100. By default the ceiling sits at the 100th percentile and intraregional trade is off, so each location pays its own LCOH.
+The levelised cost of hydrogen (LCOH) is calculated from the power prices set above, the electrolyser's electricity use and its CAPEX/OPEX: `lcoh = kWh per kg × power_price + capex_opex`. The electricity use is one value per year, the same worldwide (the master's `Hydrogen efficiency`). The CAPEX/OPEX is the master's value for the cell's geo unit where it has a sub-national row, otherwise for its country. To prevent unrealistically high costs in regions with poor renewable resources, a regional ceiling can be applied: a percentile below 100 of the LCOH across the region's cells. By default the ceiling sits at the 100th percentile and intraregional trade is off, so each location pays its own LCOH.
 
 **Intraregional Hydrogen Trade:**
 Optionally, regions can import hydrogen from connected regions. When enabled, the capped LCOH accounts for the possibility of importing hydrogen via pipeline from neighboring regions at their regional ceiling price plus long-distance transport costs. The hydrogen trade network is the following (to ↔ from):
@@ -74,6 +77,8 @@ Optionally, regions can import hydrogen from connected regions. When enabled, th
 4. If intraregional trade is enabled: `capped_lcoh = min(lcoh, regional_ceiling, min_connected_ceiling + pipeline_cost)`
    - Where `min_connected_ceiling` is the lowest ceiling among connected trade regions
    - And `pipeline_cost` is the long-distance hydrogen pipeline transport cost per kg
+
+The effective ceilings of steps 2 to 4 are computed once, in the first geospatial year, for every year a new site can lock its hydrogen supply (`site_hydrogen_ceilings`); each year's raster is then capped at the stored ceilings of its year (see [Energy Prices](../overarching_elements/energy_prices.md#1-the-site-rasters)).
 
 **Configuration:**
 - `hydrogen_ceiling_percentile`: Percentile for regional cap (default: 100, which leaves hydrogen prices uncapped); `run_simulation --hydrogen-ceiling-percentile`
@@ -236,15 +241,16 @@ The wrapper function `get_candidate_locations_for_opening_new_plants()` in `src/
 
 1. **Calculate baseload coverage** - Determines the percentage of power from renewable baseload sources based on user configuration
 2. **Add ISO3 codes** - Assigns country codes to each grid point (cached for reuse)
-3. **Add feasibility mask** - Filters out sea, mountains, steep slopes, and extreme latitudes (cached for reuse)
-4. **Add power prices** - Calculates electricity costs from baseload renewable energy and/or grid
-5. **Add capped hydrogen price** - Computes hydrogen costs with regional ceiling constraints (and intraregional trade, if allowed)
-6. **Add CAPEX proxy** - Estimates capital costs for steel/iron-making technologies
-7. **Add infrastructure costs** - Calculates railway buildout costs (cached for reuse)
-8. **Add transportation costs** - Computes shipping costs to demand centers and from feedstock sources (optional)
-9. **Add land type factor** - Applies CAPEX multipliers based on land cover type (optional)
-10. **Calculate priority KPI** - Combines all layers into final priority rankings
-11. **Extract energy prices** - Stores power and hydrogen costs for downstream NPV calculations
+3. **Build geo keys** - Tags each grid point with its sub-national geo unit where `geo_hierarchy.json` declares one, else its country; grid prices and electrolyser costs resolve at it. In the first year only, the effective hydrogen ceiling of every region is then precomputed for every year a new site can lock
+4. **Add feasibility mask** - Filters out sea, mountains, steep slopes, and extreme latitudes (cached for reuse)
+5. **Add power prices** - Calculates electricity costs from baseload renewable energy and/or grid
+6. **Add capped hydrogen price** - Computes hydrogen costs capped at the year's stored regional ceilings (with intraregional trade, if allowed)
+7. **Add CAPEX proxy** - Estimates capital costs for steel/iron-making technologies
+8. **Add infrastructure costs** - Calculates railway buildout costs (cached for reuse)
+9. **Add transportation costs** - Computes shipping costs to demand centers and from feedstock sources (optional)
+10. **Add land type factor** - Applies CAPEX multipliers based on land cover type (optional)
+11. **Calculate priority KPI** - Combines all layers into final priority rankings
+12. **Extract energy prices** - Stores power and hydrogen costs for downstream NPV calculations
 
 **Timing & Performance:**
 Each step is timed and logged separately (`[GEO TIMING]`, DEBUG). After vectorisation of the priority-KPI and lottery loops, a steady-state year takes well under a minute at the default 0.25° resolution; the first year is slower while static layers are built. Runtime depends on:
@@ -283,7 +289,7 @@ Required file paths:
 | `terrain_nc_path` | NetCDF file with land-sea mask, altitude, slope |
 | `lulc_nc_path` | NetCDF file with land cover classifications |
 | `shp_countries_path` | Shapefile with country boundaries (for ISO3 codes) |
-| `baseload_power_sim_dir` | Directory with pre-calculated renewable LCOE files - see baseload power documentation to modify |
+| `baseload_lcoe_dir` | Folder of the promoted BOA LCOE files: the run `--boa-run` names, else the prepared data's `outputs/GEO/baseload_lcoe/` - see the baseload power documentation |
 | `geo_plots_dir` | Output directory for plots |
 
 ### Output Format
@@ -352,5 +358,6 @@ The outgoing cashflow proxy is based on the geospatial indicators we consider th
 ## Related Documentation
 
 - [New Plant Opening Logic](new_plant_opening.md) - How candidate locations are used to create new plants
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - Where the site power and hydrogen prices go after selection
 - [Baseload Power Optimization](baseload_optimization_atlas.md) - Details on renewable LCOE calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

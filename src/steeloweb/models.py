@@ -559,6 +559,18 @@ class DataPreparation(models.Model):
             for name in ("capacity_pool_provinces.json", "capacity_pool_technologies.json")
         )
 
+    def has_default_baseload_lcoe_files(self) -> bool:
+        """Whether the prepared data holds the default baseload LCOE files a baseload power mix reads.
+
+        Returns:
+            True when ``data/outputs/GEO/baseload_lcoe/`` holds at least one ``.nc`` file.
+
+        Notes:
+            Geo-data ships these files from 3.0.0 on, so a preparation made on an earlier package has none and its
+            runs stop at bootstrap unless the mix has no baseload share.
+        """
+        return any((Path(self.data_directory) / "data" / "outputs" / "GEO" / "baseload_lcoe").glob("*.nc"))
+
 
 @dataclass
 class Progress:
@@ -713,7 +725,6 @@ class ModelRun(models.Model):
             # Create subdirectories matching current structure
             (base_dir / "TM").mkdir(exist_ok=True)
             (base_dir / "GEO").mkdir(exist_ok=True)
-            (base_dir / "GEO" / "baseload_power_simulation").mkdir(parents=True, exist_ok=True)
             (base_dir / "plots").mkdir(exist_ok=True)
             (base_dir / "plots" / "PAM").mkdir(exist_ok=True)
             (base_dir / "plots" / "GEO").mkdir(exist_ok=True)
@@ -939,7 +950,6 @@ class ModelRun(models.Model):
             "countries_shapefile_dir",
             "disputed_areas_shapefile_dir",
             "landtype_percentage_nc_path",
-            "baseload_power_sim_dir",
             "feasibility_mask_path",
         ]
         for field in path_fields:

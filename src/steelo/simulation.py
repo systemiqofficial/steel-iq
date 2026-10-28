@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
 import sys
 
 from steelo.simulation_types import TechSettingsMap, get_default_technology_settings
+from steelo.utilities import energy_trace
 from steelo.utilities.memory_profiling import MemoryTracker
 
 from .capacity_policy.config import CapacityPolicyConfig
@@ -31,7 +32,6 @@ from .adapters.dataprocessing.postprocessing.post_process_datacollection import 
     extract_and_process_stored_dataCollection,
 )
 from .adapters.dataprocessing.postprocessing.generate_post_run_plots import generate_post_run_cap_prod_plots
-from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .viewer.extract import write_viewer_files
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T, INITIAL_SCRAP_PRODUCTION_COST
@@ -167,8 +167,9 @@ class GeoConfig:
     """
 
     # === Power and Hydrogen ===
-    included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "95% baseload + 5% grid", "Not included", "Grid only"
+    included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "90% baseload + 10% grid", "95% baseload + 5% grid", "Not included", "Grid only"
     hydrogen_ceiling_percentile: float = 100.0  # Percentile of a region's LCOH capping its hydrogen price; 100 = no cap
+    hydrogen_lcoe_percentile: float = 50.0  # Percentile of an area's LCOE cells in existing plants' hydrogen price
     intraregional_trade_allowed: bool = False  # Whether linked regions (e.g., Africa and Western Europe) trade hydrogen
     long_dist_pipeline_transport_cost: float = 1.0  # USD/kgH2
     # Which regions trade with which ones? (to[from])
@@ -453,10 +454,12 @@ class SimulationConfig:
     countries_shapefile_dir: Optional[Path] = None
     disputed_areas_shapefile_dir: Optional[Path] = None
     landtype_percentage_nc_path: Optional[Path] = None
-    baseload_power_sim_dir: Optional[Path] = None
     feasibility_mask_path: Optional[Path] = None
+    boa_run_dir: Optional[Path] = None  # Promoted BOA run pricing baseload power; None reads the prepared data's files
 
     # === Data Settings ===
+    boa_run: Optional[str] = None  # Name of the BOA run in boa_run_dir; None for the prepared data's default files
+    geo_data_version: Optional[str] = None  # Geo-data package the prepared data came from; None when not recorded
     use_master_excel: bool = False
     steel_plant_gem_data_year: int = 2025
     production_gem_data_years: list[int] = field(default_factory=lambda: list(range(2019, 2023)))
@@ -667,6 +670,8 @@ class SimulationConfig:
             self.disputed_areas_shapefile_dir = Path(self.disputed_areas_shapefile_dir)
         if self.landtype_percentage_nc_path is not None:
             self.landtype_percentage_nc_path = Path(self.landtype_percentage_nc_path)
+        if self.boa_run_dir is not None:
+            self.boa_run_dir = Path(self.boa_run_dir)
 
     @classmethod
     def from_data_directory(
@@ -685,7 +690,8 @@ class SimulationConfig:
 
         This method automatically detects and sets up all geo data paths if the files exist,
         making it easy to use from CLI, notebooks, and Django without having to specify
-        all individual file paths.
+        all individual file paths. It also reads the geo-data version the preparation wrote to
+        ``geo_data_version.txt`` into ``geo_data_version``.
 
         Args:
             start_year: First year of simulation
@@ -746,21 +752,14 @@ class SimulationConfig:
         elif disputed_areas_110m.exists():
             config_data["disputed_areas_shapefile_dir"] = disputed_areas_110m
 
-        # Add baseload power and feasibility mask paths if they exist
-        # Check if baseload_power_sim_dir is provided in kwargs (custom path from CLI)
-        if "baseload_power_sim_dir" in kwargs:
-            # Use the custom path provided via CLI
-            config_data["baseload_power_sim_dir"] = kwargs["baseload_power_sim_dir"]
-        elif path_resolver.baseload_power_sim_dir.exists():
-            # Use the default path from data directory
-            config_data["baseload_power_sim_dir"] = path_resolver.baseload_power_sim_dir
-
         if path_resolver.feasibility_mask_path.exists():
             config_data["feasibility_mask_path"] = path_resolver.feasibility_mask_path
 
-        # Override with any additional kwargs (except baseload_power_sim_dir which we already handled)
-        kwargs_without_baseload = {k: v for k, v in kwargs.items() if k != "baseload_power_sim_dir"}
-        config_data.update(kwargs_without_baseload)
+        if path_resolver.geo_data_version_path.exists():
+            config_data["geo_data_version"] = path_resolver.geo_data_version_path.read_text().strip()
+
+        # Override with any additional kwargs
+        config_data.update(kwargs)
 
         # Create a properly typed config dictionary
         typed_config: dict[str, Any] = {
@@ -1489,6 +1488,14 @@ class SimulationRunner:
                                 fg.output_energy_costs,
                                 fg.energy_costs_no_subsidy,
                             )
+            energy_trace.brownfield(
+                bus.uow.plants,
+                bus.env.year,
+                bus.env.input_costs,
+                capped_hydrogen_cost_dict,
+                bus.env.config.active_statuses,
+            )
+            energy_trace.greenfield_operating(bus.uow.plants, bus.env.year, bus.env.config.active_statuses)
             env_config = bus.env.config
             update_hot_metal_access(
                 bus.uow.plants.list(),
@@ -1499,6 +1506,7 @@ class SimulationRunner:
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()
+            energy_trace.greenfield_summary(bus.env.year)
             with LoggingConfig.simulation_logging("DebugLogging"):
                 data_collector.collect(
                     world_plant_list=bus.uow.plants.list(),
@@ -1817,9 +1825,6 @@ class SimulationRunner:
                 if fixtures_dir and self.config.capacity_policy.enabled
                 else None,
             )
-
-        # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
-        aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)
 
         write_viewer_files_after_run(self.config.output_dir)
 
