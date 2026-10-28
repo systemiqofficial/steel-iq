@@ -13,6 +13,7 @@ CONFIG_FIELD_OF_DEST = {
     "run_name": "run_name",
     "hydrogen_ceiling_percentile": "geo_config.hydrogen_ceiling_percentile",
     "intraregional_trade": "geo_config.intraregional_trade_allowed",
+    "power_mix": "geo_config.included_power_mix",
     "boa_run": "boa_run",
     "clustering": "enable_furnace_group_clustering",
     "clustering_scope": "geographical_clustering_scope",

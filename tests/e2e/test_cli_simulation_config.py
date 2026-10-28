@@ -370,6 +370,50 @@ def test_cli_hydrogen_trade_flags_land_on_the_geo_config(
 
 
 @pytest.mark.parametrize(
+    ("cached", "mix_argv", "expected_mix"),
+    [
+        (False, [], "85% baseload + 15% grid"),
+        (False, ["--power-mix", "95% baseload + 5% grid"], "95% baseload + 5% grid"),
+        (True, ["--power-mix", "90% baseload + 10% grid"], "90% baseload + 10% grid"),
+        (True, ["--power-mix", "Grid only"], "Grid only"),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_power_mix_lands_on_the_geo_config_and_the_run_record(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+    monkeypatch,
+    cached,
+    mix_argv,
+    expected_mix,
+):
+    """``--power-mix`` sets the run's power mix on a fresh or a cached preparation, and ``simulation_config.json`` records it."""
+    stub_cli_dependencies(tmp_path / "stubs", mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    if cached:
+        prepared = write_prepared_data(tmp_path / "prepared")
+        monkeypatch.setattr(DataPreparationCache, "get_cached_preparation", lambda cache, master: prepared)
+    argv = ["run_simulation", "--end-year", "2026", "--steelo-home", str(tmp_path / "home"), *mix_argv]
+
+    with patch.object(sys, "argv", argv):
+        run_full_simulation()
+
+    config = mock_create_runner.call_args[0][0]
+    assert config.geo_config.included_power_mix == expected_mix
+    record = json.loads((config.output_dir / "simulation_config.json").read_text())
+    assert record["geo_config"]["included_power_mix"] == expected_mix
+
+
+@pytest.mark.parametrize(
     "flag_argv, expected_enabled, expected_scope",
     [
         ([], True, "plant"),

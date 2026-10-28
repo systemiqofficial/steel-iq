@@ -14,6 +14,7 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--run-name RUN_NAME]
                       [--hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE]
                       [--intraregional-trade | --no-intraregional-trade]
+                      [--power-mix MIX]
                       [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
                       [--resume-from-year RESUME_FROM_YEAR]
                       [--master-excel MASTER_EXCEL] [--no-cache]
@@ -63,6 +64,11 @@ options:
   --intraregional-trade, --no-intraregional-trade
                         Allow hydrogen imports between linked regions
                         (default: the GeoConfig value, off)
+  --power-mix MIX       Power mix, quoted: Grid only, Not included, 85%
+                        baseload + 15% grid, 90% baseload + 10% grid, 95%
+                        baseload + 5% grid. A baseload mix reads the BOA LCOE
+                        file of its coverage (default: the GeoConfig value,
+                        85% baseload + 15% grid)
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Set the logging level (default: WARNING)
   --resume-from-year RESUME_FROM_YEAR
@@ -158,6 +164,9 @@ run_simulation --enable-capacity-policy --credit-validity-years 5
 
 # Cap regional hydrogen prices at the 20th LCOH percentile and allow hydrogen imports between linked regions
 run_simulation --hydrogen-ceiling-percentile 20 --intraregional-trade
+
+# Price new sites' power at 90% baseload, from geo-data's default 90% LCOE file
+run_simulation --power-mix "90% baseload + 10% grid"
 
 # Solve the trade LP with Gurobi instead of HiGHS (requires a license)
 run_simulation --optimization-solver gurobi

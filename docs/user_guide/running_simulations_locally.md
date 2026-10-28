@@ -382,6 +382,7 @@ Outputs go to a fresh `sim_<timestamp>/` directory under `--output-dir` (default
 - `--clustering-scope`: How finely furnace groups that use or make hot metal, DRI or liquid iron are clustered: `plant` (default), `plant_group` or `iso3`. See [Trade Model Setup](../domain_simulation_logic/trade_model/trade_model_setup.md)
 - `--hydrogen-ceiling-percentile`: Percentile of a region's LCOH used as the regional hydrogen price cap (default: 100, which disables the cap). See [Hydrogen Costs](../domain_simulation_logic/geospatial_model/priority_location_selection.md#hydrogen-costs)
 - `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
+- `--power-mix`: The power mix, quoted: `"85% baseload + 15% grid"` (default), `"90% baseload + 10% grid"`, `"95% baseload + 5% grid"`, `"Grid only"` or `"Not included"`. A baseload mix reads the BOA LCOE file of its coverage, from geo-data's default files or from the run `--boa-run` names
 
 **Data Files (usually handled automatically via caching):**
 - `--boa-run`: Promoted BOA run that prices baseload power: a folder, or a run name under `$BOA_DATA_ROOT` (else `~/.boa`) `/lcoe-only/`. An unknown name stops the run before any data preparation and lists the runs there. Without the flag, the run reads the default LCOE files that geo-data ships in the prepared data. See [Baseload Optimisation Atlas](../domain_simulation_logic/geospatial_model/baseload_optimisation_atlas.md#lcoe-files-read-by-steel-iq), and [Rerunning BOA for Baseload Power Prices](#rerunning-boa-for-baseload-power-prices) to produce a run
@@ -449,7 +450,7 @@ Run the steel simulation with: run_simulation --boa-run my_costs_<hash>
 - **Run folders**: BOA refuses, before any step, a run folder made by another BOA version, for another cost set, on another weather year or from another cost workbook; pass a new `--run`.
 - **Dry run**: `--dry-run` prints each BOA step and checks the arguments against the BOA data on disk, without preparing data or computing, and names no run to simulate with.
 - **Where results go**: under `$BOA_DATA_ROOT`, else `~/.boa`. `run_simulation --boa-run <name>` looks the name up under `lcoe-only/` in the same root, so set `$BOA_DATA_ROOT` the same way for both commands, or not at all.
-- **Disk and time**: a full run from 2025 to 2060 takes about 75 minutes per coverage, and one weather year with five coverages needs about 60 GB under the BOA data root. The first run also downloads BOA and its input data; later runs reuse what BOA has already prepared.
+- **Disk and time**: a full run from 2025 to 2060 takes about 75 minutes per coverage, and one weather year with five coverages needs about 60 GB under the BOA data root, of which the steel simulation reads only the promoted files, about 25 MB per coverage. [Where the BOA data comes from](../domain_simulation_logic/geospatial_model/baseload_optimisation_atlas.md#where-the-boa-data-comes-from) says what the rest holds, what can be deleted, and why a run with other cost assumptions is faster. The first run also downloads BOA and its input data; later runs reuse what BOA has already prepared.
 - **Years after the cost data**: BOA holds a cost workbook's last CAPEX year flat for any later investment year. The default cost data's year columns run to 2100 but keep their 2050 CAPEX in every later year BOA covers, so its LCOE from 2051 on equals 2050's. A custom workbook sets its own CAPEX for those years.
 - **Client data**: a custom cost workbook stays on this machine. Never upload or share it, and do not publish a promoted file built from it.
 
@@ -460,19 +461,19 @@ Run the steel simulation with: run_simulation --boa-run my_costs_<hash>
 3. **Run BOA on it**, under a cost-set name of its own:
 
    ```bash
-   steelo-boa-run --input-file my_costs.xlsx --scenario my_costs --coverage 0.85
+   steelo-boa-run --input-file my_costs.xlsx --scenario my_costs --coverage 0.85 0.9
    ```
 
-4. **Run the steel simulation** with the run name the command prints:
+4. **Run the steel simulation** with the run name the command prints, at a power mix whose coverage the BOA run includes:
 
    ```bash
-   run_simulation --boa-run my_costs_<hash>
+   run_simulation --boa-run my_costs_<hash> --power-mix "90% baseload + 10% grid"
    ```
 
-Two limits apply today:
+Two points to keep in mind:
 
-- **Coverage 0.85 on the command line**: `run_simulation` has no power-mix option, so it prices baseload power at its default mix, 85% baseload with 15% from the grid, and reads the BOA run's file for 85% coverage. The BOA run must include `--coverage 0.85`.
-- **Command line only**: the web interface does not take a BOA run, so its runs price baseload power from geo-data's default files.
+- **Coverage**: the simulation reads the BOA run's file for the coverage of its power mix, 85% unless `--power-mix` names another, so the BOA run must include that coverage.
+- **Command line only**: the web interface does not take a BOA run yet; its runs price baseload power from geo-data's default files.
 
 :::{only} not public
 

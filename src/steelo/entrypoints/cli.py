@@ -25,6 +25,7 @@ from ..simulation import SimulationConfig, config_as_json_dict, config_default, 
 from ..bootstrap import bootstrap_simulation
 from ..data.path_resolver import resolve_scenario_fixtures
 from ..adapters.geospatial.boa_lcoe import resolve_boa_run
+from ..utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
 GUROBI_LICENSE_NOTICE = (
@@ -115,6 +116,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Allow hydrogen imports between linked regions (default: the GeoConfig value, off)",
+    )
+    parser.add_argument(
+        "--power-mix",
+        choices=list(POWER_MIX_TO_COVERAGE_MAP),
+        default=None,
+        metavar="MIX",
+        help=(
+            "Power mix, quoted: %(choices)s. A baseload mix reads the BOA LCOE file of its coverage "
+            "(default: the GeoConfig value, 85%% baseload + 15%% grid)"
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -447,6 +458,9 @@ def run_full_simulation() -> None:
                 config.geo_config.intraregional_trade_allowed = args.intraregional_trade
                 state = "enabled" if args.intraregional_trade else "disabled"
                 console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+            if args.power_mix is not None:
+                config.geo_config.included_power_mix = args.power_mix
+                console.print(f"[green]Power mix: {args.power_mix}[/green]")
             if args.cbam_rebate:
                 config.carbon_border_export_rebates = True
                 console.print("[green]Carbon border export rebates enabled[/green]")
@@ -553,6 +567,9 @@ def run_full_simulation() -> None:
                     config.geo_config.intraregional_trade_allowed = args.intraregional_trade
                     state = "enabled" if args.intraregional_trade else "disabled"
                     console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+                if args.power_mix is not None:
+                    config.geo_config.included_power_mix = args.power_mix
+                    console.print(f"[green]Power mix: {args.power_mix}[/green]")
                 if args.cbam_rebate:
                     config.carbon_border_export_rebates = True
                     console.print("[green]Carbon border export rebates enabled[/green]")
