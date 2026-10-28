@@ -119,6 +119,17 @@ def test_a_failing_boa_exit_code_is_passed_on(started, monkeypatch, capsys):
     assert "run_simulation --boa-run" not in capsys.readouterr().out
 
 
+def test_a_dry_run_names_no_run_to_simulate_with(started, monkeypatch, capsys):
+    """BOA's dry run prints the run it would make, but nothing exists yet to pass to `run_simulation`."""
+    monkeypatch.setenv("FAKE_BOA_OUTPUT", "BOA_RUN=smoke_49e8|BOA_RUN_DIR=/data/lcoe-only/smoke_49e8")
+
+    assert boa_cli.steelo_boa_run(["--run", "smoke", "--dry-run"]) == 0
+
+    out = capsys.readouterr().out
+    assert "BOA_RUN=smoke_49e8" in out
+    assert "run_simulation --boa-run" not in out
+
+
 def test_a_successful_exit_without_a_run_prints_no_final_line(started, capsys):
     """`--help` exits 0 and names no run, so nothing is added to BOA's output."""
     assert boa_cli.steelo_boa_run(["--help"]) == 0

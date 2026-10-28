@@ -55,8 +55,9 @@ def steelo_boa_run(argv: list[str] | None = None) -> int:
     Notes:
         BOA's stdout is relayed line by line as it arrives, as the bytes BOA wrote, so a terminal
         that cannot encode a character BOA prints does not stop the relay. Its stderr goes straight
-        to the terminal. The run name comes only from BOA's `BOA_RUN=` line. BOA inherits the
-        environment, so `$BOA_DATA_ROOT` places its run where `run_simulation --boa-run` looks for it.
+        to the terminal. The run name comes only from BOA's `BOA_RUN=` line, and is not offered after
+        a dry run. BOA inherits the environment, so `$BOA_DATA_ROOT` places its run where
+        `run_simulation --boa-run` looks for it.
     """
     args = sys.argv[1:] if argv is None else argv
     uvx = shutil.which("uvx")
@@ -77,7 +78,8 @@ def steelo_boa_run(argv: list[str] | None = None) -> int:
                 run = line.removeprefix(RUN_PREFIX).decode("utf-8", errors="replace").strip()
     if process.returncode != 0:
         return process.returncode
-    if run is not None:
+    # A dry run names the run it would make, but makes nothing to simulate with.
+    if run is not None and "--dry-run" not in args:
         print(f"Run the steel simulation with: run_simulation --boa-run {run}")
     return 0
 
