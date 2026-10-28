@@ -1,0 +1,81 @@
+"""
+CLI command that reruns BOA, the baseload power model, at the release steel-iq pins.
+
+`steelo-boa-run` hands every argument unchanged to BOA's `boa-lcoe`, run by `uvx` in its own
+environment from the pinned tag, so `steelo-boa-run --help` shows BOA's own options. It ends by
+printing the `run_simulation --boa-run` value for the run BOA produced.
+"""
+
+import shutil
+import subprocess
+import sys
+
+BOA_REPOSITORY = "https://github.com/systemiqofficial/baseload-optimisation-atlas"
+# Moved only when no LCOE-changing code landed since the release that built geo-data's default LCOE.
+BOA_PIN = "v1.10.0"
+RUN_PREFIX = "BOA_RUN="
+UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
+
+
+def boa_command(uvx: str, args: list[str]) -> list[str]:
+    """
+    The command that runs BOA's `boa-lcoe` at the pinned release.
+
+    Args:
+        uvx: Path to the `uvx` executable.
+        args: Arguments for `boa-lcoe`, passed on unchanged.
+
+    Returns:
+        The command line, as a list for `subprocess`, so no shell reinterprets an argument.
+    """
+    return [uvx, "--from", f"git+{BOA_REPOSITORY}@{BOA_PIN}", "boa-lcoe", *args]
+
+
+def steelo_boa_run(argv: list[str] | None = None) -> int:
+    """
+    Run BOA's `boa-lcoe` at the pinned release and print the `--boa-run` value for its run.
+
+    Args:
+        argv: Arguments for `boa-lcoe`; the command line's when None.
+
+    Returns:
+        BOA's exit code, or 1 when `uvx` is not on PATH.
+
+    Notes:
+        BOA's stdout is relayed line by line as it arrives, and its stderr goes straight to the
+        terminal. The run name comes only from BOA's `BOA_RUN=` line. BOA inherits the environment,
+        so `$BOA_DATA_ROOT` places its run where `run_simulation --boa-run` looks for it.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    uvx = shutil.which("uvx")
+    if uvx is None:
+        print(
+            f"steelo-boa-run needs uvx, which comes with uv, on PATH. Install uv ({UV_INSTALL_URL}) and rerun.",
+            file=sys.stderr,
+        )
+        return 1
+
+    run = None
+    with subprocess.Popen(
+        boa_command(uvx, args),
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    ) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if line.startswith(RUN_PREFIX):
+                run = line.removeprefix(RUN_PREFIX).strip()
+    if process.returncode != 0:
+        return process.returncode
+    if run is not None:
+        print(f"Run the steel simulation with: run_simulation --boa-run {run}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(steelo_boa_run())
