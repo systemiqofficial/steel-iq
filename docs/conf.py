@@ -51,6 +51,7 @@ redirects = {
     "domain_simulation_logic/sub_national_geography": "overarching_elements/sub_national_geography.html",
     "domain_simulation_logic/checkpoint": "overarching_elements/checkpoint.html",
     "domain_simulation_logic/outputs_and_postprocessing": "overarching_elements/outputs_and_postprocessing.html",
+    "domain_simulation_logic/geospatial_model/baseload_optimization_atlas": "baseload_optimisation_atlas.html",
 }
 
 templates_path = ["_templates"]

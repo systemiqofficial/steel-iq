@@ -347,5 +347,5 @@ Models real-world risk factors: financing may fall through, permits may be denie
 - [Priority Location Selection](priority_location_selection.md) - How candidate locations are identified
 - [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - A new plant's electricity and hydrogen prices from selection to operation
 - [Calculate Cost](../plant_agent_model/calculate_costs.md) - NPV, subsidy, and carbon costs calculation details
-- [Baseload Power Optimization](baseload_optimization_atlas.md) - Renewable energy cost calculations
+- [Baseload Optimisation Atlas](baseload_optimisation_atlas.md) - Renewable energy cost calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management
