@@ -21,7 +21,7 @@ run_simulation --boa-run /path/to/lcoe-only/my_run  # a run's folder
 ```
 
 ### The pinned BOA release
-`steelo-boa-run` runs the BOA release that `BOA_PIN` names in `src/steelo/entrypoints/boa_cli.py`. Move the pin to a newer BOA release only if no LCOE-changing code landed in BOA since the release that built geo-data's default LCOE files: BOA v1.9.0 for geo-data 3.0.0. Otherwise, rerun the default LCOE files at the new release and publish them in a new geo-data version, so the default files and a rerun of them come from the same BOA code.
+`steelo-boa-run` runs the BOA release that `BOA_PIN` names in `src/steelo/entrypoints/boa_cli.py`. Move the pin to a newer BOA release only if no LCOE-changing code landed in BOA since the release that built geo-data's default LCOE files: BOA v1.9.0 for geo-data 3.0.0. Otherwise, rerun the default LCOE files at the new release and publish them in a new geo-data version, so the default files and a rerun of them come from the same BOA code. `BOA_EXCLUDE_NEWER`, beside the pin, is the date `uvx` resolves BOA's dependencies at, since `uvx` does not read BOA's lock file; move it with the pin, to the time the new release's environment was tested.
 
 ## Methodology:
 1. Project investment costs for solar and wind technologies for each country and year

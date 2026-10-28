@@ -2,8 +2,9 @@
 CLI command that reruns BOA, the baseload power model, at the release steel-iq pins.
 
 `steelo-boa-run` hands every argument unchanged to BOA's `boa-lcoe`, run by `uvx` in its own
-environment from the pinned tag, so `steelo-boa-run --help` shows BOA's own options. It ends by
-printing the `run_simulation --boa-run` value for the run BOA produced.
+environment from the pinned tag, with BOA's dependencies as they were at the pinned date, so
+`steelo-boa-run --help` shows BOA's own options. It ends by printing the `run_simulation --boa-run`
+value for the run BOA produced.
 """
 
 import shutil
@@ -13,13 +14,15 @@ import sys
 BOA_REPOSITORY = "https://github.com/systemiqofficial/baseload-optimisation-atlas"
 # Moved only when no LCOE-changing code landed since the release that built geo-data's default LCOE.
 BOA_PIN = "v1.10.0"
+# uvx ignores BOA's lock, so packages newer than the release's tested environment are left out; moves with the pin.
+BOA_EXCLUDE_NEWER = "2026-10-28T09:30:00Z"
 RUN_PREFIX = "BOA_RUN="
 UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
 
 
 def boa_command(uvx: str, args: list[str]) -> list[str]:
     """
-    The command that runs BOA's `boa-lcoe` at the pinned release.
+    The command that runs BOA's `boa-lcoe` at the pinned release, with dependencies as of the pinned date.
 
     Args:
         uvx: Path to the `uvx` executable.
@@ -28,7 +31,15 @@ def boa_command(uvx: str, args: list[str]) -> list[str]:
     Returns:
         The command line, as a list for `subprocess`, so no shell reinterprets an argument.
     """
-    return [uvx, "--from", f"git+{BOA_REPOSITORY}@{BOA_PIN}", "boa-lcoe", *args]
+    return [
+        uvx,
+        "--exclude-newer",
+        BOA_EXCLUDE_NEWER,
+        "--from",
+        f"git+{BOA_REPOSITORY}@{BOA_PIN}",
+        "boa-lcoe",
+        *args,
+    ]
 
 
 def steelo_boa_run(argv: list[str] | None = None) -> int:

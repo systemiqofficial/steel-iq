@@ -53,11 +53,20 @@ def started(monkeypatch, tmp_path):
 
 
 def test_the_command_runs_boa_lcoe_at_the_pinned_release(started):
-    """`uvx` installs BOA from the pinned tag of its repository and runs `boa-lcoe`."""
+    """`uvx` installs BOA from the pinned tag of its repository, with dependencies as of the pinned date."""
     assert boa_cli.steelo_boa_run(["--coverage", "0.85"]) == 0
 
     assert started == [
-        [FAKE_UVX, "--from", f"git+{boa_cli.BOA_REPOSITORY}@{boa_cli.BOA_PIN}", "boa-lcoe", "--coverage", "0.85"],
+        [
+            FAKE_UVX,
+            "--exclude-newer",
+            boa_cli.BOA_EXCLUDE_NEWER,
+            "--from",
+            f"git+{boa_cli.BOA_REPOSITORY}@{boa_cli.BOA_PIN}",
+            "boa-lcoe",
+            "--coverage",
+            "0.85",
+        ],
     ]
 
 
