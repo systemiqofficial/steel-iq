@@ -6,6 +6,7 @@ Python child that echoes its arguments and `$BOA_DATA_ROOT`, prints `$FAKE_BOA_O
 separated by `|`) and exits with `$FAKE_BOA_EXIT`. Nothing is written outside `tmp_path`.
 """
 
+import io
 import json
 import subprocess
 import sys
@@ -130,3 +131,20 @@ def test_boa_inherits_the_environment_so_both_sides_use_one_root(started, capsys
 
     assert f"child BOA_DATA_ROOT {tmp_path / 'boa'}" in capsys.readouterr().out.splitlines()
     assert boa_lcoe.boa_root() == tmp_path / "boa"
+
+
+def test_a_stdout_that_cannot_encode_boas_output_does_not_stop_the_relay(started, monkeypatch):
+    """
+    A redirected Windows console encodes as cp1252, which has no `✓`; BOA's bytes pass through
+    unchanged and the run is still named.
+    """
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    monkeypatch.setenv("FAKE_BOA_OUTPUT", "✓ Installed the stores|BOA_RUN=smoke_49e8")
+    written = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(written, encoding="cp1252", write_through=True))
+
+    assert boa_cli.steelo_boa_run(["--run", "smoke"]) == 0
+
+    lines = written.getvalue().decode("utf-8").splitlines()
+    assert "✓ Installed the stores" in lines
+    assert lines[-1] == "Run the steel simulation with: run_simulation --boa-run smoke_49e8"

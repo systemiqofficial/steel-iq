@@ -16,7 +16,7 @@ BOA_REPOSITORY = "https://github.com/systemiqofficial/baseload-optimisation-atla
 BOA_PIN = "v1.10.0"
 # uvx ignores BOA's lock, so packages newer than the release's tested environment are left out; moves with the pin.
 BOA_EXCLUDE_NEWER = "2026-10-28T09:30:00Z"
-RUN_PREFIX = "BOA_RUN="
+RUN_PREFIX = b"BOA_RUN="
 UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
 
 
@@ -53,9 +53,10 @@ def steelo_boa_run(argv: list[str] | None = None) -> int:
         BOA's exit code, or 1 when `uvx` is not on PATH.
 
     Notes:
-        BOA's stdout is relayed line by line as it arrives, and its stderr goes straight to the
-        terminal. The run name comes only from BOA's `BOA_RUN=` line. BOA inherits the environment,
-        so `$BOA_DATA_ROOT` places its run where `run_simulation --boa-run` looks for it.
+        BOA's stdout is relayed line by line as it arrives, as the bytes BOA wrote, so a terminal
+        that cannot encode a character BOA prints does not stop the relay. Its stderr goes straight
+        to the terminal. The run name comes only from BOA's `BOA_RUN=` line. BOA inherits the
+        environment, so `$BOA_DATA_ROOT` places its run where `run_simulation --boa-run` looks for it.
     """
     args = sys.argv[1:] if argv is None else argv
     uvx = shutil.which("uvx")
@@ -67,20 +68,13 @@ def steelo_boa_run(argv: list[str] | None = None) -> int:
         return 1
 
     run = None
-    with subprocess.Popen(
-        boa_command(uvx, args),
-        stdout=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    ) as process:
+    with subprocess.Popen(boa_command(uvx, args), stdout=subprocess.PIPE) as process:
         assert process.stdout is not None
         for line in process.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
             if line.startswith(RUN_PREFIX):
-                run = line.removeprefix(RUN_PREFIX).strip()
+                run = line.removeprefix(RUN_PREFIX).decode("utf-8", errors="replace").strip()
     if process.returncode != 0:
         return process.returncode
     if run is not None:
