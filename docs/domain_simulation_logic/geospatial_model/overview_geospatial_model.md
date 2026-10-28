@@ -1,15 +1,15 @@
 # Geospatial Model (GEO)
 
-The Geospatial Model determines where new iron and steel plants should be built globally by combining renewable energy optimization, location-based cost analysis, and multi-year business opportunity tracking.
+The Geospatial Model determines where new iron and steel plants should be built globally by combining renewable energy optimisation, location-based cost analysis, and multi-year business opportunity tracking.
 
 ## Process Flow
 
 The geospatial decision-making process follows three sequential stages:
 
 ### 1. Renewable Energy Cost Calculation
-**[Baseload Optimization Atlas](baseload_optimization_atlas.md)**
+**[Baseload Optimisation Atlas](baseload_optimisation_atlas.md)**
 
-Calculates optimal renewable energy costs (LCOE) at high spatial resolution (0.25 degrees) worldwide. This standalone module simulates renewable energy supply from weather data and optimizes the mix of solar, wind, and battery storage to minimize electricity costs. Due to computational intensity, this runs separately and provides precomputed energy price data to the main model.
+Calculates optimal renewable energy costs (LCOE) at high spatial resolution (0.25 degrees) worldwide. This standalone module simulates renewable energy supply from weather data and optimises the mix of solar, wind, and battery storage to minimize electricity costs. Due to computational intensity, this runs separately and provides precomputed energy price data to the main model.
 
 **Output:** Pixel-level electricity costs for custom renewable energy installations
 
@@ -17,7 +17,7 @@ Calculates optimal renewable energy costs (LCOE) at high spatial resolution (0.2
 **[Priority Location Selection](priority_location_selection.md)**
 
 Identifies the most economically attractive locations globally for new plant construction by combining multiple geospatial cost factors:
-- Energy costs (from Baseload Optimization Atlas)
+- Energy costs (from Baseload Optimisation Atlas)
 - Local CAPEX of the steel or iron-making equipment
 - Transportation costs (iron ore, feedstock, finished products)
 - Infrastructure costs (railway buildout)
@@ -43,7 +43,7 @@ Projects can be discarded at any stage due to negative economics, technology ban
 ## Module Relationships
 
 ```
-Baseload Optimization Atlas
+Baseload Optimisation Atlas
          |
          | (provides energy costs)
          v
@@ -67,7 +67,7 @@ The geospatial model integrates with the broader simulation:
 ```{toctree}
 :hidden:
 
-baseload_optimization_atlas
+baseload_optimisation_atlas
 priority_location_selection
 new_plant_opening
 ```
