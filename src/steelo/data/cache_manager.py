@@ -54,7 +54,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.16"  # Bump to invalidate all caches (preparations record their geo-data version)
+    CACHE_VERSION = "1.17"  # Bump to invalidate all caches (relative subsidies read as decimal fractions)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.
