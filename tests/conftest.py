@@ -371,6 +371,83 @@ def bus(tmp_path):
 
 
 @pytest.fixture
+def minimal_simulation_config(tmp_path):
+    """
+    A runnable SimulationConfig over the smallest prepared data folder that bootstrap_simulation accepts.
+
+    Args:
+        tmp_path: The test's temporary folder; the data folder is written to ``tmp_path / "data"``.
+
+    Returns:
+        A SimulationConfig for 2025 to 2026 on the grid-only power mix, over one country (DEU) and no plants.
+
+    Notes:
+        Empty fixture files are enough for bootstrap to build its repositories, and the capacity pool fixture
+        paths do not exist, as in a preparation without the optional sheets. Tests set what they add on the
+        returned config.
+    """
+    from steelo.simulation import GeoConfig, SimulationConfig
+
+    data_dir = tmp_path / "data"
+    fixtures_dir = data_dir / "fixtures"
+    fixtures_dir.mkdir(parents=True)
+    (fixtures_dir / "tech_switches_allowed.csv").write_text(
+        "Technology,BF-BOF,DRI-EAF,Scrap-EAF\nBF-BOF,YES,YES,YES\nDRI-EAF,NO,YES,YES\nScrap-EAF,NO,NO,YES\n"
+    )
+    for name in (
+        "plants",
+        "demand_centers",
+        "suppliers",
+        "plant_groups",
+        "tariffs",
+        "subsidies",
+        "carbon_costs",
+        "primary_feedstocks",
+        "region_emissivity",
+        "capex",
+        "cost_of_capital",
+    ):
+        (fixtures_dir / f"{name}.json").write_text('{"root": []}')
+    (fixtures_dir / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
+    (fixtures_dir / "input_costs.json").write_text(
+        '{"root": ['
+        '{"iso3": "DEU", "year": 2025, "costs": {"electricity": 0.05}},'
+        '{"iso3": "DEU", "year": 2026, "costs": {"electricity": 0.05}}'
+        "]}"
+    )
+    (fixtures_dir / "legal_process_connectors.json").write_text("[]")
+    (fixtures_dir / "country_mappings.json").write_text(
+        '[{"country": "Germany", "iso2": "DE", "iso3": "DEU", "irena_name": "Germany",'
+        ' "region_for_outputs": "Europe", "ssp_region": "EUR", "tiam-ucl_region": "Rest of World"}]'
+    )
+    (fixtures_dir / "hydrogen_efficiency.json").write_text(
+        '[{"year": 2025, "efficiency": 0.05}, {"year": 2026, "efficiency": 0.05}]'
+    )
+    (fixtures_dir / "hydrogen_capex_opex.json").write_text(
+        '[{"country_code": "DEU", "values": {"2025": 1.0, "2026": 1.0}}]'
+    )
+    (fixtures_dir / "transport_emissions.json").write_text("[]")
+    (fixtures_dir / "biomass_availability.json").write_text("[]")
+    (fixtures_dir / "fallback_material_costs.json").write_text(
+        '[{"iso3": "DEU", "technology": "BF", "metric": "Unit material cost", "unit": "USD/t HM",'
+        ' "costs_by_year": {"2025": 100.0}}]'
+    )
+    (data_dir / "railway_costs.json").write_text('{"root": []}')
+
+    return SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2026),
+        master_excel_path=tmp_path / "test.xlsx",
+        output_dir=tmp_path / "output",
+        technology_settings=get_default_technology_settings(),
+        data_dir=data_dir,
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # no geo data on disk: hydrogen off the grid price
+    )
+
+
+@pytest.fixture
 def ready_data_preparation(db, tmp_path):
     """Create a ready DataPreparation for tests that need it."""
     from steeloweb.models import DataPreparation, DataPackage

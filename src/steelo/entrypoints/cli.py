@@ -276,6 +276,7 @@ def run_full_simulation() -> None:
     Notes:
         The console script passes the return value to sys.exit(), so a successful run
         returns None (exit code 0); failures call sys.exit() with a non-zero code.
+        The resolved ``--steelo-home`` is exported as ``STEELO_HOME`` for the rest of the process.
     """
     console = Console()
     parser = _build_parser()
@@ -302,6 +303,7 @@ def run_full_simulation() -> None:
 
         # Setup directories
         steelo_home = Path(args.steelo_home)
+        os.environ["STEELO_HOME"] = str(steelo_home)  # for helpers that read the variable, such as the geo-unit lookup
         steelo_home.mkdir(parents=True, exist_ok=True)
 
         # Handle cache operations

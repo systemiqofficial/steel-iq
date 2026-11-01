@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from ..config import get_steelo_home
+
 if TYPE_CHECKING:
     from .preparation import PreparationResult
 
@@ -54,7 +56,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.16"  # Bump to invalidate all caches (preparations record their geo-data version)
+    CACHE_VERSION = "1.17"  # Bump to invalidate all caches (relative subsidies read as decimal fractions)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.
@@ -62,7 +64,7 @@ class DataPreparationCache:
         Args:
             cache_root: Root directory for cache (default: $STEELO_HOME/preparation_cache)
         """
-        self.cache_root = cache_root or (Path.home() / ".steelo" / "preparation_cache")
+        self.cache_root = cache_root or get_steelo_home() / "preparation_cache"
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self.index_path = self.cache_root / "index.json"
         self._load_or_rebuild_index()
