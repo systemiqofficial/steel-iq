@@ -10,6 +10,7 @@ import tempfile
 
 import pytest
 
+from steelo.adapters.geospatial import geo_unit_lookup
 from steelo.data.cache_manager import DataPreparationCache
 from steelo.simulation import SimulationConfig
 from steelo.entrypoints.cli import run_full_simulation
@@ -683,6 +684,33 @@ def test_cli_run_without_steelo_home_writes_into_the_test_home(
 
     config = mock_create_runner.call_args[0][0]
     assert config.output_dir.parent == tmp_path / "home" / "output"
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_steelo_home_flag_reaches_the_geo_unit_lookup(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+):
+    """``--steelo-home`` wins over the test home's ``STEELO_HOME`` for the geo-unit lookup, which reads the variable."""
+    stub_cli_dependencies(tmp_path / "stubs", mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+    flag_home = tmp_path / "flag-home"
+
+    argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", "--steelo-home", str(flag_home)]
+    with patch.object(sys, "argv", argv):
+        with patch("sys.exit"):
+            run_full_simulation()
+
+    assert geo_unit_lookup._default_geo_hierarchy_path() == flag_home / "data" / "fixtures" / "geo_hierarchy.json"
 
 
 def test_cli_output_file_flag_is_refused_at_parse_time(capsys):
