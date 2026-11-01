@@ -1,6 +1,5 @@
 """Unit tests for the bootstrap check of the baseload LCOE file a run's power mix needs."""
 
-import json
 import logging
 from pathlib import Path
 
@@ -101,83 +100,16 @@ def test_check_baseload_lcoe_file_logs_the_file_its_run_and_boa_version(tmp_path
     assert f"Baseload LCOE: {path} (run test_run, BOA 1.9.0)" in caplog.text
 
 
-def write_minimal_data(data_dir: Path) -> Path:
+def write_iso3_grid(data_dir: Path) -> None:
     """
-    A prepared data folder just large enough for bootstrap_simulation: one country, two years, no plants.
+    Add an iso3 grid to a prepared data folder, on the LCOE fixture's lattice with every cell in DEU.
 
     Args:
-        data_dir: The folder to write; its ``fixtures`` subfolder is created.
-
-    Returns:
-        ``data_dir``.
+        data_dir: The prepared data folder; the grid goes to ``outputs/GEO/global_grid_with_iso3.nc``.
 
     Notes:
-        Its iso3 grid lies on the LCOE fixture's lattice with every cell in DEU, so a baseload mix prices
-        existing plants' hydrogen from the file's cells.
+        A baseload mix then prices existing plants' hydrogen from the LCOE file's cells.
     """
-    fixtures = data_dir / "fixtures"
-    fixtures.mkdir(parents=True)
-    (fixtures / "tech_switches_allowed.csv").write_text("Technology,BF-BOF\nBF-BOF,YES\n")
-    for name in (
-        "plants",
-        "demand_centers",
-        "suppliers",
-        "plant_groups",
-        "tariffs",
-        "subsidies",
-        "carbon_costs",
-        "primary_feedstocks",
-        "region_emissivity",
-        "capex",
-        "cost_of_capital",
-    ):
-        (fixtures / f"{name}.json").write_text('{"root": []}')
-    (fixtures / "scenarios.json").write_text(
-        json.dumps({"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}),
-    )
-    (fixtures / "input_costs.json").write_text(
-        json.dumps(
-            {"root": [{"iso3": "DEU", "year": year, "costs": {"electricity": 0.05}} for year in (2025, 2026)]},
-        ),
-    )
-    (fixtures / "legal_process_connectors.json").write_text("[]")
-    (fixtures / "country_mappings.json").write_text(
-        json.dumps(
-            [
-                {
-                    "country": "Germany",
-                    "iso2": "DE",
-                    "iso3": "DEU",
-                    "irena_name": "Germany",
-                    "region_for_outputs": "Europe",
-                    "ssp_region": "EUR",
-                    "tiam-ucl_region": "Rest of World",
-                },
-            ],
-        ),
-    )
-    (fixtures / "hydrogen_efficiency.json").write_text(
-        json.dumps([{"year": 2025, "efficiency": 0.05}, {"year": 2026, "efficiency": 0.05}]),
-    )
-    (fixtures / "hydrogen_capex_opex.json").write_text(
-        json.dumps([{"country_code": "DEU", "values": {"2025": 1.0, "2026": 1.0}}]),
-    )
-    (fixtures / "transport_emissions.json").write_text("[]")
-    (fixtures / "biomass_availability.json").write_text("[]")
-    (fixtures / "fallback_material_costs.json").write_text(
-        json.dumps(
-            [
-                {
-                    "iso3": "DEU",
-                    "technology": "BF",
-                    "metric": "Unit material cost",
-                    "unit": "USD/t HM",
-                    "costs_by_year": {"2025": 100.0},
-                },
-            ],
-        ),
-    )
-    (data_dir / "railway_costs.json").write_text('{"root": []}')
     geo_dir = data_dir / "outputs" / "GEO"
     geo_dir.mkdir(parents=True)
     xr.DataArray(
@@ -186,22 +118,26 @@ def write_minimal_data(data_dir: Path) -> Path:
         dims=("lat", "lon"),
         name="iso3",
     ).to_netcdf(geo_dir / "global_grid_with_iso3.nc")
-    return data_dir
 
 
 @pytest.mark.parametrize("named_run", [True, False])
-def test_bootstrap_reads_the_lcoe_folder_the_run_names_else_the_prepared_data(tmp_path, named_run):
+def test_bootstrap_reads_the_lcoe_folder_the_run_names_else_the_prepared_data(
+    minimal_simulation_config,
+    tmp_path,
+    named_run,
+):
     """
     With boa_run_dir set, bootstrap reads that folder and not the prepared data's default one; without it, the
     default. Only the expected folder holds a file, so reading the other one would stop bootstrap.
     """
-    data_dir = write_minimal_data(tmp_path / "data")
-    default_dir = data_dir / "outputs" / "GEO" / "baseload_lcoe"
+    config = minimal_simulation_config
+    write_iso3_grid(config.data_dir)
+    default_dir = config.data_dir / "outputs" / "GEO" / "baseload_lcoe"
     run_dir = tmp_path / "boa" / "lcoe-only" / "my_run"
     expected = run_dir if named_run else default_dir
     write_lcoe_file(expected, CONTRACT)
-    config = make_config(tmp_path, "85% baseload + 15% grid", boa_run_dir=run_dir if named_run else None)
-    config.data_dir = data_dir
+    config.geo_config.included_power_mix = "85% baseload + 15% grid"
+    config.boa_run_dir = run_dir if named_run else None
 
     runner = bootstrap.bootstrap_simulation(config)
 
@@ -217,11 +153,10 @@ def test_bootstrap_reads_the_lcoe_folder_the_run_names_else_the_prepared_data(tm
     ]
 
 
-def test_bootstrap_on_grid_only_builds_no_lcoe_series(tmp_path):
+def test_bootstrap_on_grid_only_builds_no_lcoe_series(minimal_simulation_config):
     """Grid only reads no LCOE file and prices existing plants' hydrogen at the grid price."""
-    data_dir = write_minimal_data(tmp_path / "data")
-    config = make_config(tmp_path, "Grid only")
-    config.data_dir = data_dir
+    config = minimal_simulation_config
+    write_iso3_grid(config.data_dir)
 
     runner = bootstrap.bootstrap_simulation(config)
 
@@ -233,11 +168,13 @@ def test_bootstrap_on_grid_only_builds_no_lcoe_series(tmp_path):
     assert env.capped_hydrogen_costs_by_year[Year(2025)]["DEU"] == pytest.approx(50.0 * 0.05 + 1.0)
 
 
-def test_bootstrap_on_a_baseload_mix_without_a_data_folder_stops(tmp_path, monkeypatch):
+def test_bootstrap_on_a_baseload_mix_without_a_data_folder_stops(minimal_simulation_config, tmp_path, monkeypatch):
     """Without config.data_dir there is no LCOE file to price existing plants' hydrogen from, so bootstrap stops."""
     monkeypatch.chdir(tmp_path)
-    write_minimal_data(tmp_path / "data")
-    config = make_config(tmp_path, "85% baseload + 15% grid")
+    config = minimal_simulation_config
+    write_iso3_grid(config.data_dir)
+    config.geo_config.included_power_mix = "85% baseload + 15% grid"
+    config.data_dir = None
 
     with pytest.raises(ValueError, match="needs config.data_dir"):
         bootstrap.bootstrap_simulation(config)

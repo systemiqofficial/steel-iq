@@ -255,82 +255,11 @@ def test_no_shelf_life_seeds_every_vintage(tmp_path):
     assert [row for row in policy.recorder._ledger if row["operation"] == "expired"] == []
 
 
-def minimal_simulation_config(tmp_path):
-    """A runnable SimulationConfig over an empty on-disk dataset.
-
-    Mirrors the ``test_simulation_runner_factory`` scaffold: empty fixture
-    files are enough for ``bootstrap_simulation`` to build its repositories,
-    and the capacity pool fixture paths simply do not exist — exactly how a
-    preparation without the optional sheets presents.
-    """
-    from steelo.domain import Year
-    from steelo.simulation import GeoConfig, SimulationConfig
-    from steelo.simulation_types import get_default_technology_settings
-
-    data_dir = tmp_path / "data"
-    fixtures_dir = data_dir / "fixtures"
-    fixtures_dir.mkdir(parents=True)
-    (fixtures_dir / "tech_switches_allowed.csv").write_text(
-        "Technology,BF-BOF,DRI-EAF,Scrap-EAF\nBF-BOF,YES,YES,YES\nDRI-EAF,NO,YES,YES\nScrap-EAF,NO,NO,YES\n"
-    )
-    for name in (
-        "plants",
-        "demand_centers",
-        "suppliers",
-        "plant_groups",
-        "tariffs",
-        "subsidies",
-        "carbon_costs",
-        "primary_feedstocks",
-        "region_emissivity",
-        "capex",
-        "cost_of_capital",
-    ):
-        (fixtures_dir / f"{name}.json").write_text('{"root": []}')
-    (fixtures_dir / "scenarios.json").write_text(
-        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
-    )
-    (fixtures_dir / "input_costs.json").write_text(
-        '{"root": ['
-        '{"iso3": "DEU", "year": 2025, "costs": {"electricity": 0.05}},'
-        '{"iso3": "DEU", "year": 2026, "costs": {"electricity": 0.05}}'
-        "]}"
-    )
-    (fixtures_dir / "legal_process_connectors.json").write_text("[]")
-    (fixtures_dir / "country_mappings.json").write_text(
-        '[{"country": "Germany", "iso2": "DE", "iso3": "DEU", "irena_name": "Germany",'
-        ' "region_for_outputs": "Europe", "ssp_region": "EUR", "tiam-ucl_region": "Rest of World"}]'
-    )
-    (fixtures_dir / "hydrogen_efficiency.json").write_text(
-        '[{"year": 2025, "efficiency": 0.05}, {"year": 2026, "efficiency": 0.05}]'
-    )
-    (fixtures_dir / "hydrogen_capex_opex.json").write_text(
-        '[{"country_code": "DEU", "values": {"2025": 1.0, "2026": 1.0}}]'
-    )
-    (fixtures_dir / "transport_emissions.json").write_text("[]")
-    (fixtures_dir / "biomass_availability.json").write_text("[]")
-    (fixtures_dir / "fallback_material_costs.json").write_text(
-        '[{"iso3": "DEU", "technology": "BF", "metric": "Unit material cost", "unit": "USD/t HM",'
-        ' "costs_by_year": {"2025": 100.0}}]'
-    )
-    (data_dir / "railway_costs.json").write_text('{"root": []}')
-
-    return SimulationConfig(
-        start_year=Year(2025),
-        end_year=Year(2026),
-        master_excel_path=tmp_path / "test.xlsx",
-        output_dir=tmp_path / "output",
-        technology_settings=get_default_technology_settings(),
-        data_dir=data_dir,
-        geo_config=GeoConfig(included_power_mix="Grid only"),  # no geo data on disk: hydrogen off the grid price
-    )
-
-
-def test_bootstrap_simulation_disabled_unbinds_stale_binding(tmp_path):
+def test_bootstrap_simulation_disabled_unbinds_stale_binding(minimal_simulation_config):
     """A disabled run through the real entry point must clear a previous run's binding."""
     from steelo.bootstrap import bootstrap_simulation
 
-    config = minimal_simulation_config(tmp_path)
+    config = minimal_simulation_config
     assert config.capacity_policy.enabled is False
     bind_stale_policy()
     assert cp_handlers.replace_capacity_hook() is not None
@@ -429,12 +358,12 @@ def test_enabled_with_injected_repository_raises():
     assert cp_handlers.replace_capacity_hook() is None
 
 
-def test_bootstrap_simulation_enabled_without_pool_fixtures_raises(tmp_path):
+def test_bootstrap_simulation_enabled_without_pool_fixtures_raises(minimal_simulation_config):
     """Through the real entry point: a prepared dataset without the
     optional pool sheets must refuse an enabled run at bootstrap."""
     from steelo.bootstrap import bootstrap_simulation
 
-    config = minimal_simulation_config(tmp_path)
+    config = minimal_simulation_config
     config.capacity_policy.enabled = True
 
     with pytest.raises(ValueError, match="capacity_pool_provinces.json is missing"):
