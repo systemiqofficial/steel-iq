@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from ..config import get_steelo_home
+
 if TYPE_CHECKING:
     from .preparation import PreparationResult
 
@@ -62,7 +64,7 @@ class DataPreparationCache:
         Args:
             cache_root: Root directory for cache (default: $STEELO_HOME/preparation_cache)
         """
-        self.cache_root = cache_root or (Path.home() / ".steelo" / "preparation_cache")
+        self.cache_root = cache_root or get_steelo_home() / "preparation_cache"
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self.index_path = self.cache_root / "index.json"
         self._load_or_rebuild_index()
