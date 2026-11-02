@@ -1671,6 +1671,22 @@ class SimulationRunner:
             plotter.plot_metallic_charges(trace_metallic_charges=data_collector.trace_metallic_charges)
             logger.info("Generated metallic charges consumption chart")
 
+        # Steel production by steelmaking route (steel furnace + the iron it is charged with); built from the
+        # post-processed production and the trade allocations, and shared by the PAM chart and the interactive viewer
+        import pandas as pd
+        from steelo.utilities.interactive import steel_routes
+
+        try:
+            steel_route_rows = steel_routes.steel_route_rows(
+                pd.read_csv(Path(output_path), low_memory=False), self.config.output_dir / "TM"
+            )
+        except (ValueError, OSError) as exc:
+            logger.warning("Could not build the steel routes: %s", exc)
+            steel_route_rows = None
+        if steel_route_rows is not None and not steel_route_rows.empty:
+            plotter.plot_steel_routes(route_rows=steel_route_rows)
+            logger.info("Generated steel production by route chart")
+
         # Plot international iron trade volumes stacked area chart
         if data_collector.trace_international_iron_trade:
             plotter.plot_international_iron_trade(
@@ -1792,6 +1808,8 @@ class SimulationRunner:
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
                 suppliers_json=suppliers_json,
             )
+            if steel_route_rows is not None:
+                interactive.plot_steel_routes(route_rows=steel_route_rows, post_processed_csv=Path(output_path))
             interactive.plot_greenfield_status(
                 greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
             )

@@ -818,3 +818,30 @@ def test_plot_capacity_world_map_never_fails_the_plot_stage(tmp_path, caplog) ->
         is None
     )
     assert caplog.text.count("skipping the capacity world map viewer") == 3
+
+
+def test_plot_steel_routes_writes_self_contained_viewer(tmp_path) -> None:
+    """The steel routes viewer embeds the route rows and the route colours."""
+    route_rows = pd.DataFrame(
+        {
+            "year": [2025, 2025],
+            "geo": ["DEU", "CHN"],
+            "technology": ["EAF", "BOF"],
+            "route": ["Scrap-EAF", "BF-BOF (coke + fossil PCI)"],
+            "production_mt": [3.0, 7.5],
+        }
+    )
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_steel_routes(route_rows, tmp_path / "post_processed_test.csv")
+
+    assert written == tmp_path / "plots" / "interactive" / "steel_routes.html"
+    html = written.read_text(encoding="utf-8")
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert '{"y": 2025, "g": "DEU", "t": "EAF", "r": "Scrap-EAF", "v": 3.0}' in html
+    assert '"routeColours"' in html and '"routeOrder"' in html
+    assert "post_processed_test.csv" in html
+
+    # No rows (no allocations in the run) skips the viewer.
+    assert plotter.plot_steel_routes(route_rows.iloc[0:0], tmp_path / "post_processed_test.csv") is None
