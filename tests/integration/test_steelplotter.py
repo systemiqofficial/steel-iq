@@ -4,6 +4,7 @@ Tests that all SteelPlotter methods generate plots correctly with consistent sty
 footers, and legends.
 """
 
+import pandas as pd
 import pytest
 from pathlib import Path
 from collections import defaultdict
@@ -185,6 +186,26 @@ class TestSteelPlotter:
         plot_file = plot_paths.pam_plots_dir / "metallic_charges_over_time.png"
         assert plot_file.exists(), "Metallic charges plot file was not created"
         assert plot_file.stat().st_size > 0, "Metallic charges plot file is empty"
+
+    def test_plot_steel_routes_creates_file(self, plotter, plot_paths):
+        """Test that steel route plotting creates a PNG file and its CSV."""
+        route_rows = pd.DataFrame(
+            {
+                "year": [2025, 2025, 2030, 2030],
+                "geo": ["DEU", "CHN", "DEU", "CHN"],
+                "technology": ["EAF", "BOF", "EAF", "BOF"],
+                "route": ["Scrap-EAF", "BF-BOF (coke + fossil PCI)"] * 2,
+                "production_mt": [3.0, 7.5, 4.0, 6.0],
+            }
+        )
+
+        plotter.plot_steel_routes(route_rows=route_rows)
+
+        plot_file = plot_paths.pam_plots_dir / "steel_production_development_by_route.png"
+        assert plot_file.exists(), "Steel routes plot file was not created"
+        assert plot_file.stat().st_size > 0, "Steel routes plot file is empty"
+        csv = pd.read_csv(plot_paths.pam_plots_dir / "steel_production_development_by_route.csv", index_col=0)
+        assert csv.loc[2025, "Scrap-EAF"] == 3.0
 
     def test_all_plots_generated(
         self,

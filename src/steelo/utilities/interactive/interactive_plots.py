@@ -36,6 +36,7 @@ from . import (
     greenfield_status,
     metallic_charge_use,
     reductant_use,
+    steel_routes,
     supply_chain,
     supply_demand,
     trade_allocations,
@@ -780,6 +781,41 @@ class InteractivePlotter:
             len(aggregated),
             len(supply),
         )
+        return path
+
+    def plot_steel_routes(self, route_rows: pd.DataFrame, post_processed_csv: Path) -> Optional[Path]:
+        """Write the steel routes viewer (``steel_routes.html``).
+
+        The viewer stacks steel production by steelmaking route (a steel furnace plus the iron it is
+        charged with) over time, in Mt or as a share, filtered by geography and steel furnace.
+
+        Args:
+            route_rows: Output of :func:`~.steel_routes.steel_route_rows`.
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``, named in the provenance.
+
+        Returns:
+            The written path, or None when ``route_rows`` is empty (logged as a warning so the plot
+            stage never fails).
+        """
+        if route_rows.empty:
+            logger.warning("No steel route rows — skipping the steel-routes viewer")
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Recorded steel production of each furnace group in {post_processed_csv.name}, split "
+                "by the iron it is charged with (TM/steel_trade_allocations_<year>.csv, traced to the source "
+                "furnace group's technology and reductant).",
+                "rows": steel_routes.pack_rows(route_rows),
+            },
+        }
+        config = self._config(
+            "Steel production by route",
+            routeColours=steel_routes.ROUTE_COLOURS,
+            routeOrder=steel_routes.ROUTE_ORDER,
+        )
+        path = self._write("steel_routes.html", config, data)
+        logger.info("Wrote steel-routes viewer %s (%d aggregated rows)", path, len(route_rows))
         return path
 
     def plot_greenfield_status(self, greenfield_status_csv: Path) -> Optional[Path]:

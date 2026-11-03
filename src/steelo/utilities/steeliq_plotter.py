@@ -1461,6 +1461,54 @@ class SteelPlotter:
 
         return self._save_figure(fig, filename)
 
+    def plot_steel_routes(self, route_rows: pd.DataFrame, export_csv: bool = True) -> Optional[Path]:
+        """Plot steel production by steelmaking route over time as a stacked area chart.
+
+        A route is a steel furnace plus the iron it is charged with (e.g. DRI-EAF with green hydrogen); see
+        :mod:`steelo.utilities.interactive.steel_routes` for how the routes are built.
+
+        Args:
+            route_rows: Output of ``steel_routes.steel_route_rows``: columns ``year, geo, technology, route,
+                production_mt``.
+            export_csv: If True, also export chart data to CSV (default: True)
+
+        Returns:
+            Path to saved plot, or None if there is no data to plot
+        """
+        from steelo.utilities.interactive.steel_routes import ROUTE_COLOURS, ROUTE_ORDER
+
+        if route_rows.empty:
+            self.logger.warning("No steel route data to plot")
+            return None
+
+        df_pivot = route_rows.pivot_table(
+            index="year", columns="route", values="production_mt", aggfunc="sum", fill_value=0.0
+        )
+        routes = [r for r in ROUTE_ORDER if r in df_pivot.columns and df_pivot[r].abs().sum() > 0]
+        df_pivot = df_pivot[routes]
+
+        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+        df_pivot.plot.area(ax=ax, color=[ROUTE_COLOURS[r] for r in routes], alpha=0.9, linewidth=0)
+
+        ax.set_title("Steel Production by Route Over Time", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel("Steel production (Mt)", fontsize=12)
+        legend_routes = routes[::-1]
+        route_handles = [Patch(facecolor=ROUTE_COLOURS[route], label=route) for route in legend_routes]
+        self._style_legend(ax, title="Route", handles=route_handles, labels=legend_routes)
+        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        years = sorted(df_pivot.index)
+        ax.set_xlim(years[0], years[-1])
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+        self._ensure_y_axis_starts_at_zero(ax)
+        fig.tight_layout()
+
+        filename = "steel_production_development_by_route.png"
+        if export_csv:
+            self._save_chart_data_to_csv(df_pivot, filename)
+        return self._save_figure(fig, filename)
+
     def plot_international_iron_trade(
         self,
         trace_international_iron_trade: dict[int, dict[str, float]],
