@@ -321,7 +321,7 @@ function getPythonVersion(pythonPath) {
   
   try {
     const { execSync } = require('child_process');
-    pythonVersion = execSync(`"${pythonPath}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"`, { encoding: 'utf8' }).trim();
+    pythonVersion = execSync(`"${pythonPath}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"`, { encoding: 'utf8', timeout: 60000 }).trim();
     console.log(`Detected Python version: ${pythonVersion}`);
     return pythonVersion;
   } catch (error) {
@@ -350,6 +350,17 @@ const HOST_LOOKUP_DONE = '[diag] Host name lookup for 127.0.0.1 returned';
 
 function djangoLogPath() {
   return path.join(app.getPath('userData'), 'logs', 'django-server.log');
+}
+
+function startDjangoLog() {
+  djangoOutput = [];
+  djangoStartTime = Date.now();
+  try {
+    fs.mkdirSync(path.dirname(djangoLogPath()), { recursive: true });
+    fs.writeFileSync(djangoLogPath(), '');
+  } catch (e) {
+    // The log file is a diagnostic aid only; never let it block startup
+  }
 }
 
 function recordDjangoOutput(text) {
@@ -674,8 +685,13 @@ function runMigrations(djangoBundlePath) {
       return;
     }
 
+    startDjangoLog();
+    recordDjangoOutput('[migrate] Checking the Python version');
+
     // Set up PYTHONPATH with correct order to avoid name conflicts
+    const versionCheckStart = Date.now();
     const pyVersion = getPythonVersion(pythonPath);
+    recordDjangoOutput(`[migrate] Python version check returned ${pyVersion} after ${((Date.now() - versionCheckStart) / 1000).toFixed(1)}s`);
     const sitePackagesPath = path.join(djangoBundlePath, 'python', 'lib', `python${pyVersion}`, 'site-packages');
     const pythonPathEnv = [
       sitePackagesPath,  // Django package from site-packages
@@ -714,42 +730,52 @@ from django.core.management import execute_from_command_line
 
 if __name__ == '__main__':
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', '${DJANGO_SETTINGS_MODULE}')
+    django.setup()
+    from django.conf import settings
+    print(f"[diag] Database file: {settings.DATABASES['default']['NAME']}")
     execute_from_command_line(['manage.py', 'migrate', '--verbosity=2'])
 `;
 
+    recordDjangoOutput('[migrate] Starting Python for the database migrations');
     const migrate = spawn(pythonPath, ['-c', migrationScript], {
       cwd: djangoPath,
       env: getPythonEnv(djangoBundlePath, pythonPathEnv),
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    let migrationOutput = '';
-    let migrationError = '';
+    const migrationTimeout = setTimeout(() => {
+      recordDjangoOutput('[migrate] Stopping the migrations after 5 minutes');
+      migrate.kill();
+      reject(new Error('Database migrations did not finish within 5 minutes. The output below shows the last step they reached.'));
+    }, 5 * 60 * 1000);
 
     migrate.stdout.on('data', data => {
       const output = data.toString();
-      migrationOutput += output;
       console.log(`[Django MIGRATE] ${output.trim()}`);
+      recordDjangoOutput(output);
     });
 
     migrate.stderr.on('data', data => {
       const output = data.toString();
-      migrationError += output;
       console.log(`[Django MIGRATE Error] ${output.trim()}`);
+      recordDjangoOutput(output);
     });
 
     migrate.on('exit', code => {
+      clearTimeout(migrationTimeout);
       if (code === 0) {
         console.log('[OK] Migrations completed successfully');
+        recordDjangoOutput('[migrate] Database migrations finished');
         resolve();
       } else {
-        const error = `Migration process exited with code ${code}. Output: ${migrationOutput}. Error: ${migrationError}`;
+        const error = `Database migrations failed (exit code ${code}). The output below shows why.`;
         console.error(error);
         reject(new Error(error));
       }
     });
 
     migrate.on('error', err => {
+      clearTimeout(migrationTimeout);
       const error = `Failed to run migrations: ${err.message}`;
       console.error(error);
       reject(new Error(error));
@@ -1035,22 +1061,15 @@ if __name__ == '__main__':
       spawnArgs = ['-c', serverScript];
     }
 
-    const djangoEnv = getPythonEnv(djangoBundlePath, pythonPathEnv);
     djangoExit = null;
-    djangoOutput = [];
-    djangoStartTime = Date.now();
-    try {
-      fs.writeFileSync(djangoLogPath(), '');
-    } catch (e) {
-      // The log file is a diagnostic aid only; never let it block startup
-    }
+    recordDjangoOutput('[server] Starting the web server');
 
     djangoProcess = spawn(
       spawnCmd,
       spawnArgs,
       {
         cwd: djangoPath,
-        env: djangoEnv,
+        env: getPythonEnv(djangoBundlePath, pythonPathEnv),
         stdio: ['ignore', 'pipe', 'pipe']
       }
     );
@@ -1368,6 +1387,16 @@ function createLoadingWindow() {
           font-size: 14px;
           color: #888;
         }
+        .detail {
+          margin: 6px auto 0;
+          max-width: 540px;
+          font-family: monospace;
+          font-size: 11px;
+          color: #aaa;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
       </style>
     </head>
     <body>
@@ -1380,6 +1409,7 @@ function createLoadingWindow() {
           <div class="progress-bar" id="progress"></div>
         </div>
         <div class="status" id="status">Initializing...</div>
+        <div class="detail" id="detail"></div>
       </div>
     </body>
     </html>
@@ -1513,13 +1543,25 @@ app.whenReady().then(() => {
     loadingWindow.show();
 
     // Helper to update loading window status
-    const updateLoadingStatus = (message, progress = null) => {
+    const updateLoadingStatus = (message, progress = null, detail = '') => {
       if (loadingWindow && !loadingWindow.isDestroyed()) {
         loadingWindow.webContents.executeJavaScript(`
-          document.getElementById('status').textContent = '${message}';
+          document.getElementById('status').textContent = ${JSON.stringify(message)};
+          document.getElementById('detail').textContent = ${JSON.stringify(detail)};
           ${progress !== null ? `document.getElementById('progress').style.width = '${progress}%';` : ''}
         `);
       }
+    };
+
+    // Show elapsed time and the latest startup output while a step runs, so a stalled step shows where it stopped
+    const showLiveStatus = (message, progress) => {
+      const stepStart = Date.now();
+      updateLoadingStatus(message, progress);
+      const ticker = setInterval(() => {
+        const seconds = Math.round((Date.now() - stepStart) / 1000);
+        updateLoadingStatus(`${message} (${seconds}s)`, null, djangoOutput.at(-1) || '');
+      }, 1000);
+      return () => clearInterval(ticker);
     };
 
     // Kill orphaned workers first, check port availability, then run migrations, then start server
@@ -1530,8 +1572,8 @@ app.whenReady().then(() => {
         return checkAndReservePort(8000);
       })
       .then(() => {
-        updateLoadingStatus('Running database migrations...', 10);
-        return runMigrations(djangoBundlePath);
+        const stopLiveStatus = showLiveStatus('Running database migrations...', 10);
+        return runMigrations(djangoBundlePath).finally(stopLiveStatus);
       })
       .then(() => {
         updateLoadingStatus('Starting web server...', 30);
@@ -1539,9 +1581,9 @@ app.whenReady().then(() => {
         return startDjangoServer(djangoBundlePath);
       })
       .then(() => {
-        updateLoadingStatus('Waiting for server to respond...', 50);
+        const stopLiveStatus = showLiveStatus('Waiting for server to respond...', 50);
         console.log('Waiting for Django server to respond...');
-        return waitForHttp('http://127.0.0.1:8000/', 180000); // 3 minute timeout
+        return waitForHttp('http://127.0.0.1:8000/', 180000).finally(stopLiveStatus); // 3 minute timeout
       })
       .then(() => {
         updateLoadingStatus('Starting background services...', 70);
@@ -1596,8 +1638,8 @@ app.whenReady().then(() => {
           }
         });
         const serverOutput = djangoOutput.length
-          ? `<h2>Last server output</h2><pre>${escapeHtml(djangoOutput.slice(-25).join('\n'))}</pre>` +
-            `<p>Full server log: ${escapeHtml(djangoLogPath())}</p>`
+          ? `<h2>Last startup output</h2><pre>${escapeHtml(djangoOutput.slice(-25).join('\n'))}</pre>` +
+            `<p>Full startup log: ${escapeHtml(djangoLogPath())}</p>`
           : '';
         const html = `<h1>Startup Error</h1><p>${escapeHtml(err.message)}</p>${serverOutput}`;
         win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
