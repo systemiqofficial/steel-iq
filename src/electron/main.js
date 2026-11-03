@@ -35,6 +35,9 @@ app.on('child-process-gone', (_e, details) => {
   }
 });
 let djangoProcess = null;
+let djangoExit = null;  // { code, signal } once the Django server process has exited
+let djangoOutput = [];  // Recent Django output lines, shown in the startup error window
+let djangoStartTime = null;
 let taskWorkerProcess = null;
 let pythonVersion = null;  // Cache Python version
 let currentDjangoBundlePath = null;  // Capture bundle path for shutdown
@@ -342,24 +345,120 @@ function checkDjangoServer(url = 'http://127.0.0.1:8000/') {
   });
 }
 
+const HOST_LOOKUP_START = '[diag] Looking up host name for 127.0.0.1';
+const HOST_LOOKUP_DONE = '[diag] Host name lookup for 127.0.0.1 returned';
+
+function djangoLogPath() {
+  return path.join(app.getPath('userData'), 'logs', 'django-server.log');
+}
+
+function recordDjangoOutput(text) {
+  const elapsed = ((Date.now() - djangoStartTime) / 1000).toFixed(1);
+  const lines = text.split(/\r?\n/).filter(line => line.trim()).map(line => `[+${elapsed}s] ${line}`);
+  djangoOutput = djangoOutput.concat(lines).slice(-100);
+  try {
+    fs.appendFileSync(djangoLogPath(), lines.join('\n') + '\n');
+  } catch (e) {
+    // The log file is a diagnostic aid only; never let it block startup
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Explain why the Django server did not answer with 200 before the startup timeout.
+ *
+ * Args:
+ *   problem: the last failed check, { kind: 'error', code } | { kind: 'no-reply' } | { kind: 'status', status, server }
+ *   timeout: the startup timeout in milliseconds
+ *
+ * Returns:
+ *   A user-facing message naming the likely cause.
+ */
+function describeStartupTimeout(problem, timeout) {
+  const seconds = timeout / 1000;
+  if (problem.kind === 'error' && problem.code === 'ECONNREFUSED') {
+    const lookupStuck = djangoOutput.some(line => line.includes(HOST_LOOKUP_START))
+      && !djangoOutput.some(line => line.includes(HOST_LOOKUP_DONE));
+    if (lookupStuck) {
+      return `The STEEL-IQ server did not start within ${seconds} seconds: it is stuck looking up the host name for 127.0.0.1. ` +
+        'On VPN connections this DNS lookup can hang.';
+    }
+    return `The STEEL-IQ server did not start listening on 127.0.0.1:8000 within ${seconds} seconds. ` +
+      'The server output below shows how far it got.';
+  }
+  if (problem.kind === 'error') {
+    return `Connections to the STEEL-IQ server on 127.0.0.1:8000 failed with ${problem.code}. ` +
+      'VPN or security software may be blocking local connections.';
+  }
+  if (problem.kind === 'no-reply') {
+    return 'The STEEL-IQ server on 127.0.0.1:8000 accepted connections but sent no reply within 10 seconds. ' +
+      'VPN or security software may be holding local connections.';
+  }
+  if (problem.server.startsWith('WSGIServer')) {
+    return `The STEEL-IQ server replied with HTTP ${problem.status} instead of 200. The server output below shows the error.`;
+  }
+  return `Something other than the STEEL-IQ server answered on 127.0.0.1:8000 (HTTP ${problem.status}, server "${problem.server}"). ` +
+    'VPN or proxy software may be intercepting local connections.';
+}
+
+function problemLabel(problem) {
+  if (problem.kind === 'error') return problem.code === 'ECONNREFUSED' ? 'connection refused' : problem.code;
+  if (problem.kind === 'no-reply') return 'no reply';
+  return `HTTP ${problem.status} from "${problem.server}"`;
+}
+
 function waitForHttp(url = 'http://127.0.0.1:8000/', timeout = 60000, interval = 500) {
   const start = Date.now();
+  let lastProblem = { kind: 'error', code: 'ECONNREFUSED' };
+  const problemCounts = new Map();
+  const checksSummary = () => problemCounts.size
+    ? 'Failed checks while waiting: ' +
+      [...problemCounts].map(([label, count]) => `${label} (${count} ${count === 1 ? 'time' : 'times'})`).join(', ') + '.'
+    : 'No failed checks while waiting.';
   return new Promise((resolve, reject) => {
     function check() {
-      http.get(url, res => {
-        if (res.statusCode === 200) {
-          console.log('[OK] Django server is responding');
+      if (djangoExit) {
+        reject(new Error(
+          `The STEEL-IQ server stopped during startup (exit code ${djangoExit.code}, signal ${djangoExit.signal}). ` +
+          `The server output below shows why. ${checksSummary()}`
+        ));
+        return;
+      }
+      let settled = false;
+      const settle = problem => {
+        if (settled) return;
+        settled = true;
+        if (!problem) {
+          const summary = `[startup] Server answered with HTTP 200 after ${((Date.now() - start) / 1000).toFixed(1)}s of checks. ${checksSummary()}`;
+          console.log(summary);
+          recordDjangoOutput(summary);
           resolve();
-        } else {
-          retry();
+          return;
         }
+        lastProblem = problem;
+        const label = problemLabel(problem);
+        problemCounts.set(label, (problemCounts.get(label) || 0) + 1);
+        retry();
+      };
+      const request = http.get(url, res => {
         res.resume();
-      }).on('error', retry);
+        settle(res.statusCode === 200 ? null : { kind: 'status', status: res.statusCode, server: res.headers.server || 'none' });
+      });
+      let timedOut = false;
+      request.setTimeout(10000, () => {
+        timedOut = true;
+        request.destroy(new Error('No reply'));
+      });
+      request.on('error', err => settle(timedOut ? { kind: 'no-reply' } : { kind: 'error', code: err.code || err.message }));
     }
     function retry() {
       if (Date.now() - start > timeout) {
-        console.error(`Timeout waiting for Django server at ${url}`);
-        reject(new Error('Timeout waiting for Django server'));
+        const message = `${describeStartupTimeout(lastProblem, timeout)} ${checksSummary()}`;
+        console.error(`Timeout waiting for Django server at ${url}: ${message}`);
+        reject(new Error(message));
       } else {
         setTimeout(check, interval);
       }
@@ -893,6 +992,14 @@ except ImportError as e:
     traceback.print_exc()
     raise
 
+# The HTTP server resolves 127.0.0.1 to a host name when it binds; time it so a slow DNS lookup shows in startup errors
+import socket
+import time
+print("${HOST_LOOKUP_START}...")
+lookup_start = time.monotonic()
+host_name = socket.getfqdn("127.0.0.1")
+print(f"${HOST_LOOKUP_DONE} {host_name!r} after {time.monotonic() - lookup_start:.1f}s")
+
 # Run server
 from django.core.management import execute_from_command_line
 
@@ -928,12 +1035,22 @@ if __name__ == '__main__':
       spawnArgs = ['-c', serverScript];
     }
 
+    const djangoEnv = getPythonEnv(djangoBundlePath, pythonPathEnv);
+    djangoExit = null;
+    djangoOutput = [];
+    djangoStartTime = Date.now();
+    try {
+      fs.writeFileSync(djangoLogPath(), '');
+    } catch (e) {
+      // The log file is a diagnostic aid only; never let it block startup
+    }
+
     djangoProcess = spawn(
       spawnCmd,
       spawnArgs,
       {
         cwd: djangoPath,
-        env: getPythonEnv(djangoBundlePath, pythonPathEnv),
+        env: djangoEnv,
         stdio: ['ignore', 'pipe', 'pipe']
       }
     );
@@ -941,11 +1058,13 @@ if __name__ == '__main__':
     djangoProcess.stdout.on('data', data => {
       const output = data.toString();
       console.log(`[Django] ${output}`);
+      recordDjangoOutput(output);
     });
 
     djangoProcess.stderr.on('data', data => {
       const output = data.toString();
       console.log(`[Django] ${output}`);
+      recordDjangoOutput(output);
     });
 
     djangoProcess.on('error', err => {
@@ -953,7 +1072,8 @@ if __name__ == '__main__':
       reject(err);
     });
 
-    djangoProcess.on('exit', code => {
+    djangoProcess.on('exit', (code, signal) => {
+      djangoExit = { code, signal };
       console.log(`Django process exited with code ${code}`);
       if (code !== 0) {
         reject(new Error(`Django exited with code ${code}`));
@@ -1421,7 +1541,7 @@ app.whenReady().then(() => {
       .then(() => {
         updateLoadingStatus('Waiting for server to respond...', 50);
         console.log('Waiting for Django server to respond...');
-        return waitForHttp('http://127.0.0.1:8000/', 60000); // 60 second timeout
+        return waitForHttp('http://127.0.0.1:8000/', 180000); // 3 minute timeout
       })
       .then(() => {
         updateLoadingStatus('Starting background services...', 70);
@@ -1475,7 +1595,12 @@ app.whenReady().then(() => {
             preload: path.join(__dirname, 'preload.cjs')
           }
         });
-        win.loadURL(`data:text/html,<h1>Startup Error</h1><p>${err.message}</p>`);
+        const serverOutput = djangoOutput.length
+          ? `<h2>Last server output</h2><pre>${escapeHtml(djangoOutput.slice(-25).join('\n'))}</pre>` +
+            `<p>Full server log: ${escapeHtml(djangoLogPath())}</p>`
+          : '';
+        const html = `<h1>Startup Error</h1><p>${escapeHtml(err.message)}</p>${serverOutput}`;
+        win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
       });
   }
 
