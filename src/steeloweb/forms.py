@@ -1043,6 +1043,13 @@ class ModelRunCreateForm(forms.ModelForm):
         scrap_field = self.fields["chosen_scrap_scenario"]
         scrap_field.choices = [*scrap_field.choices[:1], *((name, name) for name in self.scrap_scenarios)]
 
+        # The sections' "Return to default settings" buttons read these, as the initials can differ per preparation
+        for name in ["chosen_demand_scenario", "chosen_scrap_scenario", *self.capacity_policy_lever_names]:
+            initial = self.fields[name].initial
+            self.fields[name].widget.attrs["data-default"] = (
+                "" if initial is None else str(initial).lower() if isinstance(initial, bool) else str(initial)
+            )
+
         # Disabled while the switch is off, the levers post nothing; shown again, they start from their initials
         if self.is_bound and "capacity_policy_enabled" not in self.data:
             self.data = self.data.copy()
