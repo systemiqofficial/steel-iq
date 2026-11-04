@@ -6,6 +6,7 @@ import pytest
 from django.urls import reverse
 from django.utils.html import escape
 
+from steelo import simulation
 from steeloweb import forms
 
 EXPLAINED_SETTINGS = {
@@ -22,6 +23,7 @@ EXPLAINED_SETTINGS = {
     "chosen_emissions_boundary_for_carbon_costs",
     "carbon_border_export_rebates",
     "hydrogen_ceiling_percentile",
+    "intraregional_trade_allowed",
     "geographical_clustering_scope",
     "top_n_loctechs_as_business_op",
     "pick_priority_sites_share",
@@ -99,3 +101,30 @@ def test_explanations_hold_two_to_four_sentences():
 
     assert {name: count for name, count in sentence_counts.items() if not 2 <= count <= 4} == {}
     assert [name for name, text in forms.FIELD_EXPLANATIONS.items() if not text.endswith(".")] == []
+
+
+def test_linked_regions_explanation_lists_every_region_of_the_trade_matrix():
+    """The intraregional trade popover has one bullet per link of the matrix, and names the unlinked regions."""
+    matrix = simulation.config_default("geo_config.intraregional_trade_matrix")
+
+    lines = forms.linked_regions_explanation().split("\n")
+
+    bullets = {line.removeprefix("• ") for line in lines if line.startswith("• ")}
+    expected = {
+        " ↔ ".join(sorted((importer, exporter)))
+        if importer in (matrix.get(exporter) or [])
+        else f"{exporter} → {importer}"
+        for importer, exporters in matrix.items()
+        for exporter in exporters or []
+    }
+    assert bullets == expected
+    assert lines[-1] == f"Regions without links: {', '.join(sorted(r for r, e in matrix.items() if not e))}."
+
+
+def test_linked_regions_explanation_marks_a_one_way_link_with_an_arrow_to_the_importer(monkeypatch):
+    """A link used one way only shows as exporter → importer."""
+    monkeypatch.setattr(forms, "config_default", lambda name: {"Japan": ["South Korea"], "South Korea": None})
+
+    text = forms.linked_regions_explanation()
+
+    assert "• South Korea → Japan" in text.split("\n")

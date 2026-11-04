@@ -395,10 +395,11 @@ def force_stop_modelrun(request, pk):
 
 
 def _enrich_technology_defaults(technologies: dict, set_from_year: bool = True) -> None:
-    """Enrich technologies dict with default_from_year for UI reset functionality.
+    """Enrich technologies dict with default_from_year, default_allowed and default_to_year for UI reset functionality.
 
     Modifies the technologies dict in place, adding 'default_from_year' field
-    to each technology based on whether it's advanced or mature.
+    to each technology based on whether it's advanced or mature, and keeping the
+    data preparation's allowed and to_year values as 'default_allowed' and 'default_to_year'.
 
     Advanced technologies (H2, CCS, CCU, ESF, MOE, EWIN, SR) get 2030,
     mature technologies keep their existing from_year value.
@@ -449,8 +450,10 @@ def _enrich_technology_defaults(technologies: dict, set_from_year: bool = True) 
                 # Fallback to 2025 if no existing value (shouldn't happen with proper data prep)
                 default_year = 2025
 
-        # Always store default for reset functionality
+        # Always store defaults for reset functionality
         tech["default_from_year"] = default_year
+        tech["default_allowed"] = tech.get("allowed", True)
+        tech["default_to_year"] = tech.get("to_year")
 
         # Optionally set from_year to default (for initial load)
         # When False, preserves user-edited values in validation error path
@@ -573,12 +576,11 @@ def _build_validation_error_context(request, form, data_preparation: DataPrepara
     technologies_orig = data_preparation.get_technologies()
     technologies = copy.deepcopy(technologies_orig)
 
+    # Take the reset defaults from the preparation's values, before the posted values replace them
+    _enrich_technology_defaults(technologies, set_from_year=False)
+
     # Merge ALL posted values (checkboxes, years) to preserve user input
     _merge_posted_technology_values(request, technologies)
-
-    # Apply UI metadata without overriding user values
-    # set_from_year=False preserves user-edited from_year values
-    _enrich_technology_defaults(technologies, set_from_year=False)
 
     # Build base context
     context = {

@@ -78,6 +78,33 @@ class MasterExcelFileForm(forms.ModelForm):
         return file
 
 
+def linked_regions_explanation() -> str:
+    """List the hydrogen trade links between regions, one per line, for the intraregional trade (?) popover.
+
+    Returns:
+        The default intraregional trade matrix as text: one bullet per linked pair, "↔" for a link used both ways
+        and "→" from exporter to importer for a one-way link, then the regions without links.
+
+    Notes:
+        Built from ``GeoConfig``'s class default, the matrix every run uses, so the popover cannot drift from it.
+        The popover keeps the line breaks (``white-space: pre-line`` on the run form).
+    """
+    matrix = config_default("geo_config.intraregional_trade_matrix")
+    links = set()
+    for importer, exporters in matrix.items():
+        for exporter in exporters or []:
+            if importer in (matrix.get(exporter) or []):
+                links.add(" ↔ ".join(sorted((importer, exporter))))
+            else:
+                links.add(f"{exporter} → {importer}")
+    bullets = "\n".join(f"• {link}" for link in sorted(links))
+    unlinked = ", ".join(sorted(region for region, exporters in matrix.items() if not exporters))
+    return (
+        "When ticked, a region may import hydrogen from the regions it is linked with. "
+        f"Links (↔ both ways, → exporter to importer):\n{bullets}\nRegions without links: {unlinked}."
+    )
+
+
 # Shown in the (?) popover beside each field; Django fields take no custom keyword, so __init__ attaches them
 FIELD_EXPLANATIONS: dict[str, str] = {
     "capacity_policy_enabled": (
@@ -169,6 +196,7 @@ FIELD_EXPLANATIONS: dict[str, str] = {
         "lower the cap to a linked region's cap plus the pipeline transport cost. Below 100, a sub-national price row "
         "is capped at its region's ceiling too, which is taken over national costs only."
     ),
+    "intraregional_trade_allowed": linked_regions_explanation(),
     "geographical_clustering_scope": (
         "With clustering on, the trade allocation merges furnace groups of one technology and feedstock; this scope "
         "sets the area within which those trading hot products such as hot metal, liquid iron or DRI are merged and "
@@ -478,7 +506,7 @@ class ModelRunCreateForm(forms.ModelForm):
         label="Probabilistic agents",
         initial=config_default("probabilistic_agents"),
         required=False,
-        help_text="Enable probabilistic decision-making (mimics human behavior). When disabled, uses deterministic approach.",
+        help_text="Enable probabilistic decision-making (aims to mimic human behaviour). When disabled, uses deterministic approach.",
         widget=forms.CheckboxInput(
             attrs={"class": "form-check-input field-connected", "id": "id_probabilistic_agents"}
         ),
@@ -831,7 +859,7 @@ class ModelRunCreateForm(forms.ModelForm):
         label="Intraregional trade allowed",
         initial=config_default("geo_config.intraregional_trade_allowed"),
         required=False,
-        help_text="Allow hydrogen trade between linked regions (e.g., trade between Africa and Western Europe)",
+        help_text="Allow hydrogen trade between regions linked with natural gas pipes",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
@@ -1025,6 +1053,13 @@ class ModelRunCreateForm(forms.ModelForm):
             demand_field.initial = self.demand_scenarios[0]
         scrap_field = self.fields["chosen_scrap_scenario"]
         scrap_field.choices = [*scrap_field.choices[:1], *((name, name) for name in self.scrap_scenarios)]
+
+        # The sections' "Return to default settings" buttons read these, as the initials can differ per preparation
+        for name in ["chosen_demand_scenario", "chosen_scrap_scenario", *self.capacity_policy_lever_names]:
+            initial = self.fields[name].initial
+            self.fields[name].widget.attrs["data-default"] = (
+                "" if initial is None else str(initial).lower() if isinstance(initial, bool) else str(initial)
+            )
 
         # Disabled while the switch is off, the levers post nothing; shown again, they start from their initials
         if self.is_bound and "capacity_policy_enabled" not in self.data:

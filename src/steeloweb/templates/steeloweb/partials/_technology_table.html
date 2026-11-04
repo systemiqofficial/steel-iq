@@ -69,6 +69,7 @@
                                    class="form-check-input tech-allowed"
                                    name="tech_{{ slug }}_allowed"
                                    id="tech_{{ slug }}_allowed"
+                                   data-default="{{ tech.default_allowed|yesno:'true,false' }}"
                                    {% if tech.allowed %}checked{% endif %}>
                         </td>
                         {% comment "Greenfield column hidden; runs keep the default exclusion" %}
@@ -97,6 +98,7 @@
                                    name="tech_{{ slug }}_to_year"
                                    id="tech_{{ slug }}_to_year"
                                    value="{% if tech.to_year %}{{ tech.to_year }}{% endif %}"
+                                   data-default-year="{% if tech.default_to_year %}{{ tech.default_to_year }}{% endif %}"
                                    min="2020" max="2100"
                                    placeholder="No limit"
                                    data-slug="{{ slug }}">
@@ -112,6 +114,10 @@
                 <i class="bi bi-info-circle"></i>
                 {{ technologies|length }} technolog{{ technologies|length|pluralize:"y,ies" }} available
             </small>
+        </div>
+
+        <div class="text-end">
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetTechnologySettings()">Return to default settings</button>
         </div>
         {% else %}
         <div class="alert callout-steel">
