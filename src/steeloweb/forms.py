@@ -78,6 +78,22 @@ class MasterExcelFileForm(forms.ModelForm):
         return file
 
 
+def linked_regions_explanation() -> str:
+    """List the regions each region may import hydrogen from, for the intraregional trade (?) popover.
+
+    Returns:
+        The default intraregional trade matrix as text: each linked region with its import partners, then the
+        regions without links.
+
+    Notes:
+        Built from ``GeoConfig``'s class default, the matrix every run uses, so the popover cannot drift from it.
+    """
+    matrix = sorted(config_default("geo_config.intraregional_trade_matrix").items())
+    linked = "; ".join(f"{region} from {', '.join(sorted(partners))}" for region, partners in matrix if partners)
+    unlinked = ", ".join(region for region, partners in matrix if not partners)
+    return f"Hydrogen imports allowed: {linked}. Regions without links: {unlinked}."
+
+
 # Shown in the (?) popover beside each field; Django fields take no custom keyword, so __init__ attaches them
 FIELD_EXPLANATIONS: dict[str, str] = {
     "capacity_policy_enabled": (
@@ -169,6 +185,7 @@ FIELD_EXPLANATIONS: dict[str, str] = {
         "lower the cap to a linked region's cap plus the pipeline transport cost. Below 100, a sub-national price row "
         "is capped at its region's ceiling too, which is taken over national costs only."
     ),
+    "intraregional_trade_allowed": linked_regions_explanation(),
     "geographical_clustering_scope": (
         "With clustering on, the trade allocation merges furnace groups of one technology and feedstock; this scope "
         "sets the area within which those trading hot products such as hot metal, liquid iron or DRI are merged and "
@@ -478,7 +495,7 @@ class ModelRunCreateForm(forms.ModelForm):
         label="Probabilistic agents",
         initial=config_default("probabilistic_agents"),
         required=False,
-        help_text="Enable probabilistic decision-making (mimics human behavior). When disabled, uses deterministic approach.",
+        help_text="Enable probabilistic decision-making (aims to mimic human behaviour). When disabled, uses deterministic approach.",
         widget=forms.CheckboxInput(
             attrs={"class": "form-check-input field-connected", "id": "id_probabilistic_agents"}
         ),
@@ -831,7 +848,7 @@ class ModelRunCreateForm(forms.ModelForm):
         label="Intraregional trade allowed",
         initial=config_default("geo_config.intraregional_trade_allowed"),
         required=False,
-        help_text="Allow hydrogen trade between linked regions (e.g., trade between Africa and Western Europe)",
+        help_text="Allow hydrogen trade between regions linked with natural gas pipes",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 

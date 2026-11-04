@@ -6,6 +6,7 @@ import pytest
 from django.urls import reverse
 from django.utils.html import escape
 
+from steelo import simulation
 from steeloweb import forms
 
 EXPLAINED_SETTINGS = {
@@ -22,6 +23,7 @@ EXPLAINED_SETTINGS = {
     "chosen_emissions_boundary_for_carbon_costs",
     "carbon_border_export_rebates",
     "hydrogen_ceiling_percentile",
+    "intraregional_trade_allowed",
     "geographical_clustering_scope",
     "top_n_loctechs_as_business_op",
     "pick_priority_sites_share",
@@ -99,3 +101,19 @@ def test_explanations_hold_two_to_four_sentences():
 
     assert {name: count for name, count in sentence_counts.items() if not 2 <= count <= 4} == {}
     assert [name for name, text in forms.FIELD_EXPLANATIONS.items() if not text.endswith(".")] == []
+
+
+def test_linked_regions_explanation_lists_every_region_of_the_trade_matrix():
+    """The intraregional trade popover names each region's import partners, and the unlinked regions, from the matrix."""
+    matrix = simulation.config_default("geo_config.intraregional_trade_matrix")
+
+    text = forms.linked_regions_explanation()
+
+    assert [
+        region
+        for region, partners in matrix.items()
+        if partners and f"{region} from {', '.join(sorted(partners))}" not in text
+    ] == []
+    assert [
+        region for region, partners in matrix.items() if not partners and region not in text.split("without links: ")[1]
+    ] == []
