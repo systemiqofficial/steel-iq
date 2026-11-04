@@ -28,7 +28,11 @@
     .form-text.text-muted {
         font-size: 0.875rem;
     }
-    
+
+    /* Keeps the line breaks of a field explanation, such as the intraregional trade links */
+    .popover-body {
+        white-space: pre-line;
+    }
 </style>
 {% endblock %}
 
@@ -43,7 +47,31 @@ function resetField(id) {
     }
 }
 
+// Reset every field with a data-default inside a container
+function resetFieldsWithin(selector) {
+    document.querySelectorAll(`${selector} [data-default]`).forEach(el => {
+        if (el.type === 'checkbox') {
+            el.checked = el.dataset.default === 'true';
+        } else {
+            el.value = el.dataset.default;
+        }
+    });
+}
+
 // Function to reset form fields to their default values
+function resetSimulationParameters() {
+    const randomise = document.getElementById('id_randomise_seed');
+    randomise.checked = false;
+    // The change handler unlocks the seed and restores the last typed one, so the default is set after it
+    randomise.dispatchEvent(new Event('change'));
+    document.getElementById('id_random_seed').value = '{{ form.fields.random_seed.initial }}';
+}
+
+function resetDataInput() {
+    resetField('id_chosen_demand_scenario');
+    resetField('id_chosen_scrap_scenario');
+}
+
 function resetSimulationPeriod() {
     resetField('id_start_year') || (document.getElementById('id_start_year').value = '2025');
     resetField('id_end_year') || (document.getElementById('id_end_year').value = '2060');
@@ -90,34 +118,10 @@ function resetPolicySettings() {
     document.getElementById('id_chosen_emissions_boundary_for_carbon_costs').value = '{{ form.fields.chosen_emissions_boundary_for_carbon_costs.initial }}';
     document.getElementById('id_carbon_border_export_rebates').checked = {{ form.fields.carbon_border_export_rebates.initial|yesno:"true,false" }};
     document.getElementById('id_capacity_policy_enabled').checked = {{ form.fields.capacity_policy_enabled.initial|yesno:"true,false" }};
+    resetFieldsWithin('#capacity_policy_levers');
     // Trigger change to update dependent field disabled state
     document.getElementById('id_enable_furnace_group_clustering').dispatchEvent(new Event('change'));
     document.getElementById('id_capacity_policy_enabled').dispatchEvent(new Event('change'));
-}
-
-function resetTechnologySettings() {
-    // Dynamic reset based on HTMX-loaded content
-    // Reset all technology fields that start with 'tech_'
-    document.querySelectorAll('[id^="id_tech_"]').forEach(el => {
-        if (el.dataset.default !== undefined) {
-            // Use the default value from the data attribute
-            if (el.type === 'checkbox') {
-                el.checked = el.dataset.default === 'true';
-            } else {
-                el.value = el.dataset.default;
-            }
-        } else {
-            // No default specified, use sensible defaults
-            if (el.type === 'checkbox') {
-                el.checked = true;  // Default to allowed
-            } else if (el.name && el.name.includes('from_year')) {
-                el.value = '2025';  // Default start year
-            } else if (el.name && el.name.includes('to_year')) {
-                el.value = '';  // No end year limit by default
-            }
-        }
-    });
-
 }
 
 function resetGeospatialSettings() {
@@ -555,30 +559,20 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Restore each technology to its data preparation's values, kept in data attributes by the table
+    window.resetTechnologySettings = function() {
+        resetFieldsWithin('#tech-config');
+        document.querySelectorAll('#tech-config [data-default-year]').forEach(input => {
+            input.value = input.dataset.defaultYear;
+            input.dispatchEvent(new Event('change'));
+        });
+        syncSelectAllCheckbox();
+    };
+
     // Bind validation after HTMX loads content
     document.addEventListener('htmx:afterSwap', (event) => {
         if (event.target.id === 'tech-config') {
             bindTechValidation();
-            // Update the reset function to work with dynamic fields
-            window.resetTechnologySettings = function() {
-                // Reset all dynamic technology checkboxes to checked
-                document.querySelectorAll('.tech-allowed').forEach(cb => {
-                    cb.checked = true;
-                });
-                // Reset all from_year fields to their default values
-                document.querySelectorAll('[id^="tech_"][id$="_from_year"]').forEach(input => {
-                    // Use the default value from data attribute
-                    // Fall back to 2025 ONLY if data attribute is missing (shouldn't happen)
-                    const defaultYear = input.dataset.defaultYear || '2025';
-                    input.value = defaultYear;
-                });
-                // Clear all to_year fields
-                document.querySelectorAll('[id^="tech_"][id$="_to_year"]').forEach(input => {
-                    input.value = '';
-                });
-                // Sync the select-all checkbox
-                syncSelectAllCheckbox();
-            };
         }
     });
 
@@ -734,6 +728,10 @@ document.body.addEventListener('htmx:load', function (evt) {
                                         <small class="form-text text-muted">{{ form.random_seed.help_text }}</small>
                                     </div>
                                 </div>
+
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetSimulationParameters()">Return to default settings</button>
+                                </div>
                             </div>
                         </div>
                         <script>
@@ -847,6 +845,10 @@ document.body.addEventListener('htmx:load', function (evt) {
                                      hx-swap="innerHTML"
                                      hx-include="#id_data_preparation, #id_chosen_demand_scenario, #id_chosen_scrap_scenario">
                                     {% include "steeloweb/partials/_demand_scrap_scenarios.html" %}
+                                </div>
+
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetDataInput()">Return to default settings</button>
                                 </div>
                             </div>
                         </div>

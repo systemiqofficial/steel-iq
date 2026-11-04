@@ -104,16 +104,27 @@ def test_explanations_hold_two_to_four_sentences():
 
 
 def test_linked_regions_explanation_lists_every_region_of_the_trade_matrix():
-    """The intraregional trade popover names each region's import partners, and the unlinked regions, from the matrix."""
+    """The intraregional trade popover has one bullet per link of the matrix, and names the unlinked regions."""
     matrix = simulation.config_default("geo_config.intraregional_trade_matrix")
+
+    lines = forms.linked_regions_explanation().split("\n")
+
+    bullets = {line.removeprefix("• ") for line in lines if line.startswith("• ")}
+    expected = {
+        " ↔ ".join(sorted((importer, exporter)))
+        if importer in (matrix.get(exporter) or [])
+        else f"{exporter} → {importer}"
+        for importer, exporters in matrix.items()
+        for exporter in exporters or []
+    }
+    assert bullets == expected
+    assert lines[-1] == f"Regions without links: {', '.join(sorted(r for r, e in matrix.items() if not e))}."
+
+
+def test_linked_regions_explanation_marks_a_one_way_link_with_an_arrow_to_the_importer(monkeypatch):
+    """A link used one way only shows as exporter → importer."""
+    monkeypatch.setattr(forms, "config_default", lambda name: {"Japan": ["South Korea"], "South Korea": None})
 
     text = forms.linked_regions_explanation()
 
-    assert [
-        region
-        for region, partners in matrix.items()
-        if partners and f"{region} from {', '.join(sorted(partners))}" not in text
-    ] == []
-    assert [
-        region for region, partners in matrix.items() if not partners and region not in text.split("without links: ")[1]
-    ] == []
+    assert "• South Korea → Japan" in text.split("\n")
