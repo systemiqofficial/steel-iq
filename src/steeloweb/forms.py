@@ -79,19 +79,30 @@ class MasterExcelFileForm(forms.ModelForm):
 
 
 def linked_regions_explanation() -> str:
-    """List the regions each region may import hydrogen from, for the intraregional trade (?) popover.
+    """List the hydrogen trade links between regions, one per line, for the intraregional trade (?) popover.
 
     Returns:
-        The default intraregional trade matrix as text: each linked region with its import partners, then the
-        regions without links.
+        The default intraregional trade matrix as text: one bullet per linked pair, "↔" for a link used both ways
+        and "→" from exporter to importer for a one-way link, then the regions without links.
 
     Notes:
         Built from ``GeoConfig``'s class default, the matrix every run uses, so the popover cannot drift from it.
+        The popover keeps the line breaks (``white-space: pre-line`` on the run form).
     """
-    matrix = sorted(config_default("geo_config.intraregional_trade_matrix").items())
-    linked = "; ".join(f"{region} from {', '.join(sorted(partners))}" for region, partners in matrix if partners)
-    unlinked = ", ".join(region for region, partners in matrix if not partners)
-    return f"Hydrogen imports allowed: {linked}. Regions without links: {unlinked}."
+    matrix = config_default("geo_config.intraregional_trade_matrix")
+    links = set()
+    for importer, exporters in matrix.items():
+        for exporter in exporters or []:
+            if importer in (matrix.get(exporter) or []):
+                links.add(" ↔ ".join(sorted((importer, exporter))))
+            else:
+                links.add(f"{exporter} → {importer}")
+    bullets = "\n".join(f"• {link}" for link in sorted(links))
+    unlinked = ", ".join(sorted(region for region, exporters in matrix.items() if not exporters))
+    return (
+        "When ticked, a region may import hydrogen from the regions it is linked with. "
+        f"Links (↔ both ways, → exporter to importer):\n{bullets}\nRegions without links: {unlinked}."
+    )
 
 
 # Shown in the (?) popover beside each field; Django fields take no custom keyword, so __init__ attaches them
