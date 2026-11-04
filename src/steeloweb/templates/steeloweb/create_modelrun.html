@@ -1442,7 +1442,7 @@ document.body.addEventListener('htmx:load', function (evt) {
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.intraregional_trade_allowed.id_for_label }}" class="col-sm-4 col-form-label">{{ form.intraregional_trade_allowed.label }}:</label>
+                                    <div class="col-sm-4 col-form-label"><label for="{{ form.intraregional_trade_allowed.id_for_label }}">{{ form.intraregional_trade_allowed.label }}:</label>{% include "steeloweb/partials/_field_explanation.html" with field=form.intraregional_trade_allowed %}</div>
                                     <div class="col-sm-8">
                                         <div class="form-check">
                                             {{ form.intraregional_trade_allowed }}
