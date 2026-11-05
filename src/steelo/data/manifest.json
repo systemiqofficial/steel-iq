@@ -104,8 +104,8 @@
       "name": "master-input",
       "version": "3.0.0",
       "url": "https://steelo-data.s3.eu-north-1.amazonaws.com/master_input_v3.0.0.xlsx",
-      "size_mb": 61.61,
-      "checksum": "b7fb7445f83fe988d1c5eb61f10eb7cedab9614e3c012082ebb351b018ba7c8b",
+      "size_mb": 61.39,
+      "checksum": "92756494b8155ca8f3cdd7e3f9410080f567f73fc4f1dc849669b86d5ac06d05",
       "description": "Master input Excel file containing all simulation input data - Updated 2026-11-05 (v3.0.0)",
       "required": false,
       "files": ["master_input.xlsx"]
