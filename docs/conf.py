@@ -16,7 +16,7 @@ from typing import Any
 project = "Steel Model"
 author = "Steel Model Team"
 copyright = "2025, Steel Model Team"
-version = "2.0.0"  # Can be automated from pyproject.toml later
+version = "3.0.0"  # Can be automated from pyproject.toml later
 release = version
 
 # Track whether we are building the public site (set via `-t public`)
