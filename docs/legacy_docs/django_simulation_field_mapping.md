@@ -56,7 +56,6 @@ The Django web interface collects ~60+ configuration parameters through the Mode
 |-------|-----------|------------|------------------|--------|----------|-------|
 | Total Steel Demand Scenario | `total_steel_demand_scenario` | `total_steel_demand_scenario` | Not used in SimulationRunner | ❌ | P1 | Only works with NBSimulationRunner (Excel-based), not with SimulationRunner (JSON-based) used by Django |
 | Green Steel Demand Scenario | `green_steel_demand_scenario` | `green_steel_demand_scenario` | Not used | ❌ | P1 | Form has options, not passed to simulation |
-| Scrap Generation Scenario | `scrap_generation_scenario` | `scrap_generation_scenario` | `global_variables.CHOSEN_DEMAND_SCENARIO` | ✅ | P1 | Connected as of 2025-01-06, form shows only "BAU" and "High circularity" options |
 | Trade Scenario | `trade_scenario` | `trade_scenario` | Not used | ❌ | P2 | Form has 6 options, not passed |
 | Trade Tariffs | `trade_tariffs` | `trade_tariffs` | Not used | ❌ | P2 | Boolean field, not passed |
 | Emissions Boundary | `emissions_boundary` | `emissions_boundary` | Not used | ❌ | P2 | Form has 2 options, not passed |

@@ -14,6 +14,7 @@ from .interface import (
     SupplierRepository,
 )
 from .metadata_loader import MetadataProvider, JsonMetadata
+from ...capacity_policy.inputs import OpeningCreditRow, RegionRow, TechnologyRow
 from ...domain import (
     BiomassAvailability,
     Plant,
@@ -33,10 +34,12 @@ from ...domain import (
     RegionEmissivity,
     Capex,
     CostOfCapital,
+    TechFinancingRates,
     RailwayCost,
     Subsidy,
 )
 from ...domain.models import (
+    compose_geo_key,
     ProductionThreshold,
     PrimaryFeedstock,
     LegalProcessConnector,
@@ -60,6 +63,7 @@ class LocationInDb(BaseModel):
     region: str
     lat: float
     lon: float
+    geo_unit: str | None = None
 
 
 class PrimaryFeedstockInDb(BaseModel):
@@ -1567,12 +1571,13 @@ class CarbonCostsJsonRepository:
 # ---- Pydantic "In-DB" Models ----
 class RegionEmissivityInDb(BaseModel):
     iso3: str
+    geo_unit: str | None = None
     country_name: str
     scenario: str
     grid_emissivity: dict[Year, dict[str, float]]
     coke_emissivity: dict[str, float]
     gas_emissivity: dict[str, float]
-    id: str = Field(..., description="iso3_scenario id")
+    id: str = Field(..., description="geo_key_scenario id")
 
     def __lt__(self, other: "RegionEmissivityInDb") -> bool:
         return self.id < other.id
@@ -1581,6 +1586,7 @@ class RegionEmissivityInDb(BaseModel):
     def to_domain(self) -> RegionEmissivity:
         return RegionEmissivity(
             iso3=self.iso3,
+            geo_unit=self.geo_unit,
             country_name=self.country_name,
             scenario=self.scenario,
             grid_emissivity=self.grid_emissivity,
@@ -1592,6 +1598,7 @@ class RegionEmissivityInDb(BaseModel):
     def from_domain(cls, domain: RegionEmissivity) -> "RegionEmissivityInDb":
         return cls(
             iso3=domain.iso3,
+            geo_unit=domain.geo_unit,
             country_name=domain.country_name,
             scenario=domain.scenario,
             grid_emissivity=domain.grid_emissivity,
@@ -1663,26 +1670,31 @@ class InputCostsInDb(BaseModel):
     iso3: str
     year: Year
     costs: dict[str, float] = Field(..., description="Mapping from commodity → cost")
+    geo_unit: str | None = None  # ISO 3166-2 code; None ⇒ country-level (legacy JSON loads as None)
+
+    @property
+    def geo_key(self) -> str:
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     @property
     def to_domain(self) -> InputCosts:
         """
         Convert this DB model into the domain‐level `InputCosts` object.
         """
-        return InputCosts(year=self.year, iso3=self.iso3, costs=self.costs.copy())
+        return InputCosts(year=self.year, iso3=self.iso3, costs=self.costs.copy(), geo_unit=self.geo_unit)
 
     @classmethod
     def from_domain(cls, ic: InputCosts) -> "InputCostsInDb":
         """
         Create an InputCostsInDb (Pydantic model) from a domain‐level `InputCosts` instance.
         """
-        return cls(iso3=ic.iso3, year=ic.year, costs=ic.costs.copy())
+        return cls(iso3=ic.iso3, year=ic.year, costs=ic.costs.copy(), geo_unit=ic.geo_unit)
 
     def __lt__(self, other: "InputCostsInDb") -> bool:
         """
-        Enable sorting by `name` (iso3_year) for stable JSON dumps.
+        Enable sorting by `name` (geo_key_year) for stable JSON dumps.
         """
-        return f"{self.iso3}_{self.year}" < f"{other.iso3}_{other.year}"
+        return f"{self.geo_key}_{self.year}" < f"{other.geo_key}_{other.year}"
 
 
 class InputCostsListInDb(BaseModel):
@@ -1717,7 +1729,7 @@ class InputCostsJsonRepository:
                 return {}
             raw = self.path.read_text(encoding="utf-8")
             parsed = InputCostsListInDb.model_validate_json(raw)
-            return {f"{entry.iso3}_{entry.year}": entry for entry in parsed.root}
+            return {f"{entry.geo_key}_{entry.year}": entry for entry in parsed.root}
         except FileNotFoundError:
             return {}
 
@@ -1761,7 +1773,7 @@ class InputCostsJsonRepository:
         """
         entry_in_db = InputCostsInDb.from_domain(ic)
         locked = self._fetch_all()
-        key = f"{entry_in_db.iso3}_{entry_in_db.year}"
+        key = f"{entry_in_db.geo_key}_{entry_in_db.year}"
         locked[key] = entry_in_db
         self._write_models(list(locked.values()))
         self._all = None  # clear cache
@@ -1773,7 +1785,7 @@ class InputCostsJsonRepository:
         locked = self._fetch_all()
         for ic in ic_list:
             entry_in_db = InputCostsInDb.from_domain(ic)
-            key = f"{entry_in_db.iso3}_{entry_in_db.year}"
+            key = f"{entry_in_db.geo_key}_{entry_in_db.year}"
             locked[key] = entry_in_db
         self._write_models(list(locked.values()))
         self._all = None
@@ -1894,15 +1906,16 @@ class CapexJsonRepository:
         return "[\n" + ",\n".join(json_lines) + "\n]"
 
 
+class TechFinancingRatesInDb(BaseModel):
+    cost_of_debt: float
+    cost_of_equity: float
+    cost_of_capital: float
+
+
 class CostOfCapitalInDb(BaseModel):
     country: str
     iso3: str
-    debt_res: float
-    equity_res: float
-    wacc_res: float
-    debt_other: float
-    equity_other: float
-    wacc_other: float
+    techs: dict[str, TechFinancingRatesInDb]
 
     def __lt__(self, other: "CostOfCapitalInDb") -> bool:
         return self.iso3 < other.iso3
@@ -1912,12 +1925,14 @@ class CostOfCapitalInDb(BaseModel):
         return CostOfCapital(
             country=self.country,
             iso3=self.iso3,
-            debt_res=self.debt_res,
-            equity_res=self.equity_res,
-            wacc_res=self.wacc_res,
-            debt_other=self.debt_other,
-            equity_other=self.equity_other,
-            wacc_other=self.wacc_other,
+            techs={
+                tech: TechFinancingRates(
+                    cost_of_debt=rates.cost_of_debt,
+                    cost_of_equity=rates.cost_of_equity,
+                    cost_of_capital=rates.cost_of_capital,
+                )
+                for tech, rates in self.techs.items()
+            },
         )
 
     @classmethod
@@ -1925,12 +1940,14 @@ class CostOfCapitalInDb(BaseModel):
         return cls(
             country=domain.country,
             iso3=domain.iso3,
-            debt_res=domain.debt_res,
-            equity_res=domain.equity_res,
-            wacc_res=domain.wacc_res,
-            debt_other=domain.debt_other,
-            equity_other=domain.equity_other,
-            wacc_other=domain.wacc_other,
+            techs={
+                tech: TechFinancingRatesInDb(
+                    cost_of_debt=rates.cost_of_debt,
+                    cost_of_equity=rates.cost_of_equity,
+                    cost_of_capital=rates.cost_of_capital,
+                )
+                for tech, rates in domain.techs.items()
+            },
         )
 
 
@@ -2059,9 +2076,12 @@ class LegalProcessConnectorJsonRepository:
 class CountryMappingInDb(BaseModel):
     """
     Pydantic model for serializing/deserializing CountryMapping to/from JSON.
+
+    Trade bloc membership booleans are carried as extra fields, so every bloc
+    column detected in the master sheet survives the JSON round-trip.
     """
 
-    model_config = {"populate_by_name": True}  # Allow both alias and field name
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
     country: str = Field(..., alias="Country")
     iso2: str = Field(..., alias="ISO 2-letter code")
@@ -2074,17 +2094,10 @@ class CountryMappingInDb(BaseModel):
     ws_region: str | None = Field(None, alias="ws_region")
     tiam_ucl_region: str = Field(..., alias="tiam-ucl_region")
     eu_region: str | None = Field(None, alias="eu_or_non_eu")
-    # CBAM-related region memberships
-    EU: bool = Field(False, alias="EU")
-    EFTA_EUCJ: bool = Field(False, alias="EFTA/EUCJ")
-    OECD: bool = Field(False, alias="OECD")
-    NAFTA: bool = Field(False, alias="NAFTA")
-    Mercosur: bool = Field(False, alias="Mercosur")
-    ASEAN: bool = Field(False, alias="ASEAN")
-    RCEP: bool = Field(False, alias="RCEP")
 
     def to_domain(self) -> CountryMapping:
-        """Convert to domain object."""
+        """Convert to domain object, passing bloc booleans through dynamically."""
+        blocs = {name: value for name, value in (self.model_extra or {}).items() if isinstance(value, bool)}
         return CountryMapping(
             country=self.country,
             iso2=self.iso2,
@@ -2097,19 +2110,14 @@ class CountryMappingInDb(BaseModel):
             ws_region=self.ws_region,
             tiam_ucl_region=self.tiam_ucl_region,
             eu_region=self.eu_region,
-            EU=self.EU,
-            EFTA_EUCJ=self.EFTA_EUCJ,
-            OECD=self.OECD,
-            NAFTA=self.NAFTA,
-            Mercosur=self.Mercosur,
-            ASEAN=self.ASEAN,
-            RCEP=self.RCEP,
+            **blocs,
         )
 
     @classmethod
     def from_domain(cls, obj: CountryMapping) -> "CountryMappingInDb":
-        """Create from domain object."""
-        return cls(
+        """Create from domain object, carrying every boolean bloc attribute."""
+        data: dict[str, Any] = {name: value for name, value in vars(obj).items() if isinstance(value, bool)}
+        data.update(
             country=obj.country,
             iso2=obj.iso2,
             iso3=obj.iso3,
@@ -2121,14 +2129,8 @@ class CountryMappingInDb(BaseModel):
             ws_region=obj.ws_region,
             tiam_ucl_region=obj.tiam_ucl_region,
             eu_region=obj.eu_region,
-            EU=obj.EU,
-            EFTA_EUCJ=obj.EFTA_EUCJ,
-            OECD=obj.OECD,
-            NAFTA=obj.NAFTA,
-            Mercosur=obj.Mercosur,
-            ASEAN=obj.ASEAN,
-            RCEP=obj.RCEP,
         )
+        return cls.model_validate(data)
 
     def __lt__(self, other: "CountryMappingInDb") -> bool:
         """Enable sorting by iso3 for stable JSON dumps."""
@@ -2222,6 +2224,7 @@ class FOPEXRepository:
 class SubsidyInDb(BaseModel):
     scenario_name: str
     iso3: str
+    geo_unit: str | None = None
     start_year: Year
     end_year: Year
     technology_name: str
@@ -2238,6 +2241,7 @@ class SubsidyInDb(BaseModel):
         return Subsidy(
             scenario_name=self.scenario_name,
             iso3=self.iso3,
+            geo_unit=self.geo_unit,
             start_year=self.start_year,
             end_year=self.end_year,
             technology_name=self.technology_name,
@@ -2251,6 +2255,7 @@ class SubsidyInDb(BaseModel):
         return cls(
             scenario_name=domain.scenario_name,
             iso3=domain.iso3,
+            geo_unit=domain.geo_unit,
             start_year=domain.start_year,
             end_year=domain.end_year,
             technology_name=domain.technology_name,
@@ -2991,6 +2996,7 @@ class CarbonBorderMechanismInDb(BaseModel):
     applying_region_column: str
     start_year: int
     end_year: int | None = None
+    common_carbon_cost: bool = False
 
     def to_domain(self) -> CarbonBorderMechanism:
         """Convert to domain model."""
@@ -2999,6 +3005,7 @@ class CarbonBorderMechanismInDb(BaseModel):
             applying_region_column=self.applying_region_column,
             start_year=self.start_year,
             end_year=self.end_year,
+            common_carbon_cost=self.common_carbon_cost,
         )
 
     @classmethod
@@ -3009,6 +3016,7 @@ class CarbonBorderMechanismInDb(BaseModel):
             applying_region_column=mechanism.applying_region_column,
             start_year=mechanism.start_year,
             end_year=mechanism.end_year,
+            common_carbon_cost=mechanism.common_carbon_cost,
         )
 
 
@@ -3059,14 +3067,215 @@ class CarbonBorderMechanismJsonRepository:
         self._mechanisms_to_write.extend(mechanisms)
 
     def _write_models(self, models: List[CarbonBorderMechanismInDb]) -> None:
-        """Write models to the JSON file."""
+        """Write models to the JSON file, preserving CBAM sheet column order (first mechanism wins per arc)."""
         try:
-            mechanisms_list = CarbonBorderMechanismListInDb(root=sorted(models, key=lambda x: x.mechanism_name))
+            mechanisms_list = CarbonBorderMechanismListInDb(root=models)
             with self.path.open("w", encoding="utf-8") as f:
                 f.write(mechanisms_list.model_dump_json(indent=2))
         except Exception as e:
             logger.error(f"Error writing to {self.path}: {e}")
             raise
+
+
+class CapacityPoolProvinceInDb(BaseModel):
+    """Database model for a `Capacity pool - CHN provinces` row (RegionRow)."""
+
+    geo_key: str
+    region_name: Optional[str]
+    type: Optional[str]
+
+    def to_domain(self) -> RegionRow:
+        """Convert to domain model."""
+        return RegionRow(
+            geo_key=self.geo_key,
+            region_name=self.region_name,
+            type=self.type,
+        )
+
+    @classmethod
+    def from_domain(cls, obj: RegionRow) -> "CapacityPoolProvinceInDb":
+        """Create from domain model."""
+        return cls(
+            geo_key=obj.geo_key,
+            region_name=obj.region_name,
+            type=obj.type,
+        )
+
+
+class CapacityPoolTechnologyInDb(BaseModel):
+    """Database model for a `Capacity pool - technologies` row (TechnologyRow)."""
+
+    technology: str
+    product: Optional[str]
+    reductant: Optional[str]
+    is_emission_intense: Optional[bool]
+    switching_to: Optional[str]
+    swap_ratio: Optional[float]
+    switching_to_reductant: Optional[str] = None
+
+    def to_domain(self) -> TechnologyRow:
+        """Convert to domain model."""
+        return TechnologyRow(
+            technology=self.technology,
+            product=self.product,
+            reductant=self.reductant,
+            is_emission_intense=self.is_emission_intense,
+            switching_to=self.switching_to,
+            swap_ratio=self.swap_ratio,
+            switching_to_reductant=self.switching_to_reductant,
+        )
+
+    @classmethod
+    def from_domain(cls, obj: TechnologyRow) -> "CapacityPoolTechnologyInDb":
+        """Create from domain model."""
+        return cls(
+            technology=obj.technology,
+            product=obj.product,
+            reductant=obj.reductant,
+            is_emission_intense=obj.is_emission_intense,
+            switching_to=obj.switching_to,
+            swap_ratio=obj.swap_ratio,
+            switching_to_reductant=obj.switching_to_reductant,
+        )
+
+
+class CapacityPoolOpeningCreditInDb(BaseModel):
+    """Database model for a `Capacity pool - opening credits` row (OpeningCreditRow)."""
+
+    vintage_year: int
+    capacity_mt: float
+    geo_key: str
+    product: str
+    technology: Optional[str]
+    plant_group_id: Optional[str]
+
+    def to_domain(self) -> OpeningCreditRow:
+        """Convert to domain model."""
+        return OpeningCreditRow(
+            vintage_year=self.vintage_year,
+            capacity_mt=self.capacity_mt,
+            geo_key=self.geo_key,
+            product=self.product,
+            technology=self.technology,
+            plant_group_id=self.plant_group_id,
+        )
+
+    @classmethod
+    def from_domain(cls, obj: OpeningCreditRow) -> "CapacityPoolOpeningCreditInDb":
+        """Create from domain model."""
+        return cls(
+            vintage_year=obj.vintage_year,
+            capacity_mt=obj.capacity_mt,
+            geo_key=obj.geo_key,
+            product=obj.product,
+            technology=obj.technology,
+            plant_group_id=obj.plant_group_id,
+        )
+
+
+class CapacityPoolProvinceJsonRepository:
+    """Repository for the capacity pool provinces fixture.
+
+    Rows are stored in sheet order; ``add_list`` replaces the content. A
+    missing file, or no path at all, reads as empty — which is how a workbook
+    without the optional capacity pool sheets presents.
+    """
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._rows: Optional[List[RegionRow]] = None
+
+    def _fetch_all(self) -> List[RegionRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
+        if self.path is None or not self.path.exists():
+            return []
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return [CapacityPoolProvinceInDb(**item).to_domain() for item in data]
+
+    def list(self) -> List[RegionRow]:
+        """Lazy-load and return all rows in sheet order."""
+        if self._rows is None:
+            self._rows = self._fetch_all()
+        return list(self._rows)
+
+    def add_list(self, rows: List[RegionRow]) -> None:
+        """Replace the file\'s content with these rows."""
+        if self.path is None:
+            raise ValueError("Cannot write capacity pool provinces: repository has no path")
+        db_rows = [CapacityPoolProvinceInDb.from_domain(row) for row in rows]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps([row.model_dump() for row in db_rows], indent=2), encoding="utf-8")
+        self._rows = None
+
+
+class CapacityPoolTechnologyJsonRepository:
+    """Repository for the capacity pool technologies fixture.
+
+    Rows are stored in sheet order without a natural key; ``add_list``
+    replaces the content. A missing file, or no path at all, reads as empty.
+    """
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._rows: Optional[List[TechnologyRow]] = None
+
+    def _fetch_all(self) -> List[TechnologyRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
+        if self.path is None or not self.path.exists():
+            return []
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return [CapacityPoolTechnologyInDb(**item).to_domain() for item in data]
+
+    def list(self) -> List[TechnologyRow]:
+        """Lazy-load and return all rows in sheet order."""
+        if self._rows is None:
+            self._rows = self._fetch_all()
+        return list(self._rows)
+
+    def add_list(self, rows: List[TechnologyRow]) -> None:
+        """Replace the file\'s content with these rows."""
+        if self.path is None:
+            raise ValueError("Cannot write capacity pool technologies: repository has no path")
+        db_rows = [CapacityPoolTechnologyInDb.from_domain(row) for row in rows]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps([row.model_dump() for row in db_rows], indent=2), encoding="utf-8")
+        self._rows = None
+
+
+class CapacityPoolOpeningCreditJsonRepository:
+    """Repository for the capacity pool opening-credits fixture.
+
+    Rows are stored in sheet order without a natural key — a keyed store would
+    silently merge legitimately duplicate rows (two identical unowned credits,
+    say). ``add_list`` replaces the content. A missing file, or no path at
+    all, reads as empty.
+    """
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._rows: Optional[List[OpeningCreditRow]] = None
+
+    def _fetch_all(self) -> List[OpeningCreditRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
+        if self.path is None or not self.path.exists():
+            return []
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return [CapacityPoolOpeningCreditInDb(**item).to_domain() for item in data]
+
+    def list(self) -> List[OpeningCreditRow]:
+        """Lazy-load and return all rows in sheet order."""
+        if self._rows is None:
+            self._rows = self._fetch_all()
+        return list(self._rows)
+
+    def add_list(self, rows: List[OpeningCreditRow]) -> None:
+        """Replace the file\'s content with these rows."""
+        if self.path is None:
+            raise ValueError("Cannot write capacity pool opening credits: repository has no path")
+        db_rows = [CapacityPoolOpeningCreditInDb.from_domain(row) for row in rows]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps([row.model_dump() for row in db_rows], indent=2), encoding="utf-8")
+        self._rows = None
 
 
 class JsonRepository:
@@ -3095,6 +3304,9 @@ class JsonRepository:
     carbon_border_mechanisms: CarbonBorderMechanismJsonRepository
     fallback_material_costs: "FallbackMaterialCostJsonRepository"
     willingness_to_pay: WillingnessToPayJsonRepository
+    capacity_pool_provinces: CapacityPoolProvinceJsonRepository
+    capacity_pool_technologies: CapacityPoolTechnologyJsonRepository
+    capacity_pool_opening_credits: CapacityPoolOpeningCreditJsonRepository
 
     def __init__(
         self,
@@ -3125,6 +3337,9 @@ class JsonRepository:
         carbon_border_mechanisms_path: Optional[Path] = None,
         fallback_material_costs_path: Optional[Path] = None,
         willingness_to_pay_path: Optional[Path] = None,
+        capacity_pool_provinces_path: Optional[Path] = None,
+        capacity_pool_technologies_path: Optional[Path] = None,
+        capacity_pool_opening_credits_path: Optional[Path] = None,
         current_simulation_year: Optional[int] = None,
     ) -> None:
         self.plants = PlantJsonRepository(
@@ -3233,6 +3448,11 @@ class JsonRepository:
             temp_file.write('{"root": []}')  # Empty JSON object with root array
             temp_file.close()
             self.willingness_to_pay = WillingnessToPayJsonRepository(Path(temp_file.name))
+
+        # The capacity pool repositories read a missing path/file as empty
+        self.capacity_pool_provinces = CapacityPoolProvinceJsonRepository(capacity_pool_provinces_path)
+        self.capacity_pool_technologies = CapacityPoolTechnologyJsonRepository(capacity_pool_technologies_path)
+        self.capacity_pool_opening_credits = CapacityPoolOpeningCreditJsonRepository(capacity_pool_opening_credits_path)
 
 
 @dataclass

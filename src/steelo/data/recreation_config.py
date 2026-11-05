@@ -119,21 +119,15 @@ FILE_RECREATION_SPECS = {
         dependencies=["plants.json"],
         description="Plant groupings derived from plants data",
     ),
-    "demand_centers.json": FileRecreationSpec(
-        filename="demand_centers.json",
-        recreate_function="recreate_demand_center_data",
+    "scenarios.json": FileRecreationSpec(
+        filename="scenarios.json",
+        recreate_function="recreate_scenario_fixtures",
         source_type="master-excel",
         master_excel_sheet="Demand and scrap availability",
         dependencies=["gravity_distances_dict.pkl", "countries.csv"],
-        description="Demand centers from master Excel",
-    ),
-    "suppliers.json": FileRecreationSpec(
-        filename="suppliers.json",
-        recreate_function="recreate_mines_and_scrap_as_suppliers_data",
-        source_type="master-excel",
-        master_excel_sheet="Iron ore mines",
-        dependencies=["countries.csv"],
-        description="Mine and scrap suppliers from master Excel",
+        description=(
+            "Demand centers per demand scenario and mine and scrap suppliers per scrap scenario, with their index"
+        ),
     ),
     "tariffs.json": FileRecreationSpec(
         filename="tariffs.json",
@@ -171,9 +165,9 @@ FILE_RECREATION_SPECS = {
         filename="cost_of_capital.json",
         recreate_function="recreate_cost_of_capital_data",
         source_type="master-excel",
-        master_excel_sheet="Regional cost of capital",
+        master_excel_sheet="Cost of capital",
         dependencies=[],
-        description="Regional cost of capital from master Excel",
+        description="Per-country, per-technology cost of capital from master Excel",
     ),
     "input_costs.json": FileRecreationSpec(
         filename="input_costs.json",
@@ -286,6 +280,30 @@ FILE_RECREATION_SPECS = {
         master_excel_sheet="Willingness to pay",
         dependencies=["country_mappings.json"],
         description="Willingness to pay by region/country and commodity from master Excel",
+    ),
+    "capacity_pool_provinces.json": FileRecreationSpec(
+        filename="capacity_pool_provinces.json",
+        recreate_function="recreate_capacity_pool_provinces_data",
+        source_type="master-excel",
+        master_excel_sheet="Capacity pool - CHN provinces",
+        dependencies=[],
+        description="Chinese province classification for the capacity-replacement policy (optional sheet)",
+    ),
+    "capacity_pool_technologies.json": FileRecreationSpec(
+        filename="capacity_pool_technologies.json",
+        recreate_function="recreate_capacity_pool_technologies_data",
+        source_type="master-excel",
+        master_excel_sheet="Capacity pool - technologies",
+        dependencies=[],
+        description="Technology classification and swap-ratio overrides for the capacity-replacement policy (optional sheet)",
+    ),
+    "capacity_pool_opening_credits.json": FileRecreationSpec(
+        filename="capacity_pool_opening_credits.json",
+        recreate_function="recreate_capacity_pool_opening_credits_data",
+        source_type="master-excel",
+        master_excel_sheet="Capacity pool - opening credits",
+        dependencies=[],
+        description="Opening retirement-credit pool for the capacity-replacement policy (optional sheet)",
     ),
 }
 

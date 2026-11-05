@@ -96,7 +96,7 @@ def test_technologies_fragment_not_ready_prep(client, data_packages):
 
 
 @pytest.mark.django_db
-def test_main_view_with_preselected_prep(client, data_packages):
+def test_main_view_with_preselected_prep(client, data_packages, prepared_data_directory):
     """Test main view with preselected data preparation."""
     core_package, geo_package = data_packages
 
@@ -105,7 +105,7 @@ def test_main_view_with_preselected_prep(client, data_packages):
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
-        data_directory="/test/path",
+        data_directory=str(prepared_data_directory),
     )
 
     url = reverse("create-modelrun")

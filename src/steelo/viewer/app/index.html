@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scenario Viewer | Steel-IQ</title>
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<meta name="theme-color" content="#001868">
+<meta name="description" content="Explore and compare Steel-IQ scenarios for the global steel sector: capacity, production, trade, emissions and costs by technology and region.">
+<link rel="stylesheet" href="assets/banner.css">
+<link rel="stylesheet" href="assets/style.css">
+<script>
+// Framed by the app's own page, which carries the title and a Tour button, the viewer drops its banner.
+if (window.top !== window.self) document.documentElement.classList.add("framed");
+</script>
+</head>
+<body>
+<header class="banner">
+  <div class="logo">
+    <img src="assets/systemiq-logo.png" alt="SYSTEMIQ logo">
+  </div>
+  <a class="brand" href="./">
+    <span class="name">Steel-IQ</span>
+    <span class="sub">Scenario viewer</span>
+  </a>
+  <div class="menu">
+    <button id="menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="menu-links" aria-label="Menu">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+           stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <div id="menu-links" class="menu-links">
+      <a href="#" id="tour-link" title="A two-minute tour of the viewer">Tour</a>
+    </div>
+  </div>
+</header>
+<div id="shell">
+<nav>
+  <div class="modetabs">
+    <button id="tab-explore" class="active">Explore</button>
+    <button id="tab-compare">Compare</button>
+    <button id="tab-annual-costs">Annual costs</button>
+    <button id="tab-data">View data</button>
+    <button id="tab-results">Download results</button>
+  </div>
+  <div id="picker"></div>
+  <div id="topics" hidden></div>
+</nav>
+<div id="resizer" title="drag to resize"></div>
+<div id="collapse-col">
+  <button id="collapse" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+      <path d="M15 6l-6 6 6 6"/>
+    </svg>
+  </button>
+</div>
+<main id="explore-pane"></main>
+<main id="explore-split-pane" hidden></main>
+<main id="compare-pane" hidden></main>
+<main id="annual-costs-pane" hidden></main>
+<main id="data-pane" hidden></main>
+<main id="results-pane" hidden></main>
+</div>
+<script src="assets/help.js"></script>
+<script src="assets/sidebar.js"></script>
+<script src="assets/viewer.js"></script>
+<script src="assets/overview.js"></script>
+<script src="assets/geofilter.js"></script>
+<script src="assets/compare.js"></script>
+<script src="assets/annual-costs.js"></script>
+<script src="assets/inputs.js"></script>
+<script src="assets/results.js"></script>
+<script src="assets/tour.js"></script>
+<script>
+"use strict";
+/* Page wiring: loads the manifest and connects the sidebar to the pane the mode shows, kept in the URL hash. */
+const $ = id => document.getElementById(id);
+const VARIANT = "seed";   // repeat-draw dimension: picked in the viewer, not the sidebar
+const MODE_HASH = { compare: "#compare", "annual-costs": "#annual-costs", data: "#data", results: "#results" };
+const MULTI_MODES = new Set(["compare", "annual-costs"]);   // panes fed by the sidebar's multi-select picks
+let manifest = null, set = null, mode = "explore", splitView = false;
+let sidebar = null, viewer = null, splitViewer = null, compare = null, annualCosts = null, inputs = null, results = null;
+
+const multiPane = () => mode === "compare" ? compare : mode === "annual-costs" ? annualCosts : null;
+// The tour's Explore steps turn the split view on themselves; the hash it saves restores it.
+const tour = createTour({ setMode: m => { if (m === "explore") splitView = false; setMode(m); },
+                          setSplit: setSplitView, splitOn: () => splitView,
+                          getMode: () => mode, set: () => set, sidebar: () => sidebar,
+                          viewer: () => viewer, inputs: () => inputs, variantKey: VARIANT });
+
+function updateHash() {
+  let h;
+  if (mode === "data") {
+    const q = Object.entries(sidebar.getFilters()).filter(([, v]) => v != null)
+      .map(([k, v]) => k + "=" + encodeURIComponent(v)).join("&");
+    h = MODE_HASH.data + (inputs.getTopic() ? "/" + inputs.getTopic().id + (q ? "/" + q : "") : "");
+  } else if (mode in MODE_HASH) h = MODE_HASH[mode];
+  else if (splitView) {
+    // "#split/<set>/<run A>/<run B>/<plot>", either run blank while unpicked.
+    const a = splitViewer.getRunA(), b = splitViewer.getRunB();
+    h = a || b ? "#split/" + encodeURIComponent(set.id + "/" + (a ? a.dir : "") + "/" + (b ? b.dir : "")
+                                                + "/" + (splitViewer.getPlot() || ""))
+      : "#split";
+  } else {
+    const run = viewer.getRun();
+    h = run ? "#" + encodeURIComponent(set.id + "/" + run.dir + "/" + (viewer.getPlot() || ""))
+      : location.pathname + location.search;
+  }
+  // Sandboxed embeds (e.g. cloud-drive file previews) have a null origin where this throws.
+  try { history.replaceState(null, "", h); } catch (e) {}
+}
+
+function updateTitle() {
+  // The page's own label: its tab without the (?) help icon.
+  const page = $("tab-" + mode).firstChild.textContent;
+  document.title = page + " | " + manifest.title;
+}
+
+
+
+// What View data shows: the filters ("hydrogen ceiling percentile 20 · seed 42") and the scenarios they match.
+const dataSelection = () => ({ filters: sidebar.getFilters(), scenarios: sidebar.getMatching(),
+                               total: sidebar.scenarios.length });
+
+function setMode(m) {
+  mode = m;
+  $("tab-explore").classList.toggle("active", m === "explore");
+  $("tab-compare").classList.toggle("active", m === "compare");
+  $("tab-annual-costs").classList.toggle("active", m === "annual-costs");
+  $("tab-data").classList.toggle("active", m === "data");
+  $("tab-results").classList.toggle("active", m === "results");
+  document.body.classList.toggle("mode-results", m === "results");
+  $("topics").hidden = m !== "data";
+  sidebar.setMode(m === "data" ? "filters" : MULTI_MODES.has(m) ? "multi"
+    : m === "explore" && splitView ? "split" : "single");
+  $("explore-pane").hidden = m !== "explore" || splitView;
+  $("explore-split-pane").hidden = m !== "explore" || !splitView;
+  $("compare-pane").hidden = m !== "compare";
+  $("annual-costs-pane").hidden = m !== "annual-costs";
+  $("data-pane").hidden = m !== "data";
+  $("results-pane").hidden = m !== "results";
+  if (multiPane()) multiPane().show(sidebar.getScenarios());
+  if (m === "data") inputs.setSelection(dataSelection());
+  if (m === "results") results.show(sidebar.getScenario());
+  // A pick made in Download results carries over to Explore.
+  if (m === "explore" && !splitView && viewer.getScenario() !== sidebar.getScenario()) viewer.show(sidebar.getScenario());
+  updateHash();
+  updateTitle();
+}
+
+// A pane mode from the hash: the mode, and for View data its topic and filters.
+function openPane(h) {
+  setMode(h.pane);
+  if (h.pane !== "data") return;
+  if (h.filters) sidebar.setFilters(h.filters);
+  inputs.show(h.topic, dataSelection());
+}
+
+// Entering split view carries the single pick over as A, and leaving it carries A back.
+function setSplitView(on) {
+  splitView = on;
+  if (on) {
+    setMode(mode);
+    splitViewer.show(sidebar.getScenarioA(), viewer.getRun(), sidebar.getScenarioB(), splitViewer.getRunB());
+  } else {
+    const a = sidebar.getScenarioA();
+    sidebar.setScenario(a);
+    viewer.show(a, splitViewer.getRunA());
+    setMode(mode);
+  }
+}
+
+// Explore with nothing picked, which shows the run table.
+function showOverview() {
+  splitView = false;
+  sidebar.setSplit(null, null);
+  sidebar.setScenario(null);
+  viewer.show(null);
+  setMode("explore");
+}
+
+// The split view from the hash: either side's run may be missing.
+function openSplit(h) {
+  splitView = true;
+  const scenarioOf = r => (r && sidebar.scenarios.find(x => x.runs.includes(r))) || null;
+  const a = scenarioOf(h.split.runA), b = scenarioOf(h.split.runB);
+  setMode("explore");   // first: entering split mode seeds A from the single pick
+  sidebar.setSplit(a, b);
+  splitViewer.show(a, h.split.runA, b, h.split.runB, h.split.plot);
+}
+
+// One split side picked with its run (sc null = unpicked); the other side keeps its scenario and run.
+function pickSplitSide(letter, sc, run) {
+  const a = letter === "A" ? sc : splitViewer.getScenarioA(), b = letter === "B" ? sc : splitViewer.getScenarioB();
+  sidebar.setSplit(a, b);
+  splitViewer.show(a, letter === "A" ? run : a === splitViewer.getScenarioA() ? splitViewer.getRunA() : undefined,
+                   b, letter === "B" ? run : b === splitViewer.getScenarioB() ? splitViewer.getRunB() : undefined);
+}
+
+function buildFor(s, run, plot) {
+  set = s;
+  sidebar = createScenarioSidebar($("picker"), s, {
+    variantKey: VARIANT,
+    onChange: sel => {
+      if (mode === "data") inputs.setSelection({ filters: sel.filters, scenarios: sel.matching, total: sidebar.scenarios.length });
+      else if (sel.mode === "single" && mode === "results") results.show(sel.scenario);
+      else if (sel.mode === "single") viewer.show(sel.scenario);
+      else if (sel.mode === "split") {
+        // A side keeps its run while its scenario stays, and takes the other side's when A and B swap.
+        const prevA = splitViewer.getScenarioA(), prevB = splitViewer.getScenarioB();
+        const swapped = sel.scenarioA === prevB && sel.scenarioB === prevA;
+        splitViewer.show(sel.scenarioA, swapped ? splitViewer.getRunB() : sel.scenarioA === prevA ? splitViewer.getRunA() : undefined,
+                         sel.scenarioB, swapped ? splitViewer.getRunA() : sel.scenarioB === prevB ? splitViewer.getRunB() : undefined);
+      }
+      else if (multiPane()) multiPane().show(sel.scenarios);
+    },
+    onSplitToggle: setSplitView,
+    // In Compare, Annual costs and Download results the run table is the pane's picker.
+    onOverview: () => {
+      if (multiPane()) multiPane().show([]);
+      else if (mode === "results") { sidebar.setScenario(null); results.show(null); }
+      else showOverview();
+    },
+    onFilterChange: filters => {
+      for (const box of document.querySelectorAll(".scenario-overview")) applyRunTableFilters(box, s, filters);
+    },
+  });
+  viewer = createPlotViewer($("explore-pane"), s, {
+    variantKey: VARIANT,
+    onChange: () => { if (mode === "explore" && !splitView) updateHash(); },
+    renderEmpty: box => {
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "pair",
+        onPick: (sc, run) => { sidebar.setScenario(sc); viewer.show(sc, run); },
+        onPickPair: (runA, runB) => openSplit({ split: { runA, runB } }),
+      });
+      applyRunTableFilters(box, s, sidebar.getFilters());
+    },
+  });
+  splitViewer = createSplitViewer($("explore-split-pane"), s, {
+    variantKey: VARIANT,
+    onChange: () => { if (mode === "explore" && splitView) updateHash(); },
+    renderEmpty: (box, letter, other) => {
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "side", side: letter, other, onPick: (sc, run) => pickSplitSide(letter, sc, run),
+      });
+      applyRunTableFilters(box, s, sidebar.getFilters());
+    },
+    onUnpick: letter => pickSplitSide(letter, null),
+  });
+  // Compare's palette caps both multi panes at 20 scenarios.
+  const renderPicker = box => {
+    renderRunTable(box, s, sidebar.scenarios, {
+      variantKey: VARIANT, mode: "multi", picked: sidebar.getScenarios(), max: COMPARE_PALETTE.length,
+      onShow: scs => { sidebar.setPicked(scs); multiPane().show(scs); },
+    });
+    applyRunTableFilters(box, s, sidebar.getFilters());
+  };
+  compare = createComparePane($("compare-pane"), s, { variantKey: VARIANT, renderEmpty: renderPicker });
+  annualCosts = createAnnualCostsPane($("annual-costs-pane"), s, { variantKey: VARIANT, renderEmpty: renderPicker });
+  inputs = createInputsPane($("data-pane"), s, {
+    topicsBox: $("topics"),
+    onChange: () => { if (mode === "data") updateHash(); },
+    // A click filters to exactly that scenario (the filters are View data's selection).
+    renderEmpty: box => {
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "pick",
+        pickHint: "Click a run to set the filters to its scenario's settings, "
+          + "then pick an input data sheet to see exactly its inputs",
+        onPick: sc => {
+          sidebar.setFilters(Object.fromEntries(s.dimensions.filter(d => d.values.length > 1 && d.key !== VARIANT)
+            .map(d => [d.key, sc.dims[d.key]])));
+          inputs.setSelection(dataSelection());
+        },
+      });
+      applyRunTableFilters(box, s, sidebar.getFilters());
+    },
+  });
+  results = createResultsPane($("results-pane"), s, {
+    renderEmpty: box => {
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "pick",
+        pickHint: "Click a run, or a scenario in the sidebar, to download or view its result tables",
+        onPick: (sc, run) => { sidebar.setScenario(sc); results.show(sc, run); },
+      });
+      applyRunTableFilters(box, s, sidebar.getFilters());
+    },
+  });
+  // No run named: nothing selected, so Explore shows the run table.
+  const sc = (run && sidebar.scenarios.find(x => x.runs.includes(run))) || null;
+  sidebar.setScenario(sc);
+  viewer.show(sc, run, plot);
+}
+
+function fromHash() {
+  const raw = decodeURIComponent(location.hash.slice(1));
+  for (const m of Object.keys(MODE_HASH))
+    if (raw === m || raw.startsWith(m + "/")) {
+      const [, topic, query] = raw.split("/");
+      const filters = query ? Object.fromEntries(query.split("&").map(p => p.split("="))) : undefined;
+      return { pane: m, topic: topic || undefined, filters, set: manifest.sets[0] };
+    }
+  // No hash names no set: keep the one on screen (Back to an Explore view with nothing picked).
+  if (!raw) return { set: set || manifest.sets[0] };
+  if (raw === "split" || raw.startsWith("split/")) {
+    const [, setId, dirA, dirB, ...rest] = raw.split("/");
+    const s = manifest.sets.find(x => x.id === setId) || manifest.sets[0];
+    const runA = s.runs.find(r => r.dir === dirA), runB = s.runs.find(r => r.dir === dirB);
+    const file = rest.join("/");
+    const has = r => !!r && r.plots.includes(file);
+    return { set: s, split: { runA, runB, plot: has(runA) || has(runB) ? file : undefined } };
+  }
+  const [setId, dir, ...rest] = raw.split("/");
+  const s = manifest.sets.find(x => x.id === setId) || manifest.sets[0];
+  const run = s.runs.find(r => r.dir === dir) || s.runs[0];
+  // A set with no run (the app before its first run finishes) opens with nothing picked.
+  if (!run) return { set: s };
+  const file = rest.join("/");
+  return { set: s, run, plot: run.plots.includes(file) ? file : undefined };
+}
+
+function showError(msg) {
+  const d = document.createElement("div");
+  d.id = "error";
+  d.textContent = msg;
+  $("explore-pane").replaceChildren(d);
+}
+
+async function init() {
+  try {
+    const res = await fetch("manifest.json");
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    manifest = await res.json();
+  } catch (e) {
+    showError("Could not load manifest.json (" + e.message + "). If you opened this file directly, "
+      + "open the viewer with steelo-viewer instead.");
+    return;
+  }
+  const TAB_HELP = {
+    explore: "Every chart for one scenario, or two side by side.",
+    compare: "One indicator across several scenarios on one chart.",
+    "annual-costs": "Cost of a tonne of iron or steel, split into its components, for the picked scenarios.",
+    data: "The model inputs behind the scenarios, and where they differ.",
+    results: "Raw result tables of one run, as gzipped CSV, to download or view page by page.",
+  };
+  for (const [m, text] of Object.entries(TAB_HELP)) $("tab-" + m).appendChild(helpIcon(text));
+  $("tab-explore").onclick = () => mode === "explore" ? showOverview() : setMode("explore");
+  $("tab-compare").onclick = () => setMode("compare");
+  $("tab-annual-costs").onclick = () => setMode("annual-costs");
+  $("tab-data").onclick = () => mode === "data" ? inputs.clearTopic() : setMode("data");
+  $("tab-results").onclick = () => setMode("results");
+  $("tour-link").onclick = e => { e.preventDefault(); tour.start(); };
+  window.addEventListener("hashchange", () => {
+    const h = fromHash();
+    if (h.pane) { openPane(h); return; }
+    const rebuilt = h.set !== set;
+    if (rebuilt) buildFor(h.set, h.run, h.plot);
+    if (h.split) { openSplit(h); return; }
+    splitView = false;
+    if (!rebuilt) {
+      const sc = (h.run && sidebar.scenarios.find(x => x.runs.includes(h.run))) || null;
+      sidebar.setScenario(sc);
+      viewer.show(sc, h.run, h.plot);
+    }
+    setMode("explore");
+  });
+  const h = fromHash();
+  buildFor(h.set, h.run, h.plot);
+  if (h.pane) openPane(h);
+  else if (h.split) openSplit(h);
+  else setMode("explore");
+  // A browser's first visit gets the tour once; the banner link restarts it.
+  try { if (!localStorage.getItem("tourSeen")) tour.start(); } catch (e) {}
+}
+
+// The banner menu folds into a burger once its links no longer fit beside the title.
+const banner = document.querySelector(".banner");
+const BANNER_GAP = 16;   // banner.css: the banner's side padding and its gap between items
+function setMenuOpen(open) {
+  banner.classList.toggle("menu-open", open);
+  $("menu-toggle").setAttribute("aria-expanded", String(open));
+}
+function fitBanner() {
+  banner.classList.remove("compact", "narrow");
+  const brandW = Math.max(...[...banner.querySelectorAll(".brand span")].map(s => s.offsetWidth));
+  const side = w => (banner.clientWidth - brandW) / 2 - 2 * BANNER_GAP - w;
+  const logoW = banner.querySelector(".logo img").offsetWidth;
+  const compact = side($("menu-links").scrollWidth) < 0;
+  banner.classList.toggle("compact", compact);
+  banner.classList.toggle("narrow", compact && side(logoW) < 0);
+  if (!compact) setMenuOpen(false);
+}
+new ResizeObserver(fitBanner).observe(banner);
+$("menu-toggle").onclick = e => { e.stopPropagation(); setMenuOpen(!banner.classList.contains("menu-open")); };
+$("menu-links").addEventListener("click", () => setMenuOpen(false));
+document.addEventListener("click", e => { if (!banner.contains(e.target)) setMenuOpen(false); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") setMenuOpen(false); });
+
+const resizer = $("resizer");
+const nav = document.querySelector("nav");
+try { const w = localStorage.getItem("sidebarWidth"); if (w) nav.style.width = w; } catch (e) {}
+
+function applyCollapsed(collapsed) {
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const b = $("collapse");
+  b.setAttribute("aria-expanded", String(!collapsed));
+  b.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+  b.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+}
+try { applyCollapsed(localStorage.getItem("sidebarCollapsed") === "1"); } catch (e) {}
+$("collapse").onclick = () => {
+  const collapsed = !document.body.classList.contains("sidebar-collapsed");
+  applyCollapsed(collapsed);
+  try { localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "0"); } catch (e) {}
+};
+// The mode tabs form a two-column grid; the sidebar chevron spans its full height.
+const modetabs = document.querySelector(".modetabs");
+new ResizeObserver(() => {
+  if (modetabs.offsetHeight) $("collapse").style.height = modetabs.offsetHeight + "px";
+}).observe(modetabs);
+const MIN_SIDEBAR = 220;   // matches the nav min-width in style.css
+resizer.addEventListener("mousedown", e => {
+  e.preventDefault();
+  document.body.classList.add("resizing");
+  const move = ev => {
+    nav.style.width = Math.min(Math.max(MIN_SIDEBAR, ev.clientX), window.innerWidth / 2) + "px";
+  };
+  const up = () => {
+    document.body.classList.remove("resizing");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    try { localStorage.setItem("sidebarWidth", nav.style.width); } catch (e) {}
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
+
+init();
+</script>
+</body>
+</html>

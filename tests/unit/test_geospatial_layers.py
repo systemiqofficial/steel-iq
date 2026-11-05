@@ -189,51 +189,21 @@ class TestGeospatialLayers:
             feasible_count = (mask.values == 1).sum()
             assert feasible_count > 0, "Should have at least some feasible areas"
 
-    def test_add_baseload_power_price_reasonable_range(self, sample_dataset, mock_geo_paths):
+    def test_add_baseload_power_price_reasonable_range(self, sample_dataset, mock_geo_paths, promoted_lcoe_dir):
         """Test baseload power price returns complete data in a reasonable range."""
         # Add feasibility mask (required for plotting)
         sample_dataset["feasibility_mask"] = (
             ("lat", "lon"),
             np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
         )
-
-        # Create realistic power price data (30-150 $/MWh is typical)
-        mock_power = xr.DataArray(
-            data=np.random.uniform(30, 150, (len(sample_dataset.lat), len(sample_dataset.lon))),
-            dims=["lat", "lon"],
-            coords={"lat": sample_dataset.lat, "lon": sample_dataset.lon},
-        )
-
-        # Setup mock paths to support path operations
-        mock_lcoe_dir = Mock(spec=Path)
-        mock_lcoe_file = Mock(spec=Path)
-        mock_lcoe_file.name = "optimal_sol_GLOBAL_2025_p15.nc"
-        mock_lcoe_dir.glob.return_value = [mock_lcoe_file]
-
-        mock_p_dir = Mock(spec=Path)
-        mock_p_dir.__truediv__ = Mock(return_value=mock_lcoe_dir)
-
-        mock_geo_paths.baseload_power_sim_dir = Mock(spec=Path)
-        mock_geo_paths.baseload_power_sim_dir.__truediv__ = Mock(return_value=mock_p_dir)
-
-        # Create mock dataset with LCOE values (in USD/MWh, will be converted to USD/kWh)
-        mock_lcoe_ds = xr.Dataset(
-            {"lcoe": (("lat", "lon"), np.random.uniform(30, 150, (len(sample_dataset.lat), len(sample_dataset.lon))))}
-        )
-        mock_lcoe_ds.coords["lat"] = sample_dataset.lat
-        mock_lcoe_ds.coords["lon"] = sample_dataset.lon
+        mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
 
         with (
-            patch("xarray.open_dataset") as mock_open_ds,
-            patch("xarray.open_dataarray") as mock_open_da,
             patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
             patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
         ):
-            mock_open_ds.return_value = mock_lcoe_ds
-            mock_open_da.return_value = mock_power
-
-            result = add_baseload_power_price(
-                sample_dataset, baseload_coverage=0.85, target_year=2025, geo_paths=mock_geo_paths
+            result, lcoe_basis = add_baseload_power_price(
+                sample_dataset, baseload_coverage=0.85, target_year=2045, geo_paths=mock_geo_paths
             )
 
             # Check output variable in dataset
@@ -250,6 +220,7 @@ class TestGeospatialLayers:
             # Check mean is sensible (in $/kWh)
             mean_price = prices.mean().item()
             assert 0.02 < mean_price < 0.2  # 20-200 $/MWh = 0.02-0.2 $/kWh
+            assert lcoe_basis == "per_mwh_delivered"
 
     def test_add_grid_power_price_reasonable_range(self, sample_dataset, mock_geo_paths):
         """Test grid power price returns complete data in a reasonable range."""
@@ -641,6 +612,7 @@ class TestGeospatialLayers:
                 baseload_coverage=0.85,
                 geo_config=mock_geo_config,
                 geo_paths=mock_geo_paths,
+                hydrogen_ceiling={"Western Europe": 8.0, "United Kingdom": 9.0, "Eastern Europe": 7.0},
             )
 
         # Check output variable in dataset
@@ -655,7 +627,7 @@ class TestGeospatialLayers:
         assert np.min(non_nan_values) >= 0  # Should be positive
         assert np.max(non_nan_values) < 20  # Reasonable max for H2 price
 
-    def test_add_power_price_produces_reasonable_output(self, sample_dataset, mock_geo_paths):
+    def test_add_power_price_produces_reasonable_output(self, sample_dataset, mock_geo_paths, promoted_lcoe_dir):
         """Test that power price produces reasonable combined output."""
         # Add ISO3 codes to dataset (required for grid prices)
         sample_dataset["iso3"] = (
@@ -672,46 +644,18 @@ class TestGeospatialLayers:
         # Create mock input costs with proper structure
         # Structure: {iso3: {year: {cost_type: value}}}
         input_costs = {
-            "DEU": {2025: {"electricity": 0.08}},  # 80 $/MWh = 0.08 $/kWh
-            "FRA": {2025: {"electricity": 0.075}},
-            "USA": {2025: {"electricity": 0.07}},
+            "DEU": {2045: {"electricity": 0.08}},  # 80 $/MWh = 0.08 $/kWh
+            "FRA": {2045: {"electricity": 0.075}},
+            "USA": {2045: {"electricity": 0.07}},
         }
+        mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
 
-        # Mock the baseload power simulation directory structure
-        mock_geo_paths.baseload_power_sim_dir = Mock(spec=Path)
-        p15_dir = Mock(spec=Path)
-        global_dir = Mock(spec=Path)
-
-        # Create a mock file that "exists"
-        mock_file = Mock(spec=Path)
-        mock_file.name = "optimal_sol_GLOBAL_2025_p15.nc"
-        global_dir.glob.return_value = [mock_file]
-
-        p15_dir.__truediv__ = Mock(return_value=global_dir)
-        mock_geo_paths.baseload_power_sim_dir.__truediv__ = Mock(return_value=p15_dir)
-
-        # Create mock LCOE data (in USD/MWh, will be converted to USD/kWh)
-        mock_lcoe = xr.Dataset(
-            {
-                "lcoe": (
-                    ("lat", "lon"),
-                    np.random.uniform(40, 80, (len(sample_dataset.lat), len(sample_dataset.lon))),
-                )  # USD/MWh
-            }
-        )
-        mock_lcoe.coords["lat"] = sample_dataset.lat
-        mock_lcoe.coords["lon"] = sample_dataset.lon
-
-        # Mock file operations
         with (
-            patch("xarray.open_dataset") as mock_open_ds,
             patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
             patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
         ):
-            mock_open_ds.return_value = mock_lcoe
-
             result = add_power_price(
-                sample_dataset, year=2025, input_costs=input_costs, baseload_coverage=0.85, geo_paths=mock_geo_paths
+                sample_dataset, year=2045, input_costs=input_costs, baseload_coverage=0.85, geo_paths=mock_geo_paths
             )
 
             # Check data completeness
@@ -724,3 +668,200 @@ class TestGeospatialLayers:
             # Check values are positive and in reasonable range
             assert power.min().item() > 0
             assert power.max().item() < 1.0  # Should be less than $1/kWh
+
+
+@pytest.fixture
+def promoted_lcoe_dir(tmp_path, sample_dataset):
+    """A run folder with one promoted 85% coverage file: 80 USD/MWh in 2045 and 60 in 2050 on the sample grid."""
+    run_dir = tmp_path / "test_run"
+    run_dir.mkdir()
+    shape = (len(sample_dataset.lat), len(sample_dataset.lon))
+    ds = xr.Dataset(
+        {"lcoe": (("year", "lat", "lon"), np.stack([np.full(shape, 80.0), np.full(shape, 60.0)]).astype(np.float32))},
+        coords={"year": np.array([2045, 2050], dtype=np.int32), "lat": sample_dataset.lat, "lon": sample_dataset.lon},
+        attrs={
+            "schema_version": 1,
+            "lcoe_basis": "per_mwh_delivered",
+            "coverage_fraction": 0.85,
+            "run": "test_run",
+            "boa_version": "1.9.0",
+        },
+    )
+    ds.to_netcdf(run_dir / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2045_2050.nc")
+    return run_dir
+
+
+def _lcoe_for_year(sample_dataset, geo_paths, target_year, baseload_coverage=0.85):
+    """Run add_baseload_power_price for one year and return the resulting dataset."""
+    sample_dataset["feasibility_mask"] = (
+        ("lat", "lon"),
+        np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
+    )
+    with (
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
+    ):
+        result, _ = add_baseload_power_price(
+            sample_dataset,
+            baseload_coverage=baseload_coverage,
+            target_year=target_year,
+            geo_paths=geo_paths,
+        )
+    return result
+
+
+def test_baseload_lcoe_reads_a_year_the_file_holds(sample_dataset, mock_geo_paths, promoted_lcoe_dir):
+    """A year in the promoted file is read as it is and converted to USD/kWh."""
+    mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2050)["lcoe"]
+
+    np.testing.assert_allclose(prices.values, 0.06)  # 60 USD/MWh -> 0.06 USD/kWh
+
+
+def test_baseload_lcoe_interpolates_between_the_file_years(sample_dataset, mock_geo_paths, promoted_lcoe_dir):
+    """A year between two of the file's years is interpolated linearly."""
+    mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2047)["lcoe"]
+
+    np.testing.assert_allclose(prices.values, 0.072)  # 80 -> 60 USD/MWh, 2/5 of the way
+
+
+@pytest.mark.parametrize(("target_year", "expected"), [(2025, 0.08), (2051, 0.06), (2060, 0.06)])
+def test_baseload_lcoe_holds_the_nearest_year_outside_the_span(
+    sample_dataset, mock_geo_paths, promoted_lcoe_dir, target_year, expected
+):
+    """Years before or after the file's span reuse its nearest year instead of extrapolating to NaN."""
+    mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, target_year)["lcoe"]
+
+    assert not np.any(np.isnan(prices.values))
+    np.testing.assert_allclose(prices.values, expected)
+
+
+def test_baseload_lcoe_adds_no_overbuild_factors(sample_dataset, mock_geo_paths, promoted_lcoe_dir):
+    """A promoted file carries no solar, wind or battery factors, so none reach the dataset."""
+    mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
+
+    result = _lcoe_for_year(sample_dataset, mock_geo_paths, 2045)
+
+    assert not any(factor in result.data_vars for factor in ("solar_factor", "wind_factor", "battery_factor"))
+
+
+def test_baseload_lcoe_for_a_mix_without_its_file_stops(sample_dataset, mock_geo_paths, promoted_lcoe_dir):
+    """A 95% mix never prices off the 85% file; it stops and names the token it looked for."""
+    mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
+
+    with pytest.raises(FileNotFoundError, match="_cov0p95_"):
+        _lcoe_for_year(sample_dataset, mock_geo_paths, 2045, baseload_coverage=0.95)
+
+
+def test_add_power_price_blends_grid_and_lcoe_by_coverage(sample_dataset, mock_geo_paths, promoted_lcoe_dir):
+    """New sites pay (1 - c) × grid + c × LCOE, since a promoted file prices the MWh delivered."""
+    shape = (len(sample_dataset.lat), len(sample_dataset.lon))
+    sample_dataset["iso3"] = (("lat", "lon"), np.full(shape, "DEU", dtype=object))
+    sample_dataset["feasibility_mask"] = (("lat", "lon"), np.ones(shape))
+    mock_geo_paths.baseload_lcoe_dir = promoted_lcoe_dir
+
+    with (
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
+    ):
+        result = add_power_price(
+            sample_dataset,
+            year=2050,
+            input_costs={"DEU": {2050: {"electricity": 0.1}}},
+            baseload_coverage=0.85,
+            geo_paths=mock_geo_paths,
+        )
+
+    np.testing.assert_allclose(result["power_price"].values, 0.15 * 0.1 + 0.85 * 0.06)
+
+
+def test_add_landtype_factor_fills_missing_coverage_with_neutral(sample_dataset, mock_geo_config, mock_geo_paths):
+    """Cells with no LULC coverage get the neutral minimum factor instead of NaN.
+
+    Notes:
+        Guards against zero coverage being mapped to NaN (which NaNed the whole
+        outgoing cashflow for the cell and silently removed it from the
+        candidate universe). Zeros and missing values must land on the neutral
+        minimum the docstring promises.
+    """
+    sample_dataset["feasibility_mask"] = (
+        ("lat", "lon"),
+        np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
+    )
+    mock_geo_paths.landtype_percentage_path = Mock(spec=Path)
+
+    landtype_labels = ["Cropland", "Tree Cover"]
+    landtype_data = np.zeros((len(landtype_labels), len(sample_dataset.lat), len(sample_dataset.lon)))
+    landtype_data[0, :, :] = 100.0  # 100% cropland everywhere...
+    landtype_data[:, 0, 0] = 0.0  # ...except one cell with no LULC data at all
+
+    mock_landtype = xr.DataArray(
+        landtype_data,
+        dims=["landtype", "lat", "lon"],
+        coords={
+            "landtype": landtype_labels,
+            "lat": sample_dataset.lat,
+            "lon": sample_dataset.lon,
+        },
+    )
+
+    with (
+        patch("xarray.open_dataarray") as mock_open_da,
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+    ):
+        mock_open_da.return_value = mock_landtype
+
+        result = add_landtype_factor(sample_dataset, mock_geo_config, mock_geo_paths)
+
+    factors = result["landtype_factor"]
+    assert not np.any(np.isnan(factors.values))
+    assert factors.values[0, 0] == 1.0  # no-data cell lands on the neutral minimum
+    assert factors.values[1, 1] == pytest.approx(100.0 * 1.1)  # covered cells keep their factor
+
+
+def test_add_feasibility_mask_keeps_land_at_or_below_sea_level(sample_dataset, mock_geo_config, mock_geo_paths):
+    """Land cells at 0 m or below sea level are feasible; only max_altitude excludes by height.
+
+    Notes:
+        Guards against the former ``altitude.where(altitude > 0)`` clause, which
+        turned coastal and below-sea-level land (grid-mean altitude <= 0 m) into
+        NaN and thereby marked it infeasible. Water stays excluded via the
+        land-sea mask, high terrain via max_altitude.
+    """
+    from steelo.domain.constants import GRAVITY_ACCELERATION
+
+    n_lat, n_lon = len(sample_dataset.lat), len(sample_dataset.lon)
+    altitude = np.full((1, n_lat, n_lon), 100.0)
+    altitude[0, 0, 0] = 0.0  # coastal land at exactly sea level
+    altitude[0, 0, 1] = -300.0  # below-sea-level land (e.g. polder)
+    altitude[0, 0, 2] = 5000.0  # above max_altitude -> infeasible
+
+    mock_terrain = xr.Dataset(
+        {
+            "z": (("valid_time", "latitude", "longitude"), altitude * GRAVITY_ACCELERATION),
+            "slor": (("valid_time", "latitude", "longitude"), np.full((1, n_lat, n_lon), 0.001)),
+            "lsm": (("valid_time", "latitude", "longitude"), np.ones((1, n_lat, n_lon))),  # all land
+        }
+    )
+    mock_terrain.coords["valid_time"] = [0]
+    mock_terrain.coords["latitude"] = sample_dataset.lat.values
+    mock_terrain.coords["longitude"] = sample_dataset.lon.values
+
+    with (
+        patch("xarray.open_dataset") as mock_open,
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch.object(xr.DataArray, "to_netcdf"),
+    ):
+        mock_open.return_value = mock_terrain
+
+        result = add_feasibility_mask(sample_dataset, mock_geo_config, mock_geo_paths)
+
+    mask = result["feasibility_mask"]
+    assert mask.values[0, 0] == 1  # sea-level land is feasible
+    assert mask.values[0, 1] == 1  # below-sea-level land is feasible
+    assert mask.values[0, 2] == 0  # high terrain stays excluded

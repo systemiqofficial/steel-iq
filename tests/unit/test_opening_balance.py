@@ -366,7 +366,7 @@ def test_negative_multiplier_raises():
     with pytest.raises(ValueError, match="opening_balance_multiplier must be >= 0.0"):
         SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path="dummy.xlsx",
             output_dir="/tmp/test_output",
             opening_balance_multiplier=-0.1,

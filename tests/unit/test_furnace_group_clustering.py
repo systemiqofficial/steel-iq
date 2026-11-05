@@ -17,6 +17,8 @@ class MockConfig:
 
     active_statuses: list[str]
     closely_allocated_products: list[str] = None  # Add field with default
+    hot_metal_radius: float = 5.0
+    geographical_clustering_scope: str = "iso3"
 
     def __post_init__(self):
         if self.closely_allocated_products is None:
@@ -40,8 +42,8 @@ def create_test_location(lat: float, lon: float, iso3: str = "TST") -> Location:
     )
 
 
-def create_test_plant(plant_id: str, location: Location) -> Plant:
-    """Helper to create a test plant."""
+def create_test_plant(plant_id: str, location: Location, owner: str = "E100000000000") -> Plant:
+    """Helper to create a test plant owned by ``owner``."""
     return Plant(
         plant_id=plant_id,
         location=location,
@@ -49,7 +51,7 @@ def create_test_plant(plant_id: str, location: Location) -> Plant:
         technology_unit_fopex={},
         power_source="grid",
         soe_status="private",
-        parent_gem_id="E100000000000",
+        parent_gem_id=owner,
         workforce_size=100,
         certified=False,
         category_steel_product=set(),
@@ -63,8 +65,9 @@ def create_test_furnace_group(
     chosen_reductant: str = "coke",
     carbon_cost: float = 50.0,
     status: str = "operating",
+    outputs: dict[str, float] | None = None,
 ) -> FurnaceGroup:
-    """Helper to create a test furnace group."""
+    """Helper to create a test furnace group; ``outputs`` is attached to every feedstock of its business case."""
     from steelo.domain.models import PrimaryFeedstock
 
     # Create dynamic_business_case with appropriate feedstocks based on technology
@@ -85,6 +88,8 @@ def create_test_furnace_group(
         dynamic_business_case = [
             PrimaryFeedstock(metallic_charge="io_mid", reductant=chosen_reductant, technology=technology_name),
         ]
+    for feedstock in dynamic_business_case:
+        feedstock.outputs = dict(outputs or {})
 
     technology = Technology(
         name=technology_name,
@@ -111,8 +116,114 @@ def create_test_furnace_group(
         allocated_volumes=capacity,  # Needed for carbon_cost_per_unit calculation
         carbon_costs_for_emissions=carbon_cost * capacity,  # carbon_cost_per_unit = this / allocated_volumes
     )
+    fg.trade_carbon_cost_per_unit = carbon_cost
 
     return fg
+
+
+HOT_METAL_PRODUCERS = [
+    "BF",
+    "BF+CCS",
+    "BF+CCU",
+    "BF_CHARCOAL",
+    "BF_CHARCOAL+CCS",
+    "BF_CHARCOAL+CCU",
+    "DRI+ESF",
+    "DRI+ESF+CCS",
+    "DRI+ESF+CCU",
+    "SR",
+    "SR+CCS",
+    "SR+CCU",
+]
+
+
+def _clustered_fg_ids(mapping: dict[str, list[str]]) -> set[str]:
+    return {fg_id for fg_ids in mapping.values() for fg_id in fg_ids}
+
+
+@pytest.mark.parametrize("producer_tech", HOT_METAL_PRODUCERS)
+def test_bof_is_kept_when_any_hot_metal_producer_is_within_radius(producer_tech):
+    """A BOF stays in the LP when a co-located furnace of any hot-metal-producing technology is active."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    producer = create_test_furnace_group("producer", producer_tech, capacity=1000.0, outputs={"hot_metal": 1.0})
+    bof = create_test_furnace_group("bof", "BOF", capacity=1000.0, chosen_reductant="hot_metal")
+    plant.furnace_groups = [producer, bof]
+
+    _, mapping = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    assert "bof" in _clustered_fg_ids(mapping)
+
+
+def test_bof_is_dropped_without_hot_metal_producer_within_radius():
+    """A BOF whose only neighbour outputs DRI/HBI (no hot metal) is filtered out of the LP."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    dri = create_test_furnace_group(
+        "dri", "DRI", capacity=1000.0, chosen_reductant="natural_gas", outputs={"dri_high": 1.0, "hbi_high": 1.0}
+    )
+    bof = create_test_furnace_group("bof", "BOF", capacity=1000.0, chosen_reductant="hot_metal")
+    plant.furnace_groups = [dri, bof]
+
+    _, mapping = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    assert "bof" not in _clustered_fg_ids(mapping)
+
+
+def test_bof_effective_capacity_counts_every_hot_metal_producer():
+    """Reachable hot-metal supply sums all producing technologies, so a BF + BF+CCS site is not halved."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    bf = create_test_furnace_group("bf", "BF", capacity=700.0, outputs={"hot_metal": 1.0})
+    bf_ccs = create_test_furnace_group("bf_ccs", "BF+CCS", capacity=700.0, outputs={"hot_metal": 1.0})
+    bof = create_test_furnace_group("bof", "BOF", capacity=3000.0, chosen_reductant="hot_metal")
+    bof.technology.dynamic_business_case[0].minimum_share_in_product = 0.7
+    plant.furnace_groups = [bf, bf_ccs, bof]
+
+    meta_fgs, _ = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    bof_meta = next(meta_fg for meta_fg in meta_fgs if meta_fg.technology_name == "BOF")
+    assert float(bof_meta.total_capacity) == pytest.approx(1400.0 / 0.7)
+
+
+def _bof_with_neighbouring_bf(bf_iso3: str, bf_owner: str = "E100000000000") -> list[Plant]:
+    """A BOF-only plant and a BF-only plant ~3.3 km apart, the BF in ``bf_iso3`` owned by ``bf_owner``."""
+    bof_plant = create_test_plant("bof_plant", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    bof = create_test_furnace_group("bof", "BOF", capacity=1400.0, chosen_reductant="hot_metal")
+    bof.technology.dynamic_business_case[0].minimum_share_in_product = 0.7
+    bof_plant.furnace_groups = [bof]
+    bf_plant = create_test_plant("bf_plant", create_test_location(lat=35.03, lon=110.0, iso3=bf_iso3), owner=bf_owner)
+    bf_plant.furnace_groups = [create_test_furnace_group("bf", "BF", capacity=700.0, outputs={"hot_metal": 1.0})]
+    return [bof_plant, bf_plant]
+
+
+@pytest.mark.parametrize("scope", ["iso3", "plant_group", "plant"])
+def test_bof_is_kept_and_sized_from_a_bf_at_a_neighbouring_plant(scope):
+    """A BOF without its own BF is fed by an in-country BF at another plant within the radius."""
+    config = MockConfig(active_statuses=["operating"], geographical_clustering_scope=scope)
+
+    meta_fgs, mapping = cluster_furnace_groups(_bof_with_neighbouring_bf("CHN"), config)
+
+    assert "bof" in _clustered_fg_ids(mapping)
+    bof_meta = next(meta_fg for meta_fg in meta_fgs if meta_fg.technology_name == "BOF")
+    assert float(bof_meta.total_capacity) == pytest.approx(700.0 / 0.7)
+
+
+@pytest.mark.parametrize("scope, kept", [("iso3", False), ("plant_group", True), ("plant", True)])
+def test_cross_border_bf_within_radius_counts_only_outside_iso3_scope(scope, kept):
+    """The same-country requirement applies only when clustering is keyed by country."""
+    config = MockConfig(active_statuses=["operating"], geographical_clustering_scope=scope)
+
+    _, mapping = cluster_furnace_groups(_bof_with_neighbouring_bf("MNG"), config)
+
+    assert ("bof" in _clustered_fg_ids(mapping)) is kept
+
+
+@pytest.mark.parametrize("scope, kept", [("iso3", True), ("plant_group", False), ("plant", True)])
+def test_other_owners_bf_within_radius_counts_only_outside_plant_group_scope(scope, kept):
+    """Under plant_group scope the LP blocks hot flows between groups, so another owner's BF feeds nothing."""
+    config = MockConfig(active_statuses=["operating"], geographical_clustering_scope=scope)
+
+    _, mapping = cluster_furnace_groups(_bof_with_neighbouring_bf("CHN", bf_owner="E200000000000"), config)
+
+    assert ("bof" in _clustered_fg_ids(mapping)) is kept
 
 
 class TestClusterKey:
@@ -542,6 +653,75 @@ class TestDisaggregateAllocations:
         assert (supplier_pc, demand_pc, commodity) in result.allocations
         assert result.allocations[(supplier_pc, demand_pc, commodity)] == 3000.0
 
+    def test_disaggregate_preserves_tariff_taxes(self):
+        """Test that tariff taxes survive disaggregation so TM_PAM_connector can propagate them to plants."""
+        from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+        from steelo.domain.trade_modelling.trade_lp_modelling import (
+            Allocations,
+            ProcessCenter,
+            Commodity,
+            Process,
+            ProcessType,
+        )
+
+        fg1_id = "plant1_fg0"
+        fg2_id = "plant2_fg0"
+        meta_fg = MetaFurnaceGroup(
+            cluster_key=ClusterKey("BOF", "CHN", "hot_metal:hot_metal"),
+            meta_furnace_group_id="cluster_BOF_hot_metal_CHN",
+            constituent_fg_ids=[fg1_id, fg2_id],
+            technology_name="BOF",
+            chosen_reductant="hot_metal",
+            location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+            total_capacity=Volumes(4000.0),
+            weighted_avg_carbon_cost=50.0,
+            dynamic_business_case=None,
+            capacity_shares={fg1_id: 0.5, fg2_id: 0.5},
+            constituent_locations={
+                fg1_id: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+                fg2_id: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+            },
+        )
+
+        bof_process = Process(name="BOF", type=ProcessType.PRODUCTION, bill_of_materials=[])
+        meta_fg_pc = ProcessCenter(
+            name="cluster_BOF_hot_metal_CHN",
+            process=bof_process,
+            capacity=4000.0,
+            location=meta_fg.location,
+        )
+        demand_process = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[])
+        demand_pc = ProcessCenter(
+            name="demand_center_usa",
+            process=demand_process,
+            capacity=5000.0,
+            location=Location(lat=40.0, lon=-75.0, iso3="USA", country="United States", region="Americas"),
+        )
+
+        commodity = Commodity("steel")
+        tariff_taxes = {("CHN", "USA", "steel"): 120.0, ("*", "USA", "steel"): 30.0}
+        clustered_allocs = Allocations(
+            allocations={(meta_fg_pc, demand_pc, commodity): 2000.0},
+            tariff_taxes=tariff_taxes,
+        )
+
+        config = type(
+            "Config",
+            (),
+            {"hot_metal_radius": 100.0, "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"]},
+        )()
+
+        result = disaggregate_allocations(
+            clustered_allocations=clustered_allocs,
+            meta_furnace_groups=[meta_fg],
+            plants_repo=None,
+            config=config,
+        )
+
+        # Flows are split across constituent FGs, and the tariff taxes are carried over unchanged
+        assert {from_pc.name for from_pc, _, _ in result.allocations} == {fg1_id, fg2_id}
+        assert result.tariff_taxes == tariff_taxes
+
 
 class TestClusterFurnaceGroups:
     """Test furnace group clustering function."""
@@ -676,6 +856,9 @@ class TestClusterFurnaceGroups:
 
         fg1 = create_test_furnace_group("fg1", "BF", capacity=1000.0, carbon_cost=50.0)
         fg2 = create_test_furnace_group("fg2", "BF", capacity=3000.0, carbon_cost=70.0)
+        # The cluster is priced on the trade carbon cost, not the realised carbon_cost_per_unit
+        fg1.trade_carbon_cost_per_unit = 40.0
+        fg2.trade_carbon_cost_per_unit = 60.0
 
         plant.furnace_groups = [fg1, fg2]
 
@@ -683,11 +866,7 @@ class TestClusterFurnaceGroups:
         meta_fgs, mapping = cluster_furnace_groups([plant], config)
 
         meta_fg = meta_fgs[0]
-        # The clustering function calculates weighted average using fg.carbon_cost_per_unit
-        # which is a derived property. Let's just verify it calculated something reasonable
-        assert meta_fg.weighted_avg_carbon_cost > 0.0
-        # Should be weighted more toward fg2 (which has 3x the capacity of fg1)
-        assert meta_fg.weighted_avg_carbon_cost > fg1.carbon_cost_per_unit
+        assert meta_fg.weighted_avg_carbon_cost == pytest.approx((40.0 * 1000.0 + 60.0 * 3000.0) / 4000.0)
 
     def test_cluster_preserves_constituent_locations(self):
         """Test that original locations are preserved for disaggregation."""
@@ -910,3 +1089,212 @@ class TestTransportationProblem:
         assert abs(to_totals["dest_X"] - 300.0) < 1e-6
         assert abs(to_totals["dest_Y"] - 400.0) < 1e-6
         assert abs(to_totals["dest_Z"] - 300.0) < 1e-6
+
+
+def test_disaggregate_allocations_preserves_tariff_taxes():
+    """Tariff taxes on the clustered allocations are carried onto the disaggregated allocations unchanged."""
+    from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+    from steelo.domain.trade_modelling.trade_lp_modelling import (
+        Allocations,
+        Commodity,
+        Process,
+        ProcessCenter,
+        ProcessType,
+    )
+
+    fg_ids = ["plant1_fg0", "plant2_fg0"]
+    meta_fg = MetaFurnaceGroup(
+        cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        constituent_fg_ids=fg_ids,
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+        total_capacity=Volumes(4000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=None,
+        capacity_shares={fg_ids[0]: 0.25, fg_ids[1]: 0.75},
+        constituent_locations={
+            fg_ids[0]: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+            fg_ids[1]: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+        },
+    )
+    meta_fg_pc = ProcessCenter(
+        name="cluster_BF_coke_CHN",
+        process=Process(name="BF", type=ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=4000.0,
+        location=meta_fg.location,
+        production_cost=85.0,
+    )
+    demand_pc = ProcessCenter(
+        name="demand_center_1",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=50.0, lon=10.0, iso3="DEU", country="Germany", region="Europe"),
+    )
+    tariff_taxes = {("CHN", "DEU", "iron"): 12.5}
+    clustered_allocs = Allocations(
+        allocations={(meta_fg_pc, demand_pc, Commodity("iron")): 2000.0},
+        tariff_taxes=tariff_taxes,
+    )
+    config = MockConfig(active_statuses=["operating"], hot_metal_radius=100.0)
+
+    result = disaggregate_allocations(
+        clustered_allocations=clustered_allocs,
+        meta_furnace_groups=[meta_fg],
+        plants_repo=None,
+        config=config,
+    )
+
+    assert len(result.allocations) == 2
+    assert result.tariff_taxes == tariff_taxes
+
+
+def test_disaggregate_allocations_maps_carbon_border_charges_to_member_flows():
+    """A per-tonne charge on a cluster arc is copied onto every member furnace group's flow on that arc."""
+    from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+    from steelo.domain.trade_modelling.trade_lp_modelling import (
+        Allocations,
+        Commodity,
+        Process,
+        ProcessCenter,
+        ProcessType,
+    )
+
+    fg_ids = ["plant1_fg0", "plant2_fg0"]
+    meta_fg = MetaFurnaceGroup(
+        cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        constituent_fg_ids=fg_ids,
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+        total_capacity=Volumes(4000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=None,
+        capacity_shares={fg_ids[0]: 0.25, fg_ids[1]: 0.75},
+        constituent_locations={
+            fg_ids[0]: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+            fg_ids[1]: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+        },
+    )
+    meta_fg_pc = ProcessCenter(
+        name="cluster_BF_coke_CHN",
+        process=Process(name="BF", type=ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=4000.0,
+        location=meta_fg.location,
+        production_cost=85.0,
+    )
+    charged_demand_pc = ProcessCenter(
+        name="demand_deu",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=50.0, lon=10.0, iso3="DEU", country="Germany", region="Europe"),
+    )
+    free_demand_pc = ProcessCenter(
+        name="demand_ind",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=20.0, lon=78.0, iso3="IND", country="India", region="Asia"),
+    )
+    iron = Commodity("iron")
+    clustered_allocs = Allocations(
+        allocations={(meta_fg_pc, charged_demand_pc, iron): 2000.0, (meta_fg_pc, free_demand_pc, iron): 1000.0},
+        carbon_border_charges={(meta_fg_pc, charged_demand_pc, iron): 32.0},
+    )
+    config = MockConfig(active_statuses=["operating"], hot_metal_radius=100.0)
+
+    result = disaggregate_allocations(
+        clustered_allocations=clustered_allocs,
+        meta_furnace_groups=[meta_fg],
+        plants_repo=None,
+        config=config,
+    )
+
+    flows_into_deu = {key for key in result.allocations if key[1].name == "demand_deu"}
+    assert flows_into_deu
+    assert all(key[0].name in fg_ids for key in flows_into_deu)
+    # Every member flow on the charged cluster arc carries the charge; the uncharged arc carries none.
+    # The keys are the disaggregated flow keys themselves, so the connector's object lookup finds them.
+    assert result.carbon_border_charges == {key: 32.0 for key in flows_into_deu}
+
+
+def test_cluster_weighted_embedded_carbon_fields():
+    """The three embedded-carbon fields are capacity-weighted means of the members' values."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    fg1 = create_test_furnace_group("fg1", "BF", capacity=1000.0)
+    fg2 = create_test_furnace_group("fg2", "BF", capacity=3000.0)
+    fg1.trade_emission_intensity, fg2.trade_emission_intensity = 1.0, 2.0
+    fg1.upstream_emission_intensity, fg2.upstream_emission_intensity = 0.5, 1.5
+    fg1.upstream_carbon_cost_paid, fg2.upstream_carbon_cost_paid = 10.0, 30.0
+    plant.furnace_groups = [fg1, fg2]
+
+    meta_fgs, _ = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    meta_fg = meta_fgs[0]
+    assert meta_fg.weighted_avg_emission_intensity == pytest.approx((1.0 * 1000 + 2.0 * 3000) / 4000)
+    assert meta_fg.weighted_avg_upstream_emission_intensity == pytest.approx((0.5 * 1000 + 1.5 * 3000) / 4000)
+    assert meta_fg.weighted_avg_upstream_carbon_cost_paid == pytest.approx((10.0 * 1000 + 30.0 * 3000) / 4000)
+
+
+def test_disaggregate_allocations_copies_embedded_fields_onto_member_process_centers():
+    """The per-furnace process centres built by disaggregation carry the cluster's embedded-carbon values."""
+    from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+    from steelo.domain.trade_modelling.trade_lp_modelling import (
+        Allocations,
+        Commodity,
+        Process,
+        ProcessCenter,
+        ProcessType,
+    )
+
+    fg_ids = ["plant1_fg0", "plant2_fg0"]
+    meta_fg = MetaFurnaceGroup(
+        cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        constituent_fg_ids=fg_ids,
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+        total_capacity=Volumes(4000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=None,
+        capacity_shares={fg_ids[0]: 0.25, fg_ids[1]: 0.75},
+        constituent_locations={
+            fg_ids[0]: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+            fg_ids[1]: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+        },
+        weighted_avg_emission_intensity=1.75,
+        weighted_avg_upstream_emission_intensity=1.25,
+        weighted_avg_upstream_carbon_cost_paid=25.0,
+    )
+    meta_fg_pc = ProcessCenter(
+        name="cluster_BF_coke_CHN",
+        process=Process(name="BF", type=ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=4000.0,
+        location=meta_fg.location,
+        production_cost=85.0,
+    )
+    demand_pc = ProcessCenter(
+        name="demand_center_1",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=35.5, lon=110.5, iso3="CHN", country="China", region="Asia"),
+    )
+    clustered_allocs = Allocations(allocations={(meta_fg_pc, demand_pc, Commodity("iron")): 2000.0})
+
+    result = disaggregate_allocations(
+        clustered_allocations=clustered_allocs,
+        meta_furnace_groups=[meta_fg],
+        plants_repo=None,
+        config=MockConfig(active_statuses=["operating"], hot_metal_radius=100.0),
+    )
+
+    member_pcs = {from_pc.name: from_pc for from_pc, _, _ in result.allocations}
+    assert set(member_pcs) == set(fg_ids)
+    for pc in member_pcs.values():
+        assert (pc.emission_intensity, pc.upstream_emission_intensity, pc.upstream_carbon_cost_paid) == (
+            1.75,
+            1.25,
+            25.0,
+        )

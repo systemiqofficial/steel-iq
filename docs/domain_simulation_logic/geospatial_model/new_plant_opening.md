@@ -5,7 +5,7 @@
 The new plant opening system transforms candidate locations into actual steel and iron plants through a multi-year business opportunity lifecycle. Companies identify promising locations, track their economic viability over time, announce viable projects, and eventually construct new facilities -all while accounting for uncertainty, capacity constraints, and changing market conditions.
 
 Business opportunities progress through the following stages:
-- **CONSIDERED**: Top location-technology pairs are identified based on NPV calculations and selected using weighted random sampling. Its NPV is recalculated annually with updated costs for several years; opportunities with consistently positive NPV advance to announcement (subject to probability filter), while consistently negative NPV leads to discard.
+- **CONSIDERED**: Top location-technology pairs are identified based on NPV calculations and selected using weighted random sampling (or, when `probabilistic_agents` is disabled, deterministically by highest NPV, evaluated over every candidate location instead of a random sample — see [Business Opportunity Identification](#business-opportunity-identification)). Its NPV is recalculated annually with updated costs for several years; opportunities with consistently positive NPV advance to announcement (subject to probability filter), while consistently negative NPV leads to discard.
 - **ANNOUNCED**: Project waits for construction start; dynamic costs continue to be updated annually; advancement to construction depends on technology remaining allowed, capacity limits, and probability filter.
 - **CONSTRUCTION**: Plant is being built over several years (handled by the plant agent model).
 - **OPERATING**: Plant is operational and removed from business opportunity tracking (fully handled by the plant agent model).
@@ -14,8 +14,9 @@ Business opportunities progress through the following stages:
 The system updates the costs and status of business opportunities each simulation year:
 1. **Update Dynamic Costs**
    - Refresh CAPEX, cost of debt, and energy prices for all carriers
-   - Apply subsidies based on earliest construction start year
+   - Apply subsidies (CAPEX and debt at the earliest construction start year; energy carriers at the operating start year that follows it)
    - Update bill of materials with new energy prices
+   - Refresh the expected utilisation of CONSIDERED opportunities from the current fleet average for the technology (ANNOUNCED ones keep their value)
 
 2. **Update Status**
    - For CONSIDERED: Recalculate NPV and check for status change
@@ -26,6 +27,8 @@ The system updates the costs and status of business opportunities each simulatio
 - `announcement_time`: Minimum 1 year (fixed)
 - `construction_time`: Years to build plant after announcement (default: 4 years)
 Both the consideration and announcement times can be considerably longer than their set minimums depending on the capacity and probability filters.
+
+On the earliest path, an opportunity created in year t is announced in year t + max(consideration_time - 1, 1), once its window of NPVs exists and no sooner than the next year, and starts construction the year after, in t + max(consideration_time, 2). It operates from that year plus `construction_time`. Opportunity creation and every yearly re-valuation price that path.
 
 ## Process Diagram
 The flow from business opportunity to new plant is as follows: 
@@ -39,7 +42,7 @@ The flow from business opportunity to new plant is as follows:
         | - Create new Plant + FurnaceGroup
         |
         v
-    CONSIDERED (years t to t+T for T the consideration time, default: 3 years)
+    CONSIDERED (from year t to at least t+max(T-1, 1) for T the consideration time, default: 3 years)
         |
         | [Each year]:
         | update_dynamic_costs_for_business_opportunities()
@@ -132,11 +135,12 @@ The identification process evaluates potential new plant locations and technolog
 
 **Function:** `get_list_of_allowed_techs_for_target_year()`
 
-Filters technologies based on what will be allowed at the earliest possible construction start year (target year = current year + consideration time + 1), not what's currently allowed.
+Filters technologies based on what will be allowed at the earliest possible construction start year (target year = current year + max(consideration time, 2)), not what's currently allowed.
 
 **Purpose:** Prevents companies from considering plants using technologies that would be illegal to build by the time construction begins. For example, if BF-BOF will be banned in 2034, it won't be considered as an opportunity in 2030 even though it's currently legal.
 
 **Process:**
+- Drop technologies listed in `geo_config.excluded_greenfield_technologies` (default `["BOF"]`) before anything else; these are never built greenfield regardless of `technology_settings`. Neither `run_simulation` nor the app lets a user change this list: the CLI has no flag for it, the app stores the default with each run it creates and a rerun keeps the stored list, so only a `SimulationConfig` built in Python sets another
 - Calculate target year when the earliest possible construction would start 
 - Check which technologies are allowed in that future year
 - Filter opportunities to only include permitted technologies
@@ -148,28 +152,29 @@ Filters technologies based on what will be allowed at the earliest possible cons
 Randomly samples a subset of top priority locations to reduce computational burden, since NPV calculations are resource-intensive.
 
 **Configuration:**
-- `calculate_npv_pct`: Percentage of locations to evaluate (default: 10%) out of the top X% extracted by the location priority selection (default: 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)). 
+- `calculate_npv_sites_share`: Fraction of locations to evaluate (default: 0.1, i.e. 10%) out of the top `geo_config.pick_priority_sites_share` fraction extracted by the location priority selection (default: 0.05, i.e. 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)).
 
-**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000.
+**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000. When `probabilistic_agents` is False, `calculate_npv_sites_share` is forced to 1.0 (evaluate every candidate) and `geo_config.pick_priority_sites_share` is forced to 0.005 (narrowing the candidate pool the 100% sampling runs over) — full sampling alone measured ~7x slower, but combined with the narrower pool the runtime cost is negligible.
 
 ### Step 3: Cost Data Preparation
 
 **Function:** `prepare_cost_data_for_business_opportunity()`
 
-Gathers all cost inputs needed for NPV calculation for each location-technology pair. Location-technology combinations with missing or invalid critical data are skipped and a warning is logged.
+Gathers all cost inputs needed for NPV calculation for each location-technology pair. Sites missing critical data (energy costs, cost of equity or debt) raise a hard error, as do invalid data types; technologies with an incomplete field set are dropped in validation, so only complete entries reach the NPV.
 
 **Required Inputs:**
 
 | Input Category | Components | Source |
 |----------------|-----------|---------|
-| Energy costs | Electricity, hydrogen, gas, coal prices | Country-level data + site-specific renewable calculations for energy costs |
-| Financial parameters | Cost of debt, cost of equity | Country-level financial data |
+| Energy costs | Electricity, hydrogen, gas, coal prices | Geography-resolved data (province row when the site falls in one, else country) + the site's raster electricity and hydrogen of the current year, which the bill of materials reads |
+| Captive stack | The site's power and electrolyser stack locked at the target year (`CaptiveEnergy`): coverage, the cell's LCOE for a system built that year, the electrolyser's use and cost, and the regional hydrogen ceiling as a contract when the site's own price is above it | `Environment.captive_energy_at`; the NPV's electricity and hydrogen in every operating year come from it and that year's grid price (see [Energy Prices](../overarching_elements/energy_prices.md#3-the-npv-at-selection)) |
+| Financial parameters | Cost of debt, cost of equity | Per country and technology (`Cost of capital` sheet) |
 | CAPEX | Capital expenditure per tonne capacity | Regional technology-specific estimates |
 | OPEX | Fixed operating costs per tonne | Country and technology-specific |
 | Infrastructure | Railway buildout cost | From priority location selection |
 | Production | Bill of materials, utilization rate, reductant type | Technology-specific averages |
-| Subsidies | CAPEX, debt, and OPEX subsidies | Country and technology-specific policies |
-| Carbon pricing | Carbon cost time series | Country-level projections |
+| Subsidies | CAPEX, debt, and OPEX subsidies | Geography- and technology-specific policies (country and province rows apply additively) |
+| Carbon pricing | Enters via the per-year reductant score series, not a separate cost field | Country-level projections |
 
 ### Step 4: NPV Calculation
 
@@ -181,6 +186,8 @@ Calculates Net Present Value for each business opportunity using an **adjusted N
 
 Subsidies are often announced years before plants are built. Standard NPV using current-year subsidies would make subsidized technologies appear less attractive until subsidies activate. The adjusted NPV assumes subsidies announced for the target year will be available, preventing artificial delays in subsidized technology adoption. This adjusted NPV is only used for the decision to create a business opportunity. Once a plant is constructed, it uses actual year-by-year costs, not the adjusted values.
 
+**Price/cost alignment:** the market-price series handed to the NPV is anchored at the target (construction-start) year, so after the construction-time lag each revenue year prices the same calendar year as its costs — the NPV values the plant's actual operating window. The yearly re-valuation of existing opportunities re-anchors the same way, floored at the soonest path still open (announce now, construct from next year).
+
 **NPV Components:**
 
 | Component | Composition | Subsidy Timing | Period |
@@ -190,29 +197,34 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 | **Cost of Equity** | Return required by investors | No subsidies | Financing period |
 | **OPEX - Variable** | Materials + energy from bill of materials × unit costs | OPEX subsidies: Operation years | Annual (plant lifetime) |
 | **OPEX - Fixed** | Fixed operating costs per tonne | OPEX subsidies: Operation years | Annual (plant lifetime) |
-| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.) | Energy subsidies: Target year | Annual (plant lifetime) |
-| **Carbon Costs** | Emissions × carbon price trajectory | No subsidies | Annual (plant lifetime) |
+| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.); a site's electricity and hydrogen from its stack locked at the target year and each year's grid price | Energy subsidies: Operating start year | Annual (plant lifetime) |
+| **Carbon Costs** | Emissions × carbon price trajectory (inside the reductant score series) | No subsidies | Annual (plant lifetime) |
 | **Revenue** | Production capacity × utilization rate × market price projections | N/A | Annual (plant lifetime) |
 | **Discount Rate** | Weighted average cost of capital (WACC = debt share × cost of debt + equity share × cost of equity) | Applied to debt portion only | NPV calculation |
 
 **Notes:**
 - If NPV calculation fails (returns NaN due to missing data or invalid inputs), it is set to negative infinity to exclude that location-technology pair from selection.
 - For more information on the NPV calculation, see related documentation in [Calculate Cost](../plant_agent_model/calculate_costs.md).
+- With China's capacity-replacement policy enabled, a Chinese candidate's NPV is taken at the capacity the policy would permit the route to build (the planned capacity, or ÷ 1.5 for an emission-intense route), so a penalised route is valued as it would actually be built. See [China Capacity-Replacement Policy](../plant_agent_model/capacity_replacement_policy.md).
 
 ### Step 5: Top Opportunity Selection
 
 **Function:** `select_top_opportunities_by_npv()`
 
-Selects top N location-technology combinations using **weighted random sampling** (instead of pure NPV ranking) to represent some randomness in human decision-making. Pure ranking would always select the absolute highest NPV locations. In reality, companies have geographic preferences, imperfect information, varying risk tolerance, and strategic considerations. Weighted random sampling ensures diversity while still strongly favoring high-NPV options.
+When `probabilistic_agents` is enabled (default), selects top N location-technology combinations using **rank-weighted random sampling** (instead of pure NPV ranking) to represent some randomness in human decision-making. Pure ranking would always select the absolute highest NPV locations. In reality, companies have geographic preferences, imperfect information, varying risk tolerance, and strategic considerations. Weighted random sampling ensures diversity while still strongly favoring high-NPV options. When `probabilistic_agents` is disabled, this step instead deterministically picks the top N by NPV — no random draw at all.
 
-**Process:**
+**Process (probabilistic_agents enabled):**
 - Filter out invalid NPVs (NaN or negative infinity from calculation failures)
-- Create weights from NPV values (shift negative NPVs to make all weights non-negative)
-- Normalize weights to probabilities
-- Randomly select top N opportunities with probability proportional to NPV
+- Rank valid candidates by NPV and trim to the best 3N (implausible sites can never be selected, regardless of NPV scale)
+- Assign linearly decreasing rank weights over the trimmed pool (best gets weight 3N, worst gets weight 1) and normalize to probabilities
+- Randomly draw N opportunities from the trimmed pool without replacement, with probability proportional to rank weight
 - If fewer valid pairs exist than requested, select all valid pairs
 
-**Purpose:** Creates geographic diversity in opportunities while maintaining economic rationality. Higher NPV opportunities have much higher selection probability, but mid-tier opportunities can also be selected.
+**Process (probabilistic_agents disabled):**
+- Filter out invalid NPVs (NaN or negative infinity from calculation failures)
+- Select the top N valid candidates by NPV directly
+
+**Purpose:** Creates geographic diversity in opportunities while maintaining economic rationality. Higher NPV opportunities have much higher selection probability, but mid-tier opportunities can also be selected. Disabling `probabilistic_agents` trades this realism for full determinism and reproducibility across runs/seeds.
 
 ## Business Opportunity Tracking
 **Function:** `update_status_of_business_opportunities()`
@@ -233,23 +245,27 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
   - `output_energy_costs`: subsidised output prices (increased by subsidy for physical carriers) — used for by-product revenue
   - `energy_costs_no_subsidy`: original unsubsidised prices — used as baseline for yearly refresh
 - Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
+  - Site grid prices and electrolyser CAPEX/OPEX resolve per geo unit where the master has sub-national rows, otherwise per country
+- The site's captive stack (`CaptiveEnergy`), locked at the target year below, which the NPV re-valuation prices electricity and hydrogen from; it is stored even when every other cost repeats the last year's
+- Energy subsidies are collected for the plant's geography (country and province rows apply additively) and filtered at the operating start year (construction start + construction time), matching opportunity creation and the plant agent model
 - Bill of materials (updated with new subsidised input energy prices)
+- Expected utilisation, refreshed from `Environment.avg_utilization` (the operating fleet's average for the technology, with the same 0.6 fallback as opportunity creation) — CONSIDERED opportunities only. ANNOUNCED ones keep their value: the build decision is already taken, and utilisation is reset to 0 at construction start. A fleet average of zero flows into the zero-utilisation guard in the NPV re-valuation (−inf → discard).
 
 **Note:** For more information on the electricity and hydrogen prices see related documentation [Priority Location Selection](priority_location_selection.md).
 
 **Target Year Calculation:**
 
-The system uses subsidies from the earliest construction start year, reflecting that subsidies are often announced in advance.
+The system uses CAPEX and debt subsidies from the earliest construction start year, reflecting that subsidies are often announced in advance. Energy subsidies use the operating start year (construction start + construction time), because subsidised carrier prices are what the plant pays once it is running.
 
-| Status | Target Year | Reasoning |
-|--------|-------------|-----------|
-| CONSIDERED | `current + consideration_time + 1 - years_considered` | Earliest construction start based on consideration progress |
-| ANNOUNCED | `current + 1` | Next year (announcement time = 1) |
+| Status | Target Year (construction start) | Reasoning |
+|--------|---------------------------------|-----------|
+| CONSIDERED | `max(current + consideration_time - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
+| ANNOUNCED | `current` | This year: the construction draw runs after the re-valuation in the same year, and the capex and cost of debt that re-valuation writes are the ones the plant is built with |
 
 **Process:**
 For each business opportunity:
-1. Calculate appropriate target year based on opportunity status
-2. Filter subsidies active in target year and calculate new costs
+1. Calculate the construction start year based on opportunity status
+2. Filter CAPEX and debt subsidies at that year, energy subsidies at construction start + construction time, and calculate new costs
 3. Update bill of materials with new energy prices
 4. Skip updates if costs haven't changed and update modified costs
 
@@ -271,6 +287,8 @@ Tracks CONSIDERED business opportunities by recalculating NPV each year and deci
 
 Single-year NPV could be an outlier from temporary price spikes, one-time events, or data anomalies. Multi-year tracking ensures decisions are based on sustained economic viability.
 
+**China capacity-replacement gate (policy-enabled runs, Chinese opportunities only):** before the announcement draw, a non-consuming probe asks the retirement-credit pool whether a single credit holder could fund the plant. An unfundable year counts towards `capacity_pool_max_retry_years` (default 2), after which the opportunity is discarded without ever having withdrawn. When the draw succeeds, the credits are withdrawn from that one holder and travel with the opportunity; a refused withdrawal leaves it considered to retry next year.
+
 ### Step 3: Converting into Actual Plants under Construction
 
 **Function:** `convert_business_opportunity_into_actual_project()`
@@ -282,6 +300,8 @@ Converts ANNOUNCED business opportunities into CONSTRUCTION status, checking tec
 2. **Capacity Check:** If adding this plant would exceed the new annual capacity limit assigned to new plants → Stay announced, retry next year
 3. **Probability Filter:** Apply `probability_of_construction` → If fails, stay announced, retry next year
 4. **Success:** Begin construction
+
+**Capacity policy (policy-enabled runs):** a Chinese plant whose announcement was funded by another company's retirement credits moves into that company's plant group when construction begins; a discard at step 1 refunds the consumed credits to the pool at their original vintages.
 
 **Capacity Limit Logic:**
 
@@ -302,14 +322,17 @@ Models real-world risk factors: financing may fall through, permits may be denie
 | `plant_lifetime` | int | 20 years | Expected operational lifetime of plant |
 | `expanded_capacity` | float | 2.5 Mt/year | Standard capacity for new plants (same than for plant expansion) |
 | `top_n_loctechs_as_business_op` | int | 5 | Number of opportunities to track per product per year |
-| `calculate_npv_pct` | float | 0.1 | Percentage of priority locations to sample for NPV calculation (fixed) |
+| `geo_config.excluded_greenfield_technologies` | list[str] | `["BOF"]` | Technologies removed from the greenfield candidate set before the allowed-technology filter of Step 1. A greenfield plant has a single furnace group, so a BOF built this way has no hot-metal supply of its own. Brownfield switching and renovation are unaffected (they use `technology_settings`). Neither `run_simulation` nor the app lets a user change it (the app stores the default with each run); only a Python config sets another |
 
 ### Probability Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `probability_of_announcement` | float | 0.7 | Chance viable opportunity is announced |
-| `probability_of_construction` | float | 0.9 | Chance announced project starts construction |
+| `probabilistic_agents` | bool | True | When True, Step 5 draws a rank-weighted mix of top opportunities; when False, Step 5 picks the top N by NPV deterministically. Also gates Step 2's `calculate_npv_sites_share` sampling and `geo_config.pick_priority_sites_share` — see below |
+| `probability_of_announcement` | float | 0.7 | Chance viable opportunity is announced. Forced to 1.0 when `probabilistic_agents` is False |
+| `probability_of_construction` | float | 0.9 | Chance announced project starts construction. Forced to 1.0 when `probabilistic_agents` is False |
+| `calculate_npv_sites_share` | float | 0.1 | Fraction of priority locations sampled for NPV calculation. Forced to 1.0 when `probabilistic_agents` is False |
+| `geo_config.pick_priority_sites_share` | float | 0.05 | Fraction of global grid points selected as priority locations (see [Priority Location Selection](priority_location_selection.md)). Forced to 0.005 when `probabilistic_agents` is False, to keep the cost of full `calculate_npv_sites_share` sampling low |
 
 ### Capacity Limits
 
@@ -322,6 +345,7 @@ Models real-world risk factors: financing may fall through, permits may be denie
 ## Related Documentation
 
 - [Priority Location Selection](priority_location_selection.md) - How candidate locations are identified
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - A new plant's electricity and hydrogen prices from selection to operation
 - [Calculate Cost](../plant_agent_model/calculate_costs.md) - NPV, subsidy, and carbon costs calculation details
-- [Baseload Power Optimization](baseload_optimization_atlas.md) - Renewable energy cost calculations
+- [Baseload Optimisation Atlas](baseload_optimisation_atlas.md) - Renewable energy cost calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

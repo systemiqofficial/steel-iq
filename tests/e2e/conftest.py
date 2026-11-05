@@ -6,6 +6,8 @@ import pytest
 @pytest.fixture(autouse=True)
 def mock_settings_paths(monkeypatch, tmp_path):
     """Mock all the settings paths to use temporary files."""
+    # A CLI call without --steelo-home would otherwise write into the developer's real ~/.steelo.
+    monkeypatch.setenv("STEELO_HOME", str(tmp_path / "home"))
 
     # Create temporary directories
     fixtures_dir = tmp_path / "fixtures"

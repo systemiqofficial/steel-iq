@@ -256,6 +256,23 @@ def test_normalize_cost_item_debt_shorthand():
     assert result == "cost of debt"
 
 
+@pytest.mark.parametrize(
+    "cost_item",
+    [
+        "cost_of_debt",
+        "cost-of-debt",
+        "Cost_Of_Debt",
+    ],
+)
+def test_normalize_cost_item_underscore_and_hyphen_spellings(cost_item):
+    """Test that underscore/hyphen spellings normalise to 'cost of debt' rather than an energy carrier."""
+    # Act
+    result = _normalize_cost_item(cost_item, row_index=0)
+
+    # Assert
+    assert result == "cost of debt"
+
+
 def test_normalize_cost_item_hydrogen():
     """Test that hydrogen is normalized."""
     # Arrange
@@ -505,7 +522,7 @@ def test_read_subsidies_basic_single_subsidy():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 200,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -537,7 +554,7 @@ def test_read_subsidies_trade_bloc_expansion():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 100,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -566,7 +583,7 @@ def test_read_subsidies_empty_technology_expands_to_all():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 50,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -595,7 +612,7 @@ def test_read_subsidies_wildcard_technology_expansion():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 75,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -624,7 +641,7 @@ def test_read_subsidies_empty_cost_item_defaults_to_opex():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 100,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -652,7 +669,7 @@ def test_read_subsidies_empty_subsidy_type_defaults_to_absolute():
                 "Subsidy type": None,
                 "Subsidy amount": 100,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -668,7 +685,7 @@ def test_read_subsidies_empty_subsidy_type_defaults_to_absolute():
 
 
 def test_read_subsidies_relative_percentage_conversion():
-    """Test that relative subsidy amounts are converted from percentage to decimal."""
+    """Test that relative subsidy amounts are read as decimal fractions."""
     # Arrange
     subsidies_df = _make_subsidies_df(
         [
@@ -678,9 +695,9 @@ def test_read_subsidies_relative_percentage_conversion():
                 "Technology": "DRI",
                 "Cost item": "capex",
                 "Subsidy type": "relative",
-                "Subsidy amount": 10,  # 10%
+                "Subsidy amount": 0.1,  # 10%
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -690,9 +707,51 @@ def test_read_subsidies_relative_percentage_conversion():
         mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
         result = read_subsidies(Path("dummy.xlsx"))
 
-    # Assert - 10% -> 0.1
+    # Assert - 0.1 stays 0.1
     assert len(result) == 1
     assert result[0].subsidy_amount == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "cost_item",
+    [
+        "Cost of debt",
+        "COST OF DEBT",
+        "debt",
+        "cost_of_debt",
+    ],
+)
+def test_read_subsidies_absolute_cost_of_debt_converted_to_decimal(cost_item):
+    """Test that absolute cost of debt subsidies are converted from percentage points to a decimal.
+
+    The Subsidies sheet documents this column as "cost of debt: absolute % reduction
+    (e.g. 5 -> reduction of 5% points)", while cost_of_debt is held as a decimal downstream.
+    """
+    # Arrange
+    subsidies_df = _make_subsidies_df(
+        [
+            {
+                "Scenario name": "Absolute Debt",
+                "Location": "DEU",
+                "Technology": "DRI",
+                "Cost item": cost_item,
+                "Subsidy type": "absolute",
+                "Subsidy amount": 5,
+                "Start year": 2025,
+                "End year": 2060,
+            }
+        ]
+    )
+
+    # Act
+    with patch("steelo.adapters.dataprocessing.excel_reader.pd.read_excel") as mock_read:
+        mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
+        result = read_subsidies(Path("dummy.xlsx"))
+
+    # Assert - 5 percentage points -> 0.05
+    assert len(result) == 1
+    assert result[0].cost_item == "cost of debt"
+    assert result[0].subsidy_amount == pytest.approx(0.05)
 
 
 def test_read_subsidies_absolute_opex_no_conversion():
@@ -708,7 +767,7 @@ def test_read_subsidies_absolute_opex_no_conversion():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 200,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -736,7 +795,7 @@ def test_read_subsidies_skip_empty_subsidy_amount(caplog):
                 "Subsidy type": "absolute",
                 "Subsidy amount": None,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -764,7 +823,7 @@ def test_read_subsidies_unknown_cost_item_treated_as_energy_carrier(caplog):
                 "Subsidy type": "absolute",
                 "Subsidy amount": 100,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -792,7 +851,7 @@ def test_read_subsidies_skip_relative_cost_of_debt(caplog):
                 "Subsidy type": "relative",
                 "Subsidy amount": 10,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -819,7 +878,7 @@ def test_read_subsidies_column_normalization_with_newlines():
             "Subsidy type\n(absolute/relative)": ["absolute"],
             "Subsidy amount\n(USD or %)": [100],
             "Start year": [2025],
-            "End year": [2050],
+            "End year": [2060],
         }
     )
 
@@ -845,7 +904,7 @@ def test_read_subsidies_missing_required_column_raises_error():
             "Subsidy type": ["absolute"],
             "Subsidy amount": [100],
             "Start year": [2025],
-            "End year": [2050],
+            "End year": [2060],
         }
     )
 
@@ -869,7 +928,7 @@ def test_read_subsidies_combined_expansion_trade_bloc_and_all_tech():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 50,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -908,9 +967,9 @@ def test_read_subsidies_multiple_rows():
                 "Technology": "EAF",
                 "Cost item": "opex",
                 "Subsidy type": "relative",
-                "Subsidy amount": 15,
+                "Subsidy amount": 0.15,
                 "Start year": 2030,
-                "End year": 2050,
+                "End year": 2060,
             },
         ]
     )
@@ -945,7 +1004,7 @@ def test_read_subsidies_hydrogen_cost_item():
                 "Subsidy type": "absolute",
                 "Subsidy amount": 50,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -971,9 +1030,9 @@ def test_read_subsidies_electricity_cost_item():
                 "Technology": "DRI",
                 "Cost item": "electricity",
                 "Subsidy type": "relative",
-                "Subsidy amount": 5,
+                "Subsidy amount": 0.05,
                 "Start year": 2025,
-                "End year": 2050,
+                "End year": 2060,
             }
         ]
     )
@@ -987,3 +1046,29 @@ def test_read_subsidies_electricity_cost_item():
     assert len(result) == 1
     assert result[0].cost_item == "electricity"
     assert result[0].subsidy_amount == pytest.approx(0.05)
+
+
+@pytest.mark.parametrize("amount", [30, -25])
+def test_read_subsidies_relative_amount_outside_minus_one_to_one_warns(amount, caplog):
+    """A relative subsidy (30) or tax (-25) beyond 1 is likely a whole percentage: read as given, with a warning."""
+    subsidies_df = _make_subsidies_df(
+        [
+            {
+                "Scenario name": "Old convention",
+                "Location": "DEU",
+                "Technology": "DRI",
+                "Cost item": "capex",
+                "Subsidy type": "relative",
+                "Subsidy amount": amount,
+                "Start year": 2025,
+                "End year": 2060,
+            }
+        ]
+    )
+
+    with patch("steelo.adapters.dataprocessing.excel_reader.pd.read_excel") as mock_read:
+        mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
+        result = read_subsidies(Path("dummy.xlsx"))
+
+    assert [subsidy.subsidy_amount for subsidy in result] == [amount]
+    assert "outside -1 to 1" in caplog.text

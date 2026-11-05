@@ -1,329 +1,325 @@
-"""Utility functions for calculating and exporting geospatial statistics."""
+"""The all-years LCOE and LCOH output files, written from the GEO pipeline's cells every simulation year."""
 
+import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
+from steelo.domain.constants import PERkWh_TO_PERMWh
+
 if TYPE_CHECKING:
-    from steelo.domain import Year
+    from steelo.simulation import GeoConfig
 
 logger = logging.getLogger(__name__)
 
 
-def export_lcoe_lcoh_statistics_by_country(
-    energy_prices: xr.Dataset,
-    year: "Year",
-    output_dir: Path,
-    hydrogen_ceiling_percentile: float = 100.0,
-) -> None:
-    """
-    Calculate and export LCOE and LCOH statistics by country to separate files.
+LCOE_SUMMARY_FILE = "lcoe_summary.csv"
+LCOE_DETAILED_FILE = "lcoe_detailed.csv"
+LCOH_SUMMARY_FILE = "lcoh_summary.csv"
+LCOH_NEW_SITES_DETAILED_FILE = "lcoh_new_sites_detailed.csv"
+LCOH_EXISTING_PLANTS_FILE = "lcoh_existing_plants.csv"
 
-    For each country, calculates:
-    - Average LCOE and LCOH across all grid points
-    - Min and max values
-    - 10th, 20th, 25th, and 50th percentiles
+DETAILED_STATS: tuple[str, ...] = (
+    "avg",
+    "p0",
+    "p10",
+    "p20",
+    "p25",
+    "p30",
+    "p40",
+    "p50",
+    "p60",
+    "p70",
+    "p75",
+    "p80",
+    "p90",
+    "p100",
+)
+AREA_COLUMNS = ["level", "country", "subregion"]
+AREA_LEVELS = ["world", "irena_region", "country", "geo_unit_region", "geo_unit"]
+
+
+def load_ne_region_by_geo_key(hierarchy_path: Path) -> dict[str, str]:
+    """
+    The Natural Earth region of every declared geo unit.
 
     Args:
-        energy_prices: xarray Dataset containing iso3, power_price (LCOE in USD/kWh), and capped_lcoh (LCOH in USD/kg)
-        year: Current simulation year
-        output_dir: Base output directory (will save to output_dir/data/)
-        hydrogen_ceiling_percentile: Hydrogen ceiling percentile from GeoConfig (0-100).
+        hierarchy_path: ``<data_dir>/fixtures/geo_hierarchy.json``.
 
     Returns:
-        None (saves two separate CSV files to disk: lcoe_stats_{year}.csv and lcoh_stats_{year}.csv)
+        Geo key to region, e.g. ``{"CHN:CN-XJ": "Northwest China"}``; empty when the file is absent, as with a
+        geo-data package that has no admin-1 layer.
 
-    Note:
-        LCOE values are converted from USD/kWh to USD/MWh for easier interpretation (multiplied by 1000).
-        LCOH values remain in USD/kg.
+    Notes:
+        Units whose ``ne_region`` is blank are left out, so their cells count in no geo unit region row.
     """
-    logger.info(f"Calculating LCOE/LCOH statistics by country for year {year}")
+    if not hierarchy_path.exists():
+        return {}
+    return {row["geo_key"]: row["ne_region"] for row in json.loads(hierarchy_path.read_text()) if row["ne_region"]}
 
-    # Extract data from xarray Dataset
-    df = energy_prices.to_dataframe().reset_index()
 
-    # Remove any rows with missing data
-    df = df.dropna(subset=["iso3", "power_price", "capped_lcoh"])
+def _area_memberships(
+    iso3: np.ndarray,
+    geo_key: np.ndarray,
+    irena_region_by_iso3: Mapping[str, str | None],
+    ne_region_by_geo_key: Mapping[str, str],
+) -> pd.DataFrame:
+    """
+    Every (area, cell) pair: one row per cell per area it counts in.
 
-    # Remove any invalid ISO3 codes (empty strings or '-')
-    df = df[df["iso3"].str.strip() != ""]
-    df = df[df["iso3"] != "-"]
+    Args:
+        iso3: ISO3 code of each priced cell.
+        geo_key: Geo key of each priced cell (its iso3, or ``ISO3:CODE`` inside a declared geo unit).
+        irena_region_by_iso3: IRENA region of each country; countries without one are in no IRENA row.
+        ne_region_by_geo_key: Natural Earth region of each geo unit, from geo_hierarchy.json.
 
-    # Group by country (iso3)
-    grouped = df.groupby("iso3")
+    Returns:
+        Columns ``level``, ``country``, ``subregion`` and ``pixel`` (index into the cell arrays).
 
-    # Unit conversion factor: USD/kWh to USD/MWh
-    KWH_TO_MWH = 1000.0
+    Notes:
+        A cell outside every geo unit (geo key without ``:``) counts in the world, IRENA and country rows only.
+    """
+    pixel = np.arange(iso3.size)
+    is_unit = np.char.find(geo_key.astype(str), ":") >= 0
+    unit_code = np.array([key.partition(":")[2] for key in geo_key.astype(str)], dtype=object)
+    irena = np.array([irena_region_by_iso3.get(code) for code in iso3], dtype=object)
+    has_irena = np.array([isinstance(region, str) and region != "" for region in irena])
+    ne_region = np.array([ne_region_by_geo_key.get(key, "") for key in geo_key.astype(str)], dtype=object)
+    has_ne_region = is_unit & (ne_region != "")
 
-    # Calculate statistics for each country
-    statistics = []
-    for country, group in grouped:
-        # Convert to numpy arrays to satisfy type checker
-        lcoe_values_kwh = np.asarray(group["power_price"].values)
-        lcoh_values = np.asarray(group["capped_lcoh"].values)
+    def frame(level: str, country: Any, subregion: Any, mask: np.ndarray) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "level": level,
+                "country": country[mask] if isinstance(country, np.ndarray) else country,
+                "subregion": subregion[mask] if isinstance(subregion, np.ndarray) else subregion,
+                "pixel": pixel[mask],
+            }
+        )
 
-        # Skip if no valid data
-        if len(lcoe_values_kwh) == 0 or len(lcoh_values) == 0:
-            continue
-
-        # Convert LCOE from USD/kWh to USD/MWh
-        lcoe_values_mwh = lcoe_values_kwh * KWH_TO_MWH
-
-        country_stats = {
-            "country": country,
-            "year": year,
-            "hydrogen_ceiling_pct": hydrogen_ceiling_percentile,
-            # LCOE statistics (in USD/MWh)
-            "lcoe_avg_usd_per_mwh": float(np.mean(lcoe_values_mwh)),
-            "lcoe_min_usd_per_mwh": float(np.min(lcoe_values_mwh)),
-            "lcoe_max_usd_per_mwh": float(np.max(lcoe_values_mwh)),
-            "lcoe_p10_usd_per_mwh": float(np.percentile(lcoe_values_mwh, 10)),
-            "lcoe_p20_usd_per_mwh": float(np.percentile(lcoe_values_mwh, 20)),
-            "lcoe_p25_usd_per_mwh": float(np.percentile(lcoe_values_mwh, 25)),
-            "lcoe_p50_usd_per_mwh": float(np.percentile(lcoe_values_mwh, 50)),
-            # LCOH statistics (in USD/kg)
-            "lcoh_avg_usd_per_kg": float(np.mean(lcoh_values)),
-            "lcoh_min_usd_per_kg": float(np.min(lcoh_values)),
-            "lcoh_max_usd_per_kg": float(np.max(lcoh_values)),
-            "lcoh_p10_usd_per_kg": float(np.percentile(lcoh_values, 10)),
-            "lcoh_p20_usd_per_kg": float(np.percentile(lcoh_values, 20)),
-            "lcoh_p25_usd_per_kg": float(np.percentile(lcoh_values, 25)),
-            "lcoh_p50_usd_per_kg": float(np.percentile(lcoh_values, 50)),
-            # Additional metadata
-            "n_grid_points": len(lcoe_values_kwh),
-        }
-        statistics.append(country_stats)
-
-    # Convert to DataFrame
-    stats_df = pd.DataFrame(statistics)
-
-    # Sort by country for readability
-    stats_df = stats_df.sort_values("country").reset_index(drop=True)
-
-    # Ensure data directory exists
-    data_dir = output_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create separate DataFrames for LCOE and LCOH
-    lcoe_columns = [
-        "country",
-        "year",
-        "lcoe_avg_usd_per_mwh",
-        "lcoe_min_usd_per_mwh",
-        "lcoe_max_usd_per_mwh",
-        "lcoe_p10_usd_per_mwh",
-        "lcoe_p20_usd_per_mwh",
-        "lcoe_p25_usd_per_mwh",
-        "lcoe_p50_usd_per_mwh",
-        "n_grid_points",
-    ]
-    lcoh_columns = [
-        "country",
-        "year",
-        "hydrogen_ceiling_pct",
-        "lcoh_avg_usd_per_kg",
-        "lcoh_min_usd_per_kg",
-        "lcoh_max_usd_per_kg",
-        "lcoh_p10_usd_per_kg",
-        "lcoh_p20_usd_per_kg",
-        "lcoh_p25_usd_per_kg",
-        "lcoh_p50_usd_per_kg",
-        "n_grid_points",
-    ]
-
-    lcoe_df = stats_df[lcoe_columns]
-    lcoh_df = stats_df[lcoh_columns]
-
-    # Save LCOE to its own subfolder
-    lcoe_dir = data_dir / "LCOE"
-    lcoe_dir.mkdir(parents=True, exist_ok=True)
-    lcoe_output_path = lcoe_dir / f"lcoe_stats_{year}.csv"
-    lcoe_df.to_csv(lcoe_output_path, index=False, float_format="%.4f")
-
-    # Save LCOH to its own subfolder
-    lcoh_dir = data_dir / "LCOH"
-    lcoh_dir.mkdir(parents=True, exist_ok=True)
-    lcoh_output_path = lcoh_dir / f"lcoh_stats_{year}.csv"
-    lcoh_df.to_csv(lcoh_output_path, index=False, float_format="%.4f")
-
-    logger.info(f"Exported LCOE statistics for {len(statistics)} countries to {lcoe_output_path}")
-    logger.info(f"Exported LCOH statistics for {len(statistics)} countries to {lcoh_output_path}")
-    logger.info(
-        f"Sample statistics: {len(stats_df)} countries, {stats_df['n_grid_points'].sum():.0f} total grid points"
+    everywhere = np.ones(iso3.size, dtype=bool)
+    irena_country = np.array([f"irena_{region}" for region in irena], dtype=object)
+    return pd.concat(
+        [
+            frame("world", "World", "", everywhere),
+            frame("irena_region", irena_country, "", has_irena),
+            frame("country", iso3, "", everywhere),
+            frame("geo_unit_region", iso3, ne_region, has_ne_region),
+            frame("geo_unit", iso3, unit_code, is_unit),
+        ],
+        ignore_index=True,
     )
 
 
-def export_overbuild_factor_statistics_by_country(
-    energy_prices: xr.Dataset,
-    year: "Year",
-    output_dir: Path,
-    factor_name: str,
-) -> None:
+def _area_statistics(memberships: pd.DataFrame, values: np.ndarray) -> pd.DataFrame:
     """
-    Calculate and export overbuild factor statistics by country at LCOE percentile points.
-
-    For each country, calculates the average overbuild factor at the same grid points that correspond to
-    LCOE percentiles (average, min, max, 10th, 20th, 25th, 50th).
+    The mean and the detailed percentiles of one per-cell value over every area.
 
     Args:
-        energy_prices: xarray Dataset containing iso3, power_price (LCOE in USD/kWh), and overbuild factor
-        year: Current simulation year
-        output_dir: Base output directory (will save to output_dir/data/)
-        factor_name: Name of the overbuild factor variable (e.g., 'solar_factor', 'wind_factor', 'battery_factor')
+        memberships: (area, cell) pairs from ``_area_memberships``.
+        values: The per-cell value, indexed like the cell arrays.
 
     Returns:
-        None (saves CSV file to disk)
+        One row per area (``level``, ``country``, ``subregion``) with a column per entry of ``DETAILED_STATS``
+        and ``n_grid_points``.
 
-    Note:
-        The overbuild factors are dimensionless multipliers representing capacity relative to baseload demand.
-        Statistics are calculated at grid points corresponding to LCOE percentiles within each country.
+    Notes:
+        Percentiles interpolate linearly, as ``np.percentile`` does by default.
     """
-    # Check if the overbuild factor exists in the dataset
-    if factor_name not in energy_prices:
-        logger.warning(
-            f"Overbuild factor '{factor_name}' not found in energy_prices dataset for year {year}. "
-            "This may occur when baseload_coverage is 0. Skipping export."
-        )
-        return
-
-    logger.info(f"Calculating {factor_name} statistics by country for year {year}")
-
-    # Extract data from xarray Dataset
-    df = energy_prices.to_dataframe().reset_index()
-
-    # Remove any rows with missing data
-    df = df.dropna(subset=["iso3", "power_price", factor_name])
-
-    # Remove any invalid ISO3 codes (empty strings or '-')
-    df = df[df["iso3"].str.strip() != ""]
-    df = df[df["iso3"] != "-"]
-
-    # Unit conversion factor: USD/kWh to USD/MWh for LCOE
-    KWH_TO_MWH = 1000.0
-
-    # Calculate statistics for each country
-    statistics = []
-    for country, group in df.groupby("iso3"):
-        # Convert to numpy arrays
-        lcoe_values_kwh = np.asarray(group["power_price"].values)
-        factor_values = np.asarray(group[factor_name].values)
-
-        # Skip if no valid data
-        if len(lcoe_values_kwh) == 0 or len(factor_values) == 0:
-            continue
-
-        # Convert LCOE from USD/kWh to USD/MWh for reference
-        lcoe_values_mwh = lcoe_values_kwh * KWH_TO_MWH
-
-        # Calculate the average overbuild factor at LCOE percentile points
-        # For each LCOE percentile, find the grid points at or near that percentile and average their overbuild factors
-
-        def get_factor_at_lcoe_percentile(
-            lcoe_arr: np.ndarray, factor_arr: np.ndarray, percentile: float | str
-        ) -> float:
-            """Get average overbuild factor at grid points near a given LCOE percentile."""
-            if percentile == "min":
-                # Get factor at minimum LCOE point
-                min_idx = np.argmin(lcoe_arr)
-                return float(factor_arr[min_idx])
-            elif percentile == "max":
-                # Get factor at maximum LCOE point
-                max_idx = np.argmax(lcoe_arr)
-                return float(factor_arr[max_idx])
-            elif percentile == "avg":
-                # Simple average across all points
-                return float(np.mean(factor_arr))
-            else:
-                # For percentile values, find grid points at that percentile and average their factors
-                # At this point, percentile must be a float (type narrowing)
-                if not isinstance(percentile, (int, float)):
-                    raise TypeError(f"Expected numeric percentile, got {type(percentile).__name__}: {percentile}")
-                lcoe_percentile_value = np.percentile(lcoe_arr, percentile)
-                # Find indices of points within 5% of the percentile value
-                tolerance = 0.05 * lcoe_percentile_value if lcoe_percentile_value != 0 else 0.001
-                nearby_indices = np.abs(lcoe_arr - lcoe_percentile_value) <= tolerance
-                if np.any(nearby_indices):
-                    return float(np.mean(factor_arr[nearby_indices]))
-                else:
-                    # Fallback: find closest point
-                    closest_idx = np.argmin(np.abs(lcoe_arr - lcoe_percentile_value))
-                    return float(factor_arr[closest_idx])
-
-        # Create short factor name for column naming (e.g., 'solar', 'wind', 'battery')
-        short_name = factor_name.replace("_factor", "")
-
-        country_stats = {
-            "country": country,
-            "year": year,
-            # Overbuild factor statistics at LCOE percentile points
-            f"{short_name}_at_avg_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, "avg"),
-            f"{short_name}_at_min_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, "min"),
-            f"{short_name}_at_max_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, "max"),
-            f"{short_name}_at_p10_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, 10),
-            f"{short_name}_at_p20_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, 20),
-            f"{short_name}_at_p25_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, 25),
-            f"{short_name}_at_p50_lcoe": get_factor_at_lcoe_percentile(lcoe_values_mwh, factor_values, 50),
-            # Additional metadata
-            "n_grid_points": len(lcoe_values_kwh),
-        }
-        statistics.append(country_stats)
-
-    # Convert to DataFrame
-    stats_df = pd.DataFrame(statistics)
-
-    # Sort by country for readability
-    stats_df = stats_df.sort_values("country").reset_index(drop=True)
-
-    # Ensure data directory and factor subfolder exist (e.g. data/solar_factors)
-    data_dir = output_dir / "data"
-    factor_subdir = data_dir / f"{factor_name.replace('_factor', '')}_factors"
-    factor_subdir.mkdir(parents=True, exist_ok=True)
-
-    # Save to CSV
-    output_path = factor_subdir / f"{factor_name}_stats_{year}.csv"
-    stats_df.to_csv(output_path, index=False, float_format="%.4f")
-
-    logger.info(f"Exported {factor_name} statistics for {len(statistics)} countries to {output_path}")
+    grouped = memberships.assign(value=values[memberships["pixel"].to_numpy()]).groupby(AREA_COLUMNS, sort=False)[
+        "value"
+    ]
+    percentiles = [int(stat[1:]) for stat in DETAILED_STATS if stat != "avg"]
+    stats = grouped.quantile(np.array(percentiles) / 100).unstack()
+    stats.columns = [f"p{p}" for p in percentiles]
+    stats.insert(0, "avg", grouped.mean())
+    stats["n_grid_points"] = grouped.size()
+    return stats.reset_index()
 
 
-def aggregate_lcoe_lcoh_statistics(
-    output_dir: Path,
-    start_year: int,
-    end_year: int,
-) -> None:
-    """Concatenate per-year LCOE/LCOH stat CSVs into one stacked CSV per metric.
-
-    Reads all ``lcoe_stats_{year}.csv`` files from *output_dir*/data/LCOE and
-    ``lcoh_stats_{year}.csv`` files from *output_dir*/data/LCOH, concatenates
-    them, and writes aggregated files named ``lcoe_stats_{start_year}_{end_year}.csv``
-    / ``lcoh_stats_{start_year}_{end_year}.csv`` back into the same subfolders.
+def _append_csv(frame: pd.DataFrame, path: Path, overwrite: bool) -> None:
+    """
+    Append rows to a CSV, or start it afresh with a header.
 
     Args:
-        output_dir: Base output directory (expects a ``data/`` subdirectory).
-        start_year: Simulation start year (used in output filename).
-        end_year: Simulation end year (used in output filename).
+        frame: Rows to write.
+        path: Target CSV; its folder is created when missing.
+        overwrite: Replace any existing file instead of appending to it.
+
+    Returns:
+        None.
+
+    Notes:
+        Floats are written with four decimals and NaN as an empty cell.
     """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    append = path.exists() and not overwrite
+    frame.to_csv(path, mode="a" if append else "w", header=not append, index=False, float_format="%.4f")
+
+
+def export_lcoe_lcoh_outputs(
+    energy_prices: xr.Dataset,
+    year: int,
+    start_year: int,
+    output_dir: Path,
+    geo_config: "GeoConfig",
+    irena_region_by_iso3: Mapping[str, str | None],
+    ne_region_by_geo_key: Mapping[str, str],
+    existing_plant_lcoh: Mapping[str, float],
+) -> None:
+    """
+    Append one year's rows to the four cell-based LCOE and LCOH output files.
+
+    Writes ``data/LCOE/lcoe_detailed.csv`` and ``lcoe_summary.csv``, and ``data/LCOH/lcoh_new_sites_detailed.csv``
+    and ``lcoh_summary.csv``, one row per area (world, IRENA region, country, geo unit region, geo unit) and, in
+    the detailed files, per price type.
+
+    Args:
+        energy_prices: The GEO pipeline's per-cell dataset: ``iso3``, ``geo_key``, ``grid_price``,
+            ``power_price`` and (with a baseload mix) ``lcoe`` in USD/kWh; ``lcoh``, ``capped_lcoh`` and
+            ``hydrogen_ceiling`` in USD/kg; ``tiam_ucl_region``.
+        year: Simulation year.
+        start_year: The run's first year, whose rows replace any files an earlier run left in ``output_dir``
+            (an app rerun reuses its folder).
+        output_dir: Run output directory; files go under ``output_dir/data``.
+        geo_config: The run's GeoConfig (power mix, hydrogen ceiling percentile, trade setting).
+        irena_region_by_iso3: IRENA region of each country.
+        ne_region_by_geo_key: Natural Earth region of each declared geo unit; empty without geo_hierarchy.json.
+        existing_plant_lcoh: Existing plants' capped hydrogen price (USD/kg) per geo key for ``year``.
+
+    Returns:
+        None. The start year writes each file afresh with its header; later years append.
+
+    Notes:
+        Cells count when their iso3, power price and capped LCOH are all set, the same cells for every price
+        type of an area. Statistics weight every cell equally. Logs one INFO line per year.
+    """
+    coverage = get_baseload_coverage(geo_config.included_power_mix)
+    raw_iso3 = energy_prices["iso3"].values.ravel()
+    iso3 = raw_iso3.astype(str)
+    power_price = energy_prices["power_price"].values.ravel()
+    capped_lcoh = energy_prices["capped_lcoh"].values.ravel()
+    keep = (
+        ~pd.isna(raw_iso3)
+        & (np.char.strip(iso3) != "")
+        & (iso3 != "-")
+        & np.isfinite(power_price)
+        & np.isfinite(capped_lcoh)
+    )
+
+    def pixels(name: str) -> np.ndarray:
+        return energy_prices[name].values.ravel()[keep]
+
+    memberships = _area_memberships(
+        iso3[keep], pixels("geo_key").astype(str), irena_region_by_iso3, ne_region_by_geo_key
+    )
+    settings = {
+        "year": int(year),
+        "baseload_coverage_pct": coverage * 100,
+        "grid_share_pct": (1 - coverage) * 100,
+    }
+    hydrogen_settings = {
+        "hydrogen_ceiling_pct": geo_config.hydrogen_ceiling_percentile,
+        "intraregional_trade_allowed": geo_config.intraregional_trade_allowed,
+    }
+
+    def detailed(price_type: str, values: np.ndarray, unit: str, extra: dict[str, Any]) -> pd.DataFrame:
+        stats = _area_statistics(memberships, values)
+        stats = stats.rename(columns={stat: f"{stat}_{unit}" for stat in DETAILED_STATS})
+        for position, (column, value) in enumerate({**settings, **extra, "price_type": price_type}.items()):
+            stats.insert(len(AREA_COLUMNS) + position, column, value)
+        return stats
+
+    lcoe_prices = [("grid", pixels("grid_price")), ("grid_mix", power_price[keep])]
+    if coverage > 0:
+        lcoe_prices.insert(0, ("pure_lcoe", pixels("lcoe")))
+    lcoe_rows = {
+        price_type: detailed(
+            price_type,
+            values * PERkWh_TO_PERMWh,
+            "usd_per_mwh",
+            {"grid_share_pct": 0.0} if price_type == "pure_lcoe" else {},
+        )
+        for price_type, values in lcoe_prices
+    }
+
+    # An area's ceiling is defined only when all its cells sit in one hydrogen trade region
+    pixel_index = memberships["pixel"].to_numpy()
+    ceilings = (
+        memberships.assign(
+            region=pixels("tiam_ucl_region")[pixel_index], ceiling=pixels("hydrogen_ceiling")[pixel_index]
+        )
+        .groupby(AREA_COLUMNS, sort=False)
+        .agg(n_regions=("region", "nunique"), ceiling=("ceiling", "first"))
+    )
+    ceilings["ceiling_usd_per_kg"] = ceilings["ceiling"].where(ceilings["n_regions"] == 1)
+    lcoh_rows = {}
+    for price_type, values in (("uncapped", pixels("lcoh")), ("capped", capped_lcoh[keep])):
+        rows = detailed(price_type, values, "usd_per_kg", hydrogen_settings)
+        rows.insert(
+            list(rows.columns).index("price_type") + 1,
+            "ceiling_usd_per_kg",
+            ceilings["ceiling_usd_per_kg"].reindex(pd.MultiIndex.from_frame(rows[AREA_COLUMNS])).to_numpy(),
+        )
+        lcoh_rows[price_type] = rows
+
+    area_settings = AREA_COLUMNS + list(settings)
+    lcoe_summary = lcoe_rows["grid"][area_settings].copy()
+    for price_type, stats in (
+        ("pure_lcoe", ("avg", "p50")),
+        ("grid", ("avg",)),
+        ("grid_mix", ("avg", "p10", "p50", "p90")),
+    ):
+        for stat in stats:
+            column = f"{price_type}_{stat}_usd_per_mwh"
+            lcoe_summary[column] = lcoe_rows[price_type][f"{stat}_usd_per_mwh"] if price_type in lcoe_rows else np.nan
+    lcoe_summary["n_grid_points"] = lcoe_rows["grid"]["n_grid_points"]
+
+    capped = lcoh_rows["capped"]
+    lcoh_summary = capped[area_settings + list(hydrogen_settings)].copy()
+    for stat in ("avg", "p10", "p50", "p90"):
+        lcoh_summary[f"new_site_{stat}_usd_per_kg"] = capped[f"{stat}_usd_per_kg"]
+    existing_key = np.where(
+        capped["level"] == "geo_unit", capped["country"] + ":" + capped["subregion"], capped["country"]
+    )
+    # A geo unit without a price of its own pays its country's, which only the country row shows
+    lcoh_summary["existing_plant_usd_per_kg"] = [
+        existing_plant_lcoh[key] if level in ("country", "geo_unit") and key in existing_plant_lcoh else np.nan
+        for level, key in zip(capped["level"], existing_key)
+    ]
+    lcoh_summary["n_grid_points"] = capped["n_grid_points"]
+
     data_dir = output_dir / "data"
-    if not data_dir.exists():
-        logger.warning("Data directory %s does not exist — skipping LCOE/LCOH aggregation", data_dir)
-        return
+    for frame, path in (
+        (lcoe_summary, data_dir / "LCOE" / LCOE_SUMMARY_FILE),
+        (pd.concat(lcoe_rows.values(), ignore_index=True), data_dir / "LCOE" / LCOE_DETAILED_FILE),
+        (lcoh_summary, data_dir / "LCOH" / LCOH_SUMMARY_FILE),
+        (pd.concat(lcoh_rows.values(), ignore_index=True), data_dir / "LCOH" / LCOH_NEW_SITES_DETAILED_FILE),
+    ):
+        _append_csv(_sorted_by_area(frame), path, overwrite=int(year) == int(start_year))
+    logger.info("Appended %d LCOE/LCOH areas for %d to %s", len(lcoe_summary), int(year), data_dir)
 
-    for prefix, subdir in (("lcoe_stats", "LCOE"), ("lcoh_stats", "LCOH")):
-        src_dir = data_dir / subdir
-        if not src_dir.exists():
-            continue
-        per_year_files = sorted(src_dir.glob(f"{prefix}_*.csv"))
-        # Exclude any previously aggregated file (filename contains a year range like 2020_2050)
-        per_year_files = [f for f in per_year_files if f.stem.removeprefix(f"{prefix}_").isdigit()]
-        if not per_year_files:
-            continue
 
-        combined = pd.concat([pd.read_csv(f) for f in per_year_files], ignore_index=True)
-        combined = combined.sort_values(["year", "country"]).reset_index(drop=True)
-        agg_path = src_dir / f"{prefix}_{start_year}_{end_year}.csv"
-        combined.to_csv(agg_path, index=False, float_format="%.4f")
-        logger.info("Saved aggregated %s (%d years) to %s", prefix, len(per_year_files), agg_path)
+def _sorted_by_area(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Order output rows by area.
+
+    Args:
+        frame: Rows with ``level``, ``country`` and ``subregion`` columns.
+
+    Returns:
+        The rows ordered world, IRENA regions, countries, geo unit regions, geo units, then by name.
+
+    Notes:
+        The sort is stable, so the rows of one area keep their price-type order.
+    """
+    order = frame["level"].map({level: i for i, level in enumerate(AREA_LEVELS)})
+    return (
+        frame.assign(_order=order).sort_values(["_order", "country", "subregion"], kind="stable").drop(columns="_order")
+    )

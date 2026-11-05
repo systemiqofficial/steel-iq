@@ -8,7 +8,7 @@ from steelo.adapters.repositories.in_memory_repository import (
 )
 from steelo.domain.calculate_costs import ENERGY_FEEDSTOCK_KEYS
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
-from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
+from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType, potential_tariff_keys
 from steelo.domain.constants import LP_TOLERANCE
 from steelo.domain import diagnostics as diag
 from steelo.utilities.utils import normalize_name
@@ -106,7 +106,6 @@ class TM_PAM_connector:
 
         Attributes Created:
             flat_feedstocks_dict: Flattened dict for O(1) feedstock lookup by name.
-            feedstock_energy_requirements: Energy requirements per feedstock type.
             processing_energy_cost: Energy costs (total + carrier breakdown) by furnace group and
                 commodity, in USD per tonne of metallic INPUT (converted from the FG's per-tonne-of-
                 product energy_vopex dicts using each charge's required_quantity_per_ton_of_product).
@@ -156,17 +155,9 @@ class TM_PAM_connector:
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
                 self.chosen_reductant[fg.furnace_group_id] = fg.chosen_reductant
         self.flat_feedstocks_dict = {}
-        self.feedstock_energy_requirements = {}
         for _key, items in self.dynamic_feedstocks.items():
             for entry in items:
-                name_lower = entry.name.lower()
-                self.flat_feedstocks_dict[name_lower] = entry
-                self.feedstock_energy_requirements[name_lower] = entry.energy_requirements
-
-        self.plants = [p.plant_id for p in plants.list()]
-        # self.furnaces = [fg for p in plants.list() for fg in p.furnace_groups]
-
-        self.plants_repo = plants
+                self.flat_feedstocks_dict[entry.name.lower()] = entry
 
         # Store transport costs in a dictionary for quick lookup
         self.transport_costs: dict[tuple[str, str, str], float] = {}
@@ -213,8 +204,9 @@ class TM_PAM_connector:
         """Retrieve tariff cost between two countries for a specific commodity.
 
         Supports wildcard keys: checks exact match first, then wildcard source,
-        wildcard destination, and wildcard commodity. All matching tariffs are summed,
-        mirroring the LP's ``return_potential_tariff_keys`` logic.
+        wildcard destination, and wildcard commodity, plus the "iron" family keys for
+        iron products. All matching tariffs are summed, using the same
+        ``potential_tariff_keys`` as the LP.
 
         Args:
             from_iso: Source country ISO3 code.
@@ -224,98 +216,23 @@ class TM_PAM_connector:
         Returns:
             Tariff cost per ton in USD. Returns 0.0 if no tariffs apply.
         """
-        comm = commodity.lower()
         total = 0.0
-        for key in [
-            (from_iso, to_iso, comm),
-            ("*", to_iso, comm),
-            (from_iso, "*", comm),
-            (from_iso, to_iso, "*"),
-        ]:
+        for key in potential_tariff_keys(from_iso, to_iso, commodity.lower()):
             total += self.tariff_taxes.get(key, 0.0)
         return total
 
-    def process_energy_cost(
-        self,
-        furnace: str,
-        process: str,
-    ):
-        """Calculate processing energy cost for a furnace using a specific feedstock process.
-
-        Computes the total energy cost by multiplying each energy carrier requirement
-        (electricity, natural gas, hydrogen, etc.) by plant-specific or global energy prices.
+    def get_carbon_border_cost(self, from_pc, to_pc, commodity) -> float:
+        """Carbon border adjustment on one arc in USD/t; an arc without a recorded charge carries none.
 
         Args:
-            furnace: Furnace group ID string (format: "plantid_furnacegroupid").
-            process: Process/feedstock name (e.g., "iron_ore", "scrap_steel") used to
-                lookup energy requirements from `self.flat_feedstocks_dict`.
+            from_pc: Source process centre of the arc.
+            to_pc: Destination process centre of the arc.
+            commodity: Commodity shipped on the arc.
 
         Returns:
-            Total processing energy cost per ton of material processed (USD/ton).
-            Returns 0.0 if furnace plant not found or process not in feedstock dict.
-
-        Notes:
-            - Uses plant-specific energy costs if available (from plant.energy_costs).
-            - Falls back to global energy prices if plant-specific costs unavailable.
-            - Energy requirements are defined per feedstock type in PrimaryFeedstock objects.
+            The recorded adjustment (negative for an export rebate), or 0.0 when the arc has none.
         """
-        global_cost_dict = dict(
-            natural_gas=1.05506 * 6, electricity=0.150, coke=0.05, pci=0, hydrogen=6.61, bio_pci=0.05, coal=98.6
-        )
-
-        process_energy_cost = 0.0
-        plant_id = furnace.split("_")[0]
-        if plant_id not in self.plants:
-            return 0
-        if process not in self.flat_feedstocks_dict:
-            return 0
-
-        p = self.plants_repo.get(plant_id)
-        plant_energy_cost = p.energy_costs
-        # p.get_energy_costs() # THis function doesn't exist but let's get it.
-        for key, value in self.feedstock_energy_requirements[process].items():
-            # if the plant has the attribute
-            if hasattr(plant_energy_cost, normalize_name(key)):
-                process_energy_cost += getattr(plant_energy_cost, normalize_name(key)) * value
-            else:
-                # logging.debug(f"Key {key} not found in global cost dict or plant")
-
-                process_energy_cost += float(global_cost_dict[normalize_name(key)]) * value
-        return process_energy_cost
-
-    def calculate_allocations_for_graph(
-        self,
-        allocation_attr="allocations",
-        volume_attr="volume",
-        effectiveness_attr="process_efficiency",
-        commodity_attr="commodity",
-    ):
-        """Compute input allocations from output volumes using process efficiencies.
-
-        For each edge in the graph, calculates the required input quantity by dividing
-        the shipped volume by the process efficiency (yield). This converts output volumes
-        to input requirements for cost accounting.
-
-        Args:
-            allocation_attr: Edge attribute name to store computed allocation values.
-            volume_attr: Edge attribute name containing shipped/output volumes.
-            effectiveness_attr: Edge attribute name for process efficiency/yield (output/input ratio).
-            commodity_attr: Edge attribute name for commodity identifier.
-
-        Side Effects:
-            Updates `self.G` edges with `allocation_attr` values = volume / efficiency.
-
-        Example:
-            If 100 tons steel shipped with 0.95 efficiency → allocation = 100/0.95 = 105.3 tons input.
-        """
-        for _from_node, _to_node, _commodity, data in self.G.edges(keys=True, data=True):
-            if volume_attr in data:
-                volume = data[volume_attr]
-                effectiveness = data.get(effectiveness_attr, 1)
-                if effectiveness is None:
-                    effectiveness = 1
-                # Calculate the allocation based on the volume and effectiveness
-                data[allocation_attr] = volume / effectiveness if effectiveness > 0 else 0
+        return self.carbon_border_charges.get((from_pc, to_pc, commodity), 0.0)
 
     def create_graph(self, solved_trade_allocations):
         """
@@ -356,6 +273,8 @@ class TM_PAM_connector:
         # Store tariff taxes for edge attribute lookup
         self.tariff_taxes: dict[tuple[str, str, str], float] = solved_trade_allocations.tariff_taxes or {}
         logger.debug("[TARIFF] Loaded %d tariff entries", len(self.tariff_taxes))
+        self.carbon_border_charges: dict = solved_trade_allocations.carbon_border_charges or {}
+        logger.debug("[CBAM] Loaded %d charged arcs", len(self.carbon_border_charges))
 
         # Initialize an empty directed multigraph
         self.G = nx.MultiDiGraph()
@@ -398,6 +317,8 @@ class TM_PAM_connector:
                 "transport_cost": self.get_transport_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
                 # 3. Tariff cost from LP tariff taxes (import/export duties)
                 "tariff_cost": self.get_tariff_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
+                # 3b. Carbon border adjustment recorded by the LP on this arc, keyed by the same objects
+                "carbon_border_cost": self.get_carbon_border_cost(from_pc, to_pc, comm),
                 # 4. Processing energy cost, if defined for this destination
                 "processing_energy_cost": total_energy_cost,
                 "processing_energy_breakdown": energy_breakdown,
@@ -434,6 +355,7 @@ class TM_PAM_connector:
                     product_cost={},
                     unit_cost={},
                     own_unit_cost=float(from_pc.production_cost or 0.0),
+                    own_emission_intensity=float(from_pc.emission_intensity),
                 )
 
             # Add the destination node, initializing its attrs with same cost logic
@@ -441,14 +363,13 @@ class TM_PAM_connector:
             if to_pc.process.type == ProcessType.SUPPLY:
                 self.G.add_node(
                     to_name,
-                    process=process,
                     allocations={},
                     export={},
                     unit_cost={},
                     product_cost=to_pc.production_cost,
                 )
             else:
-                self.G.add_node(to_name, process=process, allocations={}, export={}, unit_cost={}, product_cost={})
+                self.G.add_node(to_name, allocations={}, export={}, unit_cost={}, product_cost={})
 
             # Finally, add the directed edge with all computed attributes
             self.G.add_edge(from_name, to_name, key=commodity, **edge_attrs)  # allow parallel edges keyed by commodity
@@ -530,6 +451,14 @@ class TM_PAM_connector:
             node_cost = G.nodes[u].get(source_attr, {})  # may be dict by commodity
             unit_cost = {}
 
+            # A production node with outgoing flows but no booked inputs prices its
+            # exports at own_unit_cost alone — a balanced LP should never produce one.
+            if G.in_degree(u) == 0 and G.out_degree(u) > 0 and "own_unit_cost" in G.nodes[u]:
+                logger.warning(
+                    "Production node %s ships with no booked inputs; outgoing flows carry only its own unit cost",
+                    u,
+                )
+
             if allocation_attr in G.nodes[u]:
                 # Initialize export dict if it doesn't exist
                 if export_attr not in G.nodes[u]:
@@ -537,6 +466,20 @@ class TM_PAM_connector:
                 # Accumulate export volumes by commodity
                 for src, v, comm, edata in G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
+            # Upstream embedded emissions and carbon paid per tonne of this node's product: the inbound
+            # totals spread over everything it ships (multi-output nodes normalise by total export)
+            inbound = G.nodes[u].get(allocation_attr, {})
+            total_export = sum(G.nodes[u].get(export_attr, {}).values())
+            if G.in_degree(u) > 0 and total_export > 0:
+                up_e = sum(alloc["EmbeddedEmissions"] for alloc in inbound.values()) / total_export
+                up_c = sum(alloc["CarbonPaid"] for alloc in inbound.values()) / total_export
+            else:
+                up_e, up_c = 0.0, 0.0
+            G.nodes[u]["upstream_emission_intensity"] = up_e
+            G.nodes[u]["upstream_carbon_cost_paid"] = up_c
+            # Suppliers carry neither attribute and contribute nothing of their own
+            own_e = float(G.nodes[u].get("own_emission_intensity", 0.0))
+            own_c = float(G.nodes[u].get("own_unit_cost", 0.0))
             # If G[u] is also a to-node
             # For each outgoing edge (u → v) carrying commodity `comm`
             for _, v, comm, edata in G.out_edges(u, keys=True, data=True):
@@ -565,16 +508,19 @@ class TM_PAM_connector:
                     # Multi-output process: use total export volume
                     export_volume_at_u = sum(export.values())
                 else:
-                    # Single-output process or supplier: use commodity-specific volume
+                    # Single-output process or supplier: use commodity-specific volume.
+                    # Suppliers never build an export dict and their production_cost is
+                    # already per-unit, so the 1.0 default is the per-unit pass-through,
+                    # not a fallback.
                     export_volume_at_u = export.get(comm, 1.0)
 
                 per_unit_base = base_cost / export_volume_at_u
                 # Embed producing furnaces' own carbon onto outgoing flows. Suppliers
-                # (root nodes) are skipped — their cost already enters via base_cost.
-                if G.in_degree(u) > 0:
-                    own = G.nodes[u].get("own_unit_cost")
-                    if own:
-                        per_unit_base += float(own)
+                # never carry own_unit_cost, so no gate on in-degree is needed — and a
+                # production node without booked inputs must still price its own carbon.
+                own = G.nodes[u].get("own_unit_cost")
+                if own:
+                    per_unit_base += float(own)
                 unit_cost.update({comm: per_unit_base})
                 if G.out_degree(v) == 0:
                     # print(f"Skipping sink node {v} with no outgoing edges")
@@ -584,7 +530,10 @@ class TM_PAM_connector:
                 # We want to track the material cost EXCLUDING the current step's energy
                 volume = edata.get(volume_attr, 0.0)
                 material_tariff_transportation_cost = (
-                    per_unit_base + edata.get(transport_attr, 0.0) + edata.get("tariff_cost", 0.0)
+                    per_unit_base
+                    + edata.get(transport_attr, 0.0)
+                    + edata.get("tariff_cost", 0.0)
+                    + edata.get("carbon_border_cost", 0.0)
                 ) * volume
                 current_step_energy_cost = edata.get(process_attr, 0.0) * volume
                 edge_cost = material_tariff_transportation_cost + current_step_energy_cost
@@ -644,78 +593,22 @@ class TM_PAM_connector:
                 # MaterialCost includes upstream material + ALL upstream costs
                 # (including upstream energy) + current transport + tariffs
                 # EXCLUDES the current step's processing energy
-                prev = G.nodes[v][allocation_attr].get(comm, {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0})
+                prev = G.nodes[v][allocation_attr].get(
+                    comm,
+                    {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0, "EmbeddedEmissions": 0.0, "CarbonPaid": 0.0},
+                )
                 prev["Cost"] += edge_cost  # Total cost including current step's energy
                 prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
+                # tCO2 and USD carried into v on this edge: the source's own stage plus everything upstream
+                # of it, and the border charge paid on the edge itself
+                prev["EmbeddedEmissions"] += (own_e + up_e) * volume
+                prev["CarbonPaid"] += (own_c + up_c + edata.get("carbon_border_cost", 0.0)) * volume
                 G.nodes[v][allocation_attr][comm] = prev
 
             G.nodes[u][unit_cost_attr].update(unit_cost)
 
         logger.info(f"Processed {edge_count} edges")
-
-    def validate_edge_attributes(
-        self,
-        source_attr="product_cost",
-        transport_attr="transport_cost",
-        process_attr="processing_energy_cost",
-        allocation_attr="allocations",
-        volume_attr="volume",
-        product_attr="output",
-        effeciency_attr="process_efficiency",
-        unit_cost_attr="unit_cost",
-    ):
-        """Validate presence of required attributes on graph edges before cost propagation.
-
-        Counts how many edges have each expected attribute (present, missing, or None)
-        to ensure the graph is properly constructed before running cost calculations.
-
-        Args:
-            source_attr: Node attribute for upstream product cost.
-            transport_attr: Edge attribute for transportation cost.
-            process_attr: Edge attribute for processing energy cost.
-            allocation_attr: Node attribute for allocations dict.
-            volume_attr: Edge attribute for shipment volume.
-            product_attr: Edge attribute for output commodity name.
-            effeciency_attr: Edge attribute for process efficiency.
-            unit_cost_attr: Node attribute for unit cost.
-
-        Returns:
-            None. Currently logs attribute presence counts internally (debug level).
-
-        Notes:
-            This is primarily for debugging/validation during development.
-            No exceptions raised - missing attributes may cause issues in propagation.
-        """
-        necessary_attributes = [
-            source_attr,
-            transport_attr,
-            process_attr,
-            allocation_attr,
-            volume_attr,
-            product_attr,
-            effeciency_attr,
-            unit_cost_attr,
-        ]
-        attribute_counts = {attr: {"present": 0, "missing": 0, "none": 0} for attr in necessary_attributes}
-
-        for _, _, comm, edge_data in self.G.edges(keys=True, data=True):
-            for attr in necessary_attributes:
-                if attr in edge_data:
-                    if edge_data[attr] is None:
-                        attribute_counts[attr]["none"] += 1
-                    else:
-                        attribute_counts[attr]["present"] += 1
-                else:
-                    attribute_counts[attr]["missing"] += 1
-
-        for attr, counts in attribute_counts.items():
-            # logging.debug(
-            #     f"Attribute '{attr}': {counts['present']} edges have it, "
-            #     f"{counts['missing']} edges don't have it, "
-            #     f"{counts['none']} edges have it as None."
-            # )
-            pass
 
     def set_up_network_and_propagate_costs(
         self,
@@ -741,8 +634,7 @@ class TM_PAM_connector:
             - Computes and stores unit costs at each node.
 
         Notes:
-            Calls in sequence: create_graph() → calculate_allocations_for_graph() →
-            validate_edge_attributes() → propage_cost_forward_by_layers_and_normalize().
+            Calls in sequence: create_graph() → propage_cost_forward_by_layers_and_normalize().
         """
         logger = logging.getLogger(f"{__name__}.set_up_network_and_propagate_costs")
         logger.debug(f"[NETWORK] Setting up network with {len(solved_trade_allocations.allocations)} total allocations")
@@ -772,11 +664,6 @@ class TM_PAM_connector:
                     "Cost propagation requires a directed acyclic graph (DAG)."
                 )
 
-        # 1.1) Calculate the allocations for the graph
-        self.validate_edge_attributes()
-        self.calculate_allocations_for_graph()
-        # 1.5) Validate the edge attributes before propagation
-        self.validate_edge_attributes()
         # 2) Propagate the costs forward
         self.propage_cost_forward_by_layers_and_normalize()
 
@@ -816,50 +703,6 @@ class TM_PAM_connector:
                 fg.set_allocated_volumes(0.0)
                 logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: allocated_volumes = 0.0 (no outgoing edges)")
 
-    def extract_transportation_costs(
-        self,
-        furnace_groups: list[FurnaceGroup],
-        transport_costs_attr="transport_cost",
-        commodity_attr="commodity",
-        allocations_attr="allocations",
-    ) -> dict[str, list[dict[str, float]]]:
-        """Extract detailed transportation cost data for each furnace group's incoming shipments.
-
-        Collects all inbound edges to each furnace group and extracts their transport costs,
-        allocations, and commodity information for detailed cost accounting.
-
-        Args:
-            furnace_groups: List of FurnaceGroup objects to extract data for.
-            transport_costs_attr: Edge attribute name for transport cost (default: "transport_cost").
-            commodity_attr: Edge attribute name for commodity identifier (default: "commodity").
-            allocations_attr: Edge attribute name for allocation volume (default: "allocations").
-
-        Returns:
-            Dictionary mapping furnace_group_id to list of dicts, where each dict contains:
-                - "source": Source node name
-                - allocations_attr: Allocation volume value
-                - commodity_attr: Commodity name
-                - transport_costs_attr: Transport cost value
-
-        Notes:
-            Returns empty list for furnaces not found in graph.
-        """
-        _test_this: dict[str, list[dict[str, float]]] = {}
-        for fg in furnace_groups:
-            if self.G is not None and fg.furnace_group_id in self.G.nodes:
-                _test_this[fg.furnace_group_id] = []
-                ingoing_edges = list(self.G.in_edges(fg.furnace_group_id, data=True))
-                for source, recipient, edge_data in ingoing_edges:
-                    _test_this[recipient].append(
-                        {
-                            "source": source,
-                            allocations_attr: edge_data[allocations_attr],
-                            commodity_attr: edge_data[commodity_attr],
-                            transport_costs_attr: edge_data[transport_costs_attr],
-                        }
-                    )
-        return _test_this
-
     def update_furnace_group_utilisation(self, furnace_groups: list[FurnaceGroup], volume_attribute="volume"):
         """Calculate and set utilization rates for furnace groups based on allocated volumes.
 
@@ -876,17 +719,58 @@ class TM_PAM_connector:
             - Logs debug warning if capacity is 0.
 
         Notes:
-            - Utilization rate is capped between 0.0 and capacity (no explicit cap applied).
+            - Utilization rate is clamped to at most 1.0; an allocation above capacity is a
+              solver anomaly and is logged as a warning.
             - Zero-capacity furnaces get utilization_rate = 0.
         """
         logger = logging.getLogger(f"{__name__}.update_furnace_group_utilisation")
         self.update_exported_volumes(furnace_groups=furnace_groups, volume_attribute=volume_attribute)
         for fg in furnace_groups:
-            fg.utilization_rate = fg.allocated_volumes / fg.capacity if fg.capacity > 0 else 0
+            raw_rate = fg.allocated_volumes / fg.capacity if fg.capacity > 0 else 0
+            if raw_rate > 1.0:
+                logger.warning(
+                    f"LP allocated {fg.allocated_volumes:,.0f} t to furnace group {fg.furnace_group_id} "
+                    f"with capacity {fg.capacity:,.0f} t (utilisation {raw_rate:.3f}); clamping to 1.0"
+                )
+            fg.utilization_rate = min(1.0, raw_rate)
             if fg.capacity <= 0:
                 # raise Warning(f"Furnace group capacity is 0 for {fg.furnace_group_id}")
                 logger.debug(
                     f"Furnace group capacity is 0 for {fg.furnace_group_id} \n and allocation is {fg.allocated_volumes}"
+                )
+
+    def update_furnace_group_embedded_carbon(self, furnace_groups: list[FurnaceGroup]) -> None:
+        """Copy the propagated upstream emission intensity and carbon paid onto each furnace group.
+
+        Args:
+            furnace_groups: Furnace groups to update from their graph nodes.
+
+        Notes:
+            Both values are per tonne of the furnace group's product and describe what arrived on its
+            inbound flows this year; the next LP set-up reads them as last year's realised state. A
+            furnace group absent from the graph, without inbound edges, or idle carries 0.0 for both
+            and no ``upstream_carbon_year``, so Environment.fill_missing_upstream_embedded_carbon gives
+            it its peers' average at the next set-up; an observed one is stamped with this year.
+        """
+        logger = logging.getLogger(f"{__name__}.update_furnace_group_embedded_carbon")
+        graph = self.G
+        for fg in furnace_groups:
+            node_id = fg.furnace_group_id
+            if graph is None or node_id not in graph.nodes or graph.in_degree(node_id) == 0 or fg.utilization_rate <= 0:
+                fg.upstream_emission_intensity = 0.0
+                fg.upstream_carbon_cost_paid = 0.0
+                fg.upstream_carbon_year = None
+                continue
+            node = graph.nodes[node_id]
+            fg.upstream_emission_intensity = node["upstream_emission_intensity"]
+            fg.upstream_carbon_cost_paid = node["upstream_carbon_cost_paid"]
+            fg.upstream_carbon_year = self.current_year
+            if fg.upstream_emission_intensity or fg.upstream_carbon_cost_paid:
+                logger.debug(
+                    "fg=%s upstream_emission_intensity=%.4f upstream_carbon_cost_paid=%.2f",
+                    node_id,
+                    fg.upstream_emission_intensity,
+                    fg.upstream_carbon_cost_paid,
                 )
 
     def update_bill_of_materials(self, furnace_groups: list[FurnaceGroup]):
@@ -1184,35 +1068,42 @@ class TM_PAM_connector:
         mass_balance_tolerance: float = 0.01,
         min_share_tolerance: float = 0.01,
     ) -> list[dict]:
-        """Validate BOM balance and minimum-share constraints for all active furnace groups.
+        """Validate BOM balance and share constraints for all active furnace groups.
 
-        Two checks are run for every FG with production > 0:
+        Checks run for every FG with production > 0:
 
         1. **Mass balance**: the total metallic-charge input (hot_metal, pig_iron, scrap,
-           DRI/HBI, etc.) should be within `mass_balance_tolerance` of the production
-           volume.  A steel furnace using 1 t of metallic charge to produce 1 t of steel
-           should have a ratio close to 1.  Ratios outside [1 - tol, 1 + tol] indicate a
-           disaggregation error (e.g. material stranded at wrong FG).
+           DRI/HBI, etc.) divided by production must lie in
+           [1 - mass_balance_tolerance, 1.2 + mass_balance_tolerance]; yield losses make
+           slightly more input than output normal. Ratios outside indicate a
+           disaggregation error (e.g. material stranded at wrong FG). An FG whose
+           feedstocks require metallic charge but whose BOM holds none is flagged too.
 
-        2. **Min-share constraints**: for each feedstock whose
-           ``minimum_share_in_product > 0``, the material's actual share of the total
+        2. **Per-feedstock minimum shares**: for each feedstock whose
+           ``minimum_share_in_product > 0``, the material's share of the total
            metallic-charge input must be ≥ ``minimum_share_in_product - min_share_tolerance``.
-           Aggregated constraints (e.g. BOF hot_metal ≥ 70%) are also checked; both the
-           hot and cold form of a commodity are counted (pig_iron ≡ hot_metal).
+           The hot and cold form of a commodity are counted together (pig_iron ≡ hot_metal).
+
+        3. **Aggregated constraints**: for each ``AggregatedMetallicChargeConstraint`` of the
+           FG's technology, the share of materials whose name starts with the pattern is
+           checked against its minimum and its maximum independently (e.g. BOF DRI ≤ 15%,
+           a max-only constraint). Hot and cold forms are not combined: each has its own
+           constraint (BOF DRI ≤ 15% and HBI ≤ 15%).
 
         Args:
             furnace_groups: All furnace groups to check.
             aggregated_constraints: Optional list of ``AggregatedMetallicChargeConstraint``
                 objects (same ones passed to the LP / disaggregation).
-            mass_balance_tolerance: Relative tolerance for metallic input/output ratio.
-                Default 10 % (0.10).
-            min_share_tolerance: Absolute slack allowed on minimum-share constraints.
-                Default 2 pp (0.02).
+            mass_balance_tolerance: Slack on the metallic input/output ratio bounds.
+                Default 0.01.
+            min_share_tolerance: Absolute slack allowed on minimum and maximum shares.
+                Default 1 pp (0.01).
 
         Returns:
             List of issue dicts.  Each dict contains at least:
-            ``fg_id``, ``technology``, ``check`` (``"empty_bom"``, ``"mass_balance"``,
-            or ``"min_share"``), and ``message``.  All violations are also logged as
+            ``fg_id``, ``technology``, ``check`` (``"empty_bom"``, ``"zero_metallic"``,
+            ``"mass_balance"``, ``"min_share"``, ``"aggregated_min_share"`` or
+            ``"aggregated_max_share"``), and ``message``.  All violations are also logged as
             WARNING.
         """
         logger = logging.getLogger(f"{__name__}.validate_bom_consistency")
@@ -1359,28 +1250,30 @@ class TM_PAM_connector:
                     issues.append(issue)
                     logger.warning("[BOM-CHECK] min_share: %s", issue["message"])
 
-            # --- Check 3: aggregated constraints (e.g. BOF hot_metal ≥ 70%) ---
+            # --- Check 3: aggregated constraints (e.g. BOF DRI ≤ 15%) ---
             if aggregated_constraints:
                 fg_tech = fg.technology.name.lower()
                 for c in aggregated_constraints:
-                    min_share = getattr(c, "minimum_share", None)
-                    if not min_share or min_share <= 0:
-                        continue
                     if str(getattr(c, "technology_name", "")).lower() != fg_tech:
                         continue
                     pattern = str(getattr(c, "feedstock_pattern", "")).lower()
                     if not pattern:
                         continue
 
-                    # Sum demand for all materials whose name (or equivalent) starts with pattern
+                    # Sum demand for all materials whose name starts with pattern.
+                    # Do NOT include hot/cold equivalents: constraints are defined separately for each
+                    # (e.g. BOF has both "DRI" ≤ 15% and "HBI" ≤ 15%, not combined).
                     matching_demand = sum(
                         float(info.get("demand", 0.0))
                         for comm, info in materials.items()
-                        if any(n.startswith(pattern) for n in _equiv_names(comm.lower()))
+                        if comm.lower().startswith(pattern)
                     )
                     actual_share = matching_demand / total_metallic_in if total_metallic_in > 0 else 0.0
 
-                    if actual_share < min_share - min_share_tolerance:
+                    # Minimum and maximum are independent checks: a max-only constraint
+                    # (minimum_share 0) is still checked against its cap
+                    min_share = getattr(c, "minimum_share", None)
+                    if min_share and min_share > 0 and actual_share < min_share - min_share_tolerance:
                         issue = {
                             "fg_id": fg.furnace_group_id,
                             "technology": fg.technology.name,
@@ -1397,6 +1290,25 @@ class TM_PAM_connector:
                         }
                         issues.append(issue)
                         logger.warning("[BOM-CHECK] aggregated_min_share: %s", issue["message"])
+
+                    max_share = getattr(c, "maximum_share", None)
+                    if max_share and max_share > 0 and actual_share > max_share + min_share_tolerance:
+                        issue = {
+                            "fg_id": fg.furnace_group_id,
+                            "technology": fg.technology.name,
+                            "check": "aggregated_max_share",
+                            "pattern": pattern,
+                            "actual_share": actual_share,
+                            "required_share": max_share,
+                            "message": (
+                                f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                                f"aggregated constraint '{pattern}*' share={actual_share:.1%} "
+                                f"> maximum={max_share:.1%} "
+                                f"(matching={matching_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                            ),
+                        }
+                        issues.append(issue)
+                        logger.warning("[BOM-CHECK] aggregated_max_share: %s", issue["message"])
 
         if issues:
             logger.warning(
@@ -1569,9 +1481,6 @@ class TM_PAM_connector:
                 for _, dest, edge_data in list(self.G.out_edges(fg_id, data=True)):
                     old_vol = edge_data.get("volume", 0.0)
                     edge_data["volume"] = old_vol * scale_production
-                    old_alloc = edge_data.get("allocations", 0.0)
-                    if old_alloc:
-                        edge_data["allocations"] = old_alloc * scale_production
 
             # Update BOM demands and costs
             for comm, info in materials.items():

@@ -71,10 +71,12 @@ def test_debt_accumulation_on_technology_switch():
         technology_name="EAF",
         plant_lifetime=20,
         lag=0,
+        capacity=plant.get_furnace_group("fg1").capacity,
         capex=400.0,  # New technology capex
         capex_no_subsidy=400.0,  # Same as capex if no subsidy
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
+        captive_energy=None,
         bom={"materials": {}, "energy": {}},
     )
 
@@ -114,7 +116,7 @@ def test_debt_accumulation_on_technology_switch():
 
 
 def test_npv_calculation_with_accumulated_debt():
-    """Test that NPV calculation properly accounts for accumulated debt through COSA."""
+    """Test that accumulated legacy debt flows through the debt-repayment schedule."""
 
     # Create a furnace group with some remaining debt
     furnace_group = FurnaceGroup(
@@ -156,8 +158,8 @@ def test_npv_calculation_with_accumulated_debt():
     current_debt = furnace_group.debt_repayment_for_current_year
     assert current_debt > 0, "Current year debt should include legacy debt"
 
-    # The total debt burden affects the COSA calculation and NPV for technology switches
-    # This ensures that switching technologies is less attractive when carrying old debt
+    # Legacy debt persists post-switch via this schedule (realised P&L), not via COSA.
+    # COSA itself is the foregone operating margin only and no longer carries the debt.
 
 
 def test_renovation_does_not_need_legacy_debt_clearing():

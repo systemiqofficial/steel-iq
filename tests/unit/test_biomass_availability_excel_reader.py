@@ -31,6 +31,8 @@ def biomass_excel_file():
             2030: [15.0, 25.0, 40.0, 20.0, 8.0],
             2040: [20.0, 30.0, 50.0, 25.0, 10.0],
             2050: [25.0, 35.0, 60.0, 30.0, 12.0],
+            2055: [25.0, 35.0, 60.0, 30.0, 12.0],
+            2060: [25.0, 35.0, 60.0, 30.0, 12.0],
         }
         df = pd.DataFrame(data)
         df.to_excel(f.name, sheet_name="Biomass availability", index=False)
@@ -65,8 +67,8 @@ def test_read_biomass_availability_basic(biomass_excel_file):
     """Test reading basic biomass availability data from Excel."""
     availabilities = read_biomass_availability(biomass_excel_file)
 
-    # Should have 5 regions * 5 years = 25 entries
-    assert len(availabilities) == 25
+    # Should have 5 regions * 7 years = 35 entries
+    assert len(availabilities) == 35
 
     # Check first entry
     first = availabilities[0]
@@ -81,12 +83,12 @@ def test_read_biomass_availability_basic(biomass_excel_file):
 
     # Check entry with no country
     usa_entries = [a for a in availabilities if a.region == "USA"]
-    assert len(usa_entries) == 5  # One for each year
+    assert len(usa_entries) == 7  # One for each year
     assert all(a.country is None for a in usa_entries)
 
     # Check all years are present
     years = {a.year for a in availabilities}
-    assert years == {Year(2024), Year(2025), Year(2030), Year(2040), Year(2050)}
+    assert years == {Year(2024), Year(2025), Year(2030), Year(2040), Year(2050), Year(2055), Year(2060)}
 
 
 def test_read_biomass_availability_with_nan(biomass_excel_file_with_nan):

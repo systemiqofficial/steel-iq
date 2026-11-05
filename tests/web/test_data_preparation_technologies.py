@@ -48,7 +48,7 @@ class TestDataPreparationGetTechnologies:
                         "product_type": "steel",
                         "allowed": True,
                         "from_year": 2025,
-                        "to_year": 2050,
+                        "to_year": 2060,
                     },
                 },
             }
@@ -67,7 +67,7 @@ class TestDataPreparationGetTechnologies:
             assert "bf" in technologies
             assert "eaf" in technologies
             assert technologies["bf"]["display_name"] == "Blast Furnace"
-            assert technologies["eaf"]["to_year"] == 2050
+            assert technologies["eaf"]["to_year"] == 2060
 
     def test_get_technologies_no_data_directory(self):
         """Test when data_directory is not set."""

@@ -30,6 +30,16 @@ from contextlib import contextmanager
 # Thread-local storage for current module context
 _current_module = threading.local()
 
+# Module tags for third-party loggers that emit outside the thread-local context, by name prefix.
+EXTERNAL_LOGGER_MODULES = {"pyomo": "tm"}
+
+
+def _external_logger_module(logger_name: str) -> Optional[str]:
+    for prefix, module in EXTERNAL_LOGGER_MODULES.items():
+        if logger_name == prefix or logger_name.startswith(prefix + "."):
+            return module
+    return None
+
 
 class ShortNameFormatter(logging.Formatter):
     """
@@ -58,8 +68,8 @@ class ShortNameFormatter(logging.Formatter):
         parts = record.name.split(".")
         func_name = parts[-1] if len(parts) > 1 else record.name
 
-        # Get current module context from thread-local
-        context = getattr(_current_module, "name", None)
+        # Module context from thread-local, else from the logger's owning module
+        context = getattr(_current_module, "name", None) or _external_logger_module(record.name)
         context_str = context.upper() if context else "CORE"
 
         return f"{record.levelname:<7} | {context_str:<4} | {func_name}: {record.getMessage()}"
@@ -127,8 +137,12 @@ class ContextAwareFilter(logging.Filter):
 class LoggingConfig:
     """Manages logging configuration for the simulation."""
 
-    # Feature flag for furnace group debug output (set from YAML)
+    # Feature flags (set from YAML)
     FURNACE_GROUP_BREAKDOWN = True
+    DUMP_FAILED_LP = False  # Write the trade LP as MPS when it does not solve optimally
+    ENERGY_TRACE = False  # Trace electricity and hydrogen prices (steelo.utilities.energy_trace)
+    ENERGY_TRACE_COUNTRIES: tuple[str, ...] = ()
+    ENERGY_TRACE_PLANTS: tuple[str, ...] = ()
 
     @classmethod
     @contextmanager
@@ -167,6 +181,11 @@ class LoggingConfig:
             global_level: WARNING
             features:
               furnace_group_breakdown: true
+              dump_failed_lp: false
+              energy_trace: false
+            energy_trace:
+              countries: [CHN, IND]
+              plants: [P100000120219]
             modules:
               geo: DEBUG
               pam: INFO
@@ -196,6 +215,11 @@ class LoggingConfig:
         # Set feature flags
         features = config.get("features", {})
         cls.FURNACE_GROUP_BREAKDOWN = features.get("furnace_group_breakdown", True)
+        cls.DUMP_FAILED_LP = features.get("dump_failed_lp", False)
+        cls.ENERGY_TRACE = features.get("energy_trace", False)
+        energy_trace_lists = config.get("energy_trace", {})
+        cls.ENERGY_TRACE_COUNTRIES = tuple(energy_trace_lists.get("countries", []))
+        cls.ENERGY_TRACE_PLANTS = tuple(energy_trace_lists.get("plants", []))
 
         # Create filter and formatter
         context_filter = ContextAwareFilter(module_levels, function_overrides, cli_max_level)
@@ -203,13 +227,17 @@ class LoggingConfig:
 
         root = logging.getLogger()
         root.addFilter(context_filter)
+        # Root level must always follow the CLI level: loggers without an explicit
+        # level inherit it, and records below it die before any filter runs. When a
+        # handler already exists (e.g. created during data prep) the branch below is
+        # skipped, so the level is set here unconditionally.
+        root.setLevel(cli_max_level or logging.DEBUG)
 
         # Ensure root logger has at least one handler
         if not root.handlers:
             stream_handler = logging.StreamHandler()
             stream_handler.setLevel(cli_max_level or logging.DEBUG)
             root.addHandler(stream_handler)
-            root.setLevel(cli_max_level or logging.DEBUG)
 
         # Add filter and formatter to all handlers
         for h in root.handlers:

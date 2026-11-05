@@ -35,7 +35,7 @@ def _make_fg(fg_id: str, capex: float = 500.0) -> FurnaceGroup:
         utilization_rate=0.0,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
     )

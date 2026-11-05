@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from .models import Plant, Subsidy
+    from .models import CaptiveEnergy, Plant, Subsidy
 
 
 class Command:
@@ -20,21 +20,34 @@ class CloseFurnaceGroup(Command):
 
 @dataclass
 class RenovateFurnaceGroup(Command):
-    """Renovate a furnace group."""
+    """Renovate a furnace group.
+
+    ``capacity`` is the post-renovation capacity: the group's own, unless the
+    capacity policy shrank the renovation as a penalised replacement.
+    ``captive_energy`` is the stack a new site locks in the renovation year, None for an existing plant.
+    """
 
     plant_id: str
     furnace_group_id: str
+    capacity: float
     capex: float
     capex_no_subsidy: float
     cost_of_debt: float
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    captive_energy: "CaptiveEnergy | None"
 
 
 @dataclass
 class ChangeFurnaceGroupTechnology(Command):
-    """Change the technology of a furnace group."""
+    """Change the technology of a furnace group.
+
+    ``competing_npvs`` holds the finite NPVs ({technology: npv}) the selection
+    draw ran over, the incumbent's included when renovation was allowed.
+    ``captive_energy`` is the stack a new site locks in the decision year, installed with the new
+    technology; None for an existing plant.
+    """
 
     plant_id: str
     furnace_group_id: str
@@ -48,10 +61,13 @@ class ChangeFurnaceGroupTechnology(Command):
     capacity: float
     remaining_lifetime: int
     bom: dict
+    chosen_reductant: str
     cost_of_debt: float
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    captive_energy: "CaptiveEnergy | None"
+    competing_npvs: dict[str, float] | None = None
 
 
 @dataclass
@@ -66,13 +82,19 @@ class ChangeFurnaceGroupStatusToSwitchingTechnology(Command):
 
 @dataclass
 class AddFurnaceGroup(Command):
-    """Add a furnace group to a plant."""
+    """Add a furnace group to a plant.
+
+    ``captive_energy`` is the stack a new site's new group locks in the expansion year, None for an existing
+    plant.
+    """
 
     furnace_group_id: str
     plant_id: str
     technology_name: str
     capacity: float
     product: str
+    chosen_reductant: str
+    equity_share: float
     equity_needed: float
     npv: float
     capex: float
@@ -81,6 +103,7 @@ class AddFurnaceGroup(Command):
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    captive_energy: "CaptiveEnergy | None"
 
 
 @dataclass
@@ -107,7 +130,8 @@ class UpdateDynamicCosts(Command):
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
         - Energy costs for all carriers (subsidised input, output, and unsubsidised)
-        - Bill of materials with updated energy prices
+        - Expected utilisation (fleet average for the technology at emission time)
+        - The site's power and electrolyser stack, locked at the opportunity's construction start year
     """
 
     plant_id: str
@@ -119,7 +143,8 @@ class UpdateDynamicCosts(Command):
     new_energy_costs: dict[str, float]
     new_output_energy_costs: dict[str, float]
     new_energy_costs_no_subsidy: dict[str, float]
-    new_bill_of_materials: dict[str, dict[str, dict[str, Any]]] | None
+    new_utilization_rate: float
+    new_captive_energy: "CaptiveEnergy"
 
 
 # @dataclass

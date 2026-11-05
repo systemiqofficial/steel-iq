@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 
+from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain import Year
 from steelo.domain.models import (
     FurnaceGroup,
@@ -29,6 +30,11 @@ from steelo.domain.models import (
 
 
 # ---- Fixtures ----
+
+
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
 
 
 def _make_ccs_tech(name: str, reductant: str = "Coke+PCI") -> Technology:
@@ -110,7 +116,8 @@ def _call_evaluate(
     get_co2_need_by_name,
     co2_storage_diagnostics,
     environment_most_common_reductant: dict[str, str] | None = None,
-) -> dict[str, tuple[float | None, str, float]]:
+    reductant_score_series=None,
+) -> dict[str, tuple[float | None, str, float, str, Volumes]]:
     """Shared invocation: stubs NPV path via get_bom_from_avg_boms=None.
 
     All callables required by ``evaluate_expansion_options`` are passed as
@@ -120,8 +127,8 @@ def _call_evaluate(
     iso3_to_region_map = {p.location.iso3: "Region" for p in pg.plants}
     price_series = {"hot_metal": [500.0] * 30, "steel": [500.0] * 30}
     tech_to_product = {t: "hot_metal" for t in allowed_techs_list}
-    cost_of_debt_dict = {p.location.iso3: 0.05 for p in pg.plants}
-    cost_of_equity_dict = {p.location.iso3: 0.1 for p in pg.plants}
+    cost_of_debt_dict = {p.location.iso3: {t: 0.05 for t in allowed_techs_list} for p in pg.plants}
+    cost_of_equity_dict = {p.location.iso3: {t: 0.1 for t in allowed_techs_list} for p in pg.plants}
 
     return pg.evaluate_expansion_options(
         price_series=price_series,
@@ -130,6 +137,8 @@ def _call_evaluate(
         cost_of_debt_dict=cost_of_debt_dict,
         cost_of_equity_dict=cost_of_equity_dict,
         get_bom_from_avg_boms=None,
+        reductant_score_series=reductant_score_series or (lambda *a, **k: ReductantScoreSeries(scores=[], picks=[])),
+        captive_energy_at=_no_stack,
         dynamic_feedstocks={},
         fopex_for_iso3=fopex_for_iso3,
         iso3_to_region_map=iso3_to_region_map,
@@ -142,6 +151,7 @@ def _call_evaluate(
         construction_time=4,
         current_year=Year(2030),
         allowed_techs={Year(2030): allowed_techs_list},
+        active_statuses=["operating"],
         environment_most_common_reductant=environment_most_common_reductant or {},
         get_co2_headroom=get_co2_headroom,
         get_co2_need_by_name=get_co2_need_by_name,
@@ -278,14 +288,10 @@ def test_p3_drops_when_headroom_strictly_less_than_need(caplog):
     assert "dropped_ccs_techs=BFCCS" in gate_lines[0].getMessage()
 
 
-def test_p3_pg_local_reductant_overrides_env_reductant():
-    """PlantGroup.most_common_reductant wins over environment_most_common_reductant.
-
-    The per-tech gate lookup is ``self.most_common_reductant.get(tech,
-    environment_most_common_reductant.get(tech, ""))`` — PG-local is tried first.
-    When both are set, the stub's need_by_tech is probed with the PG-local value;
-    here we verify the callable receives the PG-local reductant when one exists.
-    """
+def test_p3_uses_decided_reductant_from_score_series():
+    """P3 sizes the CCS need with the operating-start-year pick from the score series,
+    not the modal reductant (C8). The gate first probes with "" (all-reductant max)
+    and then with the decided pick."""
     tech = _make_ccs_tech("BFCCS", reductant="Coke+PCI")
     fg = _make_fg(tech)
     fg.set_energy_costs(electricity=0.05, coke=0.1)
@@ -325,13 +331,12 @@ def test_p3_pg_local_reductant_overrides_env_reductant():
         get_co2_need_by_name=get_co2_need_by_name,
         co2_storage_diagnostics=co2_storage_diagnostics,
         environment_most_common_reductant={"BFCCS": "Hydrogen"},
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0], picks=["Coke+Bio-PCI"]),
     )
 
-    # FG tech is "BFCCS" with chosen_reductant="Coke+PCI", so
-    # get_most_common_reductant_by_technology returns {"BFCCS": "Coke+PCI"}.
-    # Gate tries PG-local first, finds "Coke+PCI", and never falls back to the
-    # env dict's "Hydrogen" — proving PG-local takes precedence.
-    assert captured_reductants == ["Coke+PCI"]
+    # Pre-check with "" (all-reductant max), then the decided pick — never the
+    # PG-local or env-modal reductant.
+    assert captured_reductants == ["", "Coke+Bio-PCI"]
 
 
 def test_p3_gate_disabled_when_callables_not_wired(caplog):

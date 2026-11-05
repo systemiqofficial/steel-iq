@@ -106,7 +106,7 @@ def technology_form_converter():
 
     def _convert_to_form_data(tech_settings: TechSettingsMap) -> dict[str, str]:
         """Convert TechSettingsMap to Django form POST data format."""
-        form_data = {}
+        form_data = {"greenfield_column": "1"}
 
         # Production mapping from normalized codes to form field slugs
         # This should ideally come from the production code, but for now inline it
@@ -141,30 +141,6 @@ def technology_form_converter():
         return form_data
 
     return _convert_to_form_data
-
-
-def pytest_addoption(parser):
-    parser.addoption(
-        "--run-wind-and-pv-tests",
-        action="store_true",
-        default=False,
-        help="Run tests for the wind_and_pv package only if this flag is set",
-    )
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "wind_and_pv: wind_and_pv: Marks special tests that are only executed when --run-wind-and-pv-tests is set",
-    )
-
-
-def pytest_collection_modifyitems(config, items):
-    if not config.getoption("--run-wind-and-pv-tests"):
-        skip_marker = pytest.mark.skip(reason="--run-wind-and-pv-tests not set")
-        for item in items:
-            if "wind_and_pv" in item.keywords:
-                item.add_marker(skip_marker)
 
 
 # Removed preserve_iso3_to_region fixture as we're migrating to dynamic country mappings
@@ -220,7 +196,7 @@ def technology_data():
 def lifetime_data():
     return {
         "current": Year(2026),
-        "time_frame": {"start": Year(2025), "end": Year(2050)},
+        "time_frame": {"start": Year(2025), "end": Year(2060)},
     }
 
 
@@ -395,6 +371,83 @@ def bus(tmp_path):
 
 
 @pytest.fixture
+def minimal_simulation_config(tmp_path):
+    """
+    A runnable SimulationConfig over the smallest prepared data folder that bootstrap_simulation accepts.
+
+    Args:
+        tmp_path: The test's temporary folder; the data folder is written to ``tmp_path / "data"``.
+
+    Returns:
+        A SimulationConfig for 2025 to 2026 on the grid-only power mix, over one country (DEU) and no plants.
+
+    Notes:
+        Empty fixture files are enough for bootstrap to build its repositories, and the capacity pool fixture
+        paths do not exist, as in a preparation without the optional sheets. Tests set what they add on the
+        returned config.
+    """
+    from steelo.simulation import GeoConfig, SimulationConfig
+
+    data_dir = tmp_path / "data"
+    fixtures_dir = data_dir / "fixtures"
+    fixtures_dir.mkdir(parents=True)
+    (fixtures_dir / "tech_switches_allowed.csv").write_text(
+        "Technology,BF-BOF,DRI-EAF,Scrap-EAF\nBF-BOF,YES,YES,YES\nDRI-EAF,NO,YES,YES\nScrap-EAF,NO,NO,YES\n"
+    )
+    for name in (
+        "plants",
+        "demand_centers",
+        "suppliers",
+        "plant_groups",
+        "tariffs",
+        "subsidies",
+        "carbon_costs",
+        "primary_feedstocks",
+        "region_emissivity",
+        "capex",
+        "cost_of_capital",
+    ):
+        (fixtures_dir / f"{name}.json").write_text('{"root": []}')
+    (fixtures_dir / "scenarios.json").write_text(
+        '{"demand": {"BAU": "demand_centers.json"}, "scrap": {"BAU": "suppliers.json"}}'
+    )
+    (fixtures_dir / "input_costs.json").write_text(
+        '{"root": ['
+        '{"iso3": "DEU", "year": 2025, "costs": {"electricity": 0.05}},'
+        '{"iso3": "DEU", "year": 2026, "costs": {"electricity": 0.05}}'
+        "]}"
+    )
+    (fixtures_dir / "legal_process_connectors.json").write_text("[]")
+    (fixtures_dir / "country_mappings.json").write_text(
+        '[{"country": "Germany", "iso2": "DE", "iso3": "DEU", "irena_name": "Germany",'
+        ' "region_for_outputs": "Europe", "ssp_region": "EUR", "tiam-ucl_region": "Rest of World"}]'
+    )
+    (fixtures_dir / "hydrogen_efficiency.json").write_text(
+        '[{"year": 2025, "efficiency": 0.05}, {"year": 2026, "efficiency": 0.05}]'
+    )
+    (fixtures_dir / "hydrogen_capex_opex.json").write_text(
+        '[{"country_code": "DEU", "values": {"2025": 1.0, "2026": 1.0}}]'
+    )
+    (fixtures_dir / "transport_emissions.json").write_text("[]")
+    (fixtures_dir / "biomass_availability.json").write_text("[]")
+    (fixtures_dir / "fallback_material_costs.json").write_text(
+        '[{"iso3": "DEU", "technology": "BF", "metric": "Unit material cost", "unit": "USD/t HM",'
+        ' "costs_by_year": {"2025": 100.0}}]'
+    )
+    (data_dir / "railway_costs.json").write_text('{"root": []}')
+
+    return SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2026),
+        master_excel_path=tmp_path / "test.xlsx",
+        output_dir=tmp_path / "output",
+        technology_settings=get_default_technology_settings(),
+        data_dir=data_dir,
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # no geo data on disk: hydrogen off the grid price
+    )
+
+
+@pytest.fixture
 def ready_data_preparation(db, tmp_path):
     """Create a ready DataPreparation for tests that need it."""
     from steeloweb.models import DataPreparation, DataPackage
@@ -548,13 +601,41 @@ def ready_data_preparation(db, tmp_path):
                 "iso3": "POL",
                 "country_name": "Poland",
                 "scenario": "Business As Usual",
-                "grid_emissivity": {"2025": {"Electricity": 0.5}, "2050": {"Electricity": 0.3}},
+                "grid_emissivity": {"2025": {"Electricity": 0.5}, "2060": {"Electricity": 0.3}},
                 "coke_emissivity": {},
                 "gas_emissivity": {},
             }
         ]
     }
     (fixtures_dir / "region_emissivity.json").write_text(json.dumps(region_emissivity))
+
+    # The run form offers the emissions boundaries of this file, one record per boundary is enough
+    emission_factor = {
+        "business_case": "iron_bf",
+        "technology": "BF",
+        "metallic_charge": "hot_metal",
+        "reductant": "coke",
+        "direct_ghg_factor": 1.0,
+        "direct_with_biomass_ghg_factor": 1.0,
+        "indirect_ghg_factor": 0.1,
+    }
+    technology_emission_factors = [
+        {**emission_factor, "boundary": boundary}
+        for boundary in ("rs-inspired", "worldsteel_no_opt_credits", "worldsteel_opt_credits")
+    ]
+    (fixtures_dir / "technology_emission_factors.json").write_text(json.dumps(technology_emission_factors))
+
+    # The run form offers the demand and scrap scenarios of the preparation's index
+    scenario_index = {
+        "demand": {"BAU": "demand_scenarios/bau/demand_centers.json"},
+        "scrap": {"BAU": "scrap_scenarios/bau/suppliers.json"},
+    }
+    (fixtures_dir / "scenarios.json").write_text(json.dumps(scenario_index))
+
+    # The run form accepts a baseload power mix only on a preparation holding the default LCOE files
+    lcoe_dir = data_dir / "data" / "outputs" / "GEO" / "baseload_lcoe"
+    lcoe_dir.mkdir(parents=True)
+    (lcoe_dir / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc").write_bytes(b"")
 
     # Create required data packages
     core_package, _ = DataPackage.objects.get_or_create(

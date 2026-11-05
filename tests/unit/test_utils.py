@@ -2,7 +2,10 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from steelo.utilities.utils import count_appearances
+import enum
+import re
+
+from steelo.utilities.utils import count_appearances, normalize_name
 
 
 def test_count_appearances(capsys):
@@ -40,3 +43,47 @@ def test_count_appearances(capsys):
     data = pd.DataFrame({"col1": ["A", "B", "A"]})
     with pytest.raises(KeyError):
         count_appearances(data, "col2")
+
+
+def _reference_normalize_name(name):
+    """The uncached definition of normalize_name."""
+    if name is None:
+        return ""
+    key = str(name).lower().replace(" ", "_").replace("-", "_")
+    return re.sub(r"_+", "_", key)
+
+
+class _StrMixinEnum(str, enum.Enum):
+    HOT_METAL = "hot_metal"
+
+
+NORMALIZE_NAME_INPUTS = [
+    "Natural Gas",
+    "bio-pci",
+    "co2 - stored",
+    "co2_-_inlet",
+    "Hot metal",
+    "  leading and trailing  ",
+    "already_normal",
+    "MiXeD-Case value",
+    "",
+    "___",
+    None,
+    float("nan"),
+    7,
+    ["a b", "c-d"],
+    _StrMixinEnum.HOT_METAL,
+]
+
+
+def test_normalize_name_matches_uncached_definition():
+    for _ in range(2):  # the second pass is served from the cache
+        for name in NORMALIZE_NAME_INPUTS:
+            assert normalize_name(name) == _reference_normalize_name(name), repr(name)
+
+
+def test_normalize_name_does_not_share_cache_entry_between_str_and_str_subclass():
+    # _StrMixinEnum.HOT_METAL == "hot_metal" and hashes alike, but str() gives "_StrMixinEnum.HOT_METAL"
+    assert normalize_name("hot_metal") == "hot_metal"
+    assert normalize_name(_StrMixinEnum.HOT_METAL) == _reference_normalize_name(_StrMixinEnum.HOT_METAL)
+    assert normalize_name(_StrMixinEnum.HOT_METAL) != "hot_metal"

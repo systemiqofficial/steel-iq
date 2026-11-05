@@ -49,28 +49,53 @@ Total debt burden: $2,600M ($400M legacy + $2,200M)
 
 ## Behavioral Impacts
 
+> **Correction (2026-06)**: COSA and the legacy-debt schedule previously
+> double-counted the remaining debt. The old code added remaining debt inside
+> COSA *and* carried that same debt forward via the `legacy_debt_schedule` in the
+> post-switch P&L. But the old debt is paid whether the plant stays or switches,
+> so it cancels from the switch-vs-stay comparison. This has been fixed: **COSA is
+> now the foregone operating margin only** — `COSA = NPV(foregone_operating_profits)`
+> — and the persisting debt lives solely in the `legacy_debt_schedule`. The
+> magnitude of the switch penalty therefore drops, so modelled transitions are
+> somewhat faster than previously documented. The behavioural conclusions below
+> (waiting, clustering at renovation boundaries, no technology "hopping", gradual
+> 30–50 year transition) still hold, but the cause has been re-attributed: lock-in
+> now comes from (a) the foregone operating margin being large when remaining life
+> is long and small near end-of-life, and (b) the realised legacy-debt burden
+> carried by the schedule post-switch — explicitly **not** from debt being charged
+> inside COSA.
+
 ### 1. Technology Switching Timing
 
 **Observation**: Plants wait longer before switching technologies
 
-**Why**: Cost of Stranded Assets (COSA) increases with remaining debt
+**Why**: Cost of Stranded Assets (COSA) — the foregone operating margin — is large
+when many years of profitable operation remain, and shrinks towards zero near
+end-of-life. Switching early therefore forfeits more margin.
 
-**Example NPV Comparison**:
+**Example NPV Comparison** (BF margin $50M/year, r=0.08, `construction_time` = 4):
 
-| Switch Year | Remaining Debt | COSA | NPV (new tech) | Net Benefit |
-|-------------|----------------|------|----------------|-------------|
-| Year 5      | $600M          | $650M| $800M          | $150M       |
-| Year 10     | $400M          | $450M| $800M          | $350M       |
-| Year 15     | $200M          | $250M| $800M          | $550M       |
-| Year 20     | $0M            | $50M | $800M          | $750M       |
+| Switch Year | Years Remaining | Foregone Margin (COSA) | NPV (new tech) | Net Benefit |
+|-------------|-----------------|------------------------|----------------|-------------|
+| Year 5      | 15              | $262M                  | $800M          | $538M       |
+| Year 10     | 10              | $170M                  | $800M          | $630M       |
+| Year 15     | 5               | $34M                   | $800M          | $766M       |
+| Year 20     | 0               | $0M                    | $800M          | $800M       |
 
-**Result**: Waiting until year 20 (debt paid off) yields $600M more benefit than switching at year 5.
+The first 4 years after the decision are not charged: the incumbent keeps operating while the new technology is built, so only the years after construction are foregone.
+
+**Result**: Waiting until year 20 (no remaining margin to forgo) yields more net
+benefit than switching at year 5, because COSA tracks the foregone operating
+margin, which falls as the plant approaches end-of-life. The legacy-debt schedule
+adds a further post-switch burden that bites if the plant switches before its debt
+is repaid.
 
 ### 2. Renovation Boundary Clustering
 
 **Observation**: Most technology switches occur at 20-year boundaries
 
-**Why**: Debt fully repaid → COSA minimized → Maximum net benefit
+**Why**: At end-of-life there is no remaining operating margin to forgo → COSA ≈ 0,
+and the debt is fully repaid so no legacy burden is carried forward → Maximum net benefit
 
 **Visualization**:
 ```
@@ -81,7 +106,7 @@ Year 6-10:  ▓▓ (5%)
 Year 11-15: ▓▓▓ (8%)
 Year 16-19: ▓▓▓▓ (12%)
 Year 20:    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ (60%)  ← Majority at renovation boundary
-Year 21+:   ▓▓▓▓ (13%) ← Some delay due to affordability/capacity limits
+Year 21+:   ▓▓▓▓ (13%) ← Switches at later renovation cycles
 ```
 
 **Interpretation**:
@@ -90,38 +115,41 @@ Year 21+:   ▓▓▓▓ (13%) ← Some delay due to affordability/capacity limi
   - NPV advantage is very large (e.g., carbon price spike makes current tech uneconomical)
   - Subsidies offset the high COSA
   - Plant has excess balance to absorb the loss
+- A switch blocked in a given year by affordability or the annual capacity limit is **not** deferred to the next year: the call simply returns no action, and the furnace group is re-evaluated independently in later years (NPV and COSA recomputed for that year's economics). Any subsequent switch is therefore a fresh decision, not a queued one.
 
-### 3. Cost of Stranded Assets (COSA) Elevation
+### 3. Cost of Stranded Assets (COSA)
 
-**Observation**: COSA values are higher for mid-lifetime switches
+**Observation**: COSA is larger when more years of profitable operation remain
 
 **Formula**:
 ```python
-COSA = NPV(remaining_debt_payments + foregone_operating_profits)
+COSA = NPV(foregone_operating_profits)
 ```
+
+COSA is the **foregone operating margin only** — the discounted gross cash flow
+(revenue − OPEX) over the remaining life after the switch's construction period
+(years `[construction_time, remaining_time)`). The remaining debt is *not* included:
+the old debt is paid whether the plant stays or switches (it persists via the
+`legacy_debt_schedule`), so it cancels from the switch-vs-stay comparison.
 
 **Example Calculation** (switching from BF to DRI at year 10):
 
 ```
-Remaining Debt Payments:
-  Years 11-20: $400M legacy ÷ 10 = $40M/year
-
 Foregone Operating Profits:
-  BF margin: $50/t × 100 kt/year × 10 years = $50M/year
+  BF margin: $50/t × 100 kt/year = $50M/year
+  10 years remaining, of which years 1 to 4 fall in construction (construction_time = 4)
 
 NPV at 8% discount rate:
-  COSA = NPV([$40M + $50M] × 10 years, r=0.08)
-  COSA = $90M × 6.71 (PV factor for 10 years)
-  COSA ≈ $604M
+  COSA = NPV($50M for years 5 to 10, r=0.08)
+  COSA = $50M × (6.71 − 3.31) = $50M × 3.40
+  COSA ≈ $170M
 ```
 
-**Without Debt Accumulation**:
-```
-Remaining Debt: $0 (assumed paid off or written off)
-COSA = NPV($50M × 10 years, r=0.08) = $335M
-```
-
-**Impact**: Debt accumulation increases COSA by **80%** ($604M vs $335M), making switches much less attractive.
+**The legacy debt's real effect** is captured by the `legacy_debt_schedule` — the
+realised post-switch P&L carries the $400M remaining BF debt forward as actual
+debt-service payments. It is not double-counted by inflating COSA. For a
+loss-making incumbent (gross cash flow < 0) COSA is negative, correctly rewarding
+exit.
 
 ### 4. Capital Requirements
 
@@ -234,23 +262,44 @@ Year 31-45: SR debt only ($80M/year)
 
 ---
 
+## Deferred Switches: When the Legacy Tail Is Measured
+
+A switch decided in year Y does not take effect at once. The furnace group keeps running its old technology during `construction_time` years (C), and the stored switch command runs when the year rolls over into Y + C (at the end of year Y + C − 1). During construction the group keeps paying its old debt as normal.
+
+The legacy tail is therefore measured from the decision, not from the moment the switch runs:
+
+```
+legacy years = max(0, remaining lifetime at decision − construction_time)
+```
+
+- **Old life ends before the switch runs** (remaining lifetime ≤ C): the old debt is fully repaid during construction, so no legacy tail carries over. By then the group's lifetime already belongs to the new cycle. Reading the remaining years from it would add up to a full cycle of phantom old debt.
+- **Old life outlasts construction**: the tail covers the remaining lifetime minus the construction years already paid.
+
+The tail is computed from the current technology's own investment (`calculate_debt_repayment`), and any earlier legacy debt is added once, year by year. `debt_repayment_per_year` already includes earlier legacy debt, so slicing the tail from it would count a previous switch's debt twice.
+
+The scenarios above ignore the construction delay for simplicity. With a delay, read "Year 10: Switch" as the year the switch runs, with the remaining years measured at the decision.
+
+---
+
 ## Calibration Considerations
 
 ### Debt Parameters
 
-**Lifetime affects burden**:
+**Lifetime affects the legacy burden**:
 ```python
 plant_lifetime = 20  # Standard
-# Shorter lifetime (15 years) → Higher annual payments → Larger COSA
-# Longer lifetime (25 years) → Lower annual payments → Smaller COSA
+# Shorter lifetime (15 years) → Higher annual payments → Heavier legacy debt after an early switch
+# Longer lifetime (25 years) → Lower annual payments → Lighter legacy debt
 ```
 
-**Cost of debt affects total burden**:
+**Cost of debt affects the legacy burden**:
 ```python
 cost_of_debt = 0.05  # 5%
-# Higher rate (8%) → More interest paid → Larger COSA
-# Lower rate (3%) → Less interest paid → Smaller COSA
+# Higher rate (8%) → More interest paid → Heavier legacy debt after an early switch
+# Lower rate (3%) → Less interest paid → Lighter legacy debt
 ```
+
+Debt parameters do not change COSA, which is the foregone operating margin only. They change how much old debt the furnace group carries in its realised P&L after switching.
 
 ### Balance Sheet Impact
 
@@ -272,10 +321,12 @@ cost_of_debt = 0.05  # 5%
 
 **Verify legacy debt is being tracked**:
 ```python
-# After technology switch
-assert furnace_group.legacy_debt_schedule != []
-assert len(furnace_group.legacy_debt_schedule) == remaining_years
+# After a deferred switch executes
+tail_years = max(0, remaining_years_at_decision - construction_time)
+assert len(furnace_group.legacy_debt_schedule) == max(tail_years, len(earlier_legacy_schedule))
 ```
+
+The new tail and any earlier legacy schedule are summed year by year, so the combined schedule is as long as the longer of the two. With no earlier legacy debt and an old life that ended during construction, the schedule is empty.
 
 **Verify debt is being combined**:
 ```python
@@ -330,9 +381,9 @@ DEBUG   | PAM  | change_furnace_group_technology: Technology switch BF-BOF → D
 
 Debt accumulation creates realistic technology transition dynamics by:
 
-1. **Increasing COSA for mid-lifetime switches**: Making early transitions expensive
-2. **Clustering switches at renovation boundaries**: Most transitions occur when debt paid off
-3. **Preventing technology hopping**: Multiple switches lead to unsustainable debt burdens
+1. **Carrying a realised legacy-debt burden post-switch**: The `legacy_debt_schedule` keeps charging the old debt through realised P&L, making early transitions expensive (this is *not* COSA — COSA is the foregone operating margin only)
+2. **Clustering switches at renovation boundaries**: Most transitions occur at end-of-life, when there is no remaining margin to forgo (COSA ≈ 0) and the debt is fully repaid (no legacy burden)
+3. **Preventing technology hopping**: Multiple switches lead to unsustainable accumulated debt burdens via the schedule
 4. **Creating path dependency**: Early decisions have lasting financial consequences
 5. **Requiring larger capital reserves**: Plants need strong balance sheets to afford transitions
 

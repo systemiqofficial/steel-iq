@@ -1,6 +1,6 @@
 import math
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,8 @@ from steelo.domain import (
     WillingnessToPay,
 )
 from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
+from steelo.capacity_policy.inputs import OpeningCreditRow, RegionRow, TechnologyRow
+from ...domain.models import TechFinancingRates, RENEWABLES_KEY, HYDROGEN_KEY
 import logging
 
 from ...domain.models import LegalProcessConnector
@@ -39,6 +41,7 @@ from steelo.utilities.utils import normalize_name
 # Import only true constants from global_variables
 from steelo.domain.constants import (
     Commodities,
+    INITIAL_SCRAP_PRODUCTION_COST,
     GJ_TO_KWH,
     MWH_TO_KWH,
     PERMWh_TO_PERkWh,
@@ -51,8 +54,10 @@ from steelo.domain.constants import (
 
 # TODO: Remove overwriting and replace by simulation config
 EXCEL_READER_START_YEAR = 2020
-EXCEL_READER_END_YEAR = 2050
-CHOSEN_DEMAND_SCENARIO = "BAU"
+EXCEL_READER_END_YEAR = 2060
+
+EXCEL_BIOMASS_CO2_START_YEAR = 2024
+EXCEL_BIOMASS_CO2_END_YEAR = EXCEL_READER_END_YEAR
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -77,11 +82,8 @@ translate_country_names = {
 }
 
 translate_mine_regions_to_iso3 = {  # for tariffs - improve logic
-    "North America": "USA",
     "South Africa": "ZAF",
-    "Ukraine-Balkans Corridor": "UKR",
     "Canada": "CAN",
-    "Other South America": "COL",
     "Brazil": "BRA",
     "Australia": "AUS",
     "Russia": "RUS",
@@ -89,8 +91,19 @@ translate_mine_regions_to_iso3 = {  # for tariffs - improve logic
     "China": "CHN",
     "India": "IND",
     "Kazakhstan": "KAZ",
-    "Atlantic West Africa": "GHA",
-    "Scandinavia": "SWE",
+    "Bosnia & Herzegovina": "BIH",
+    "Guinea": "GIN",
+    "Iran": "IRN",
+    "Liberia": "LBR",
+    "Mauritania": "MRT",
+    "Mexico": "MEX",
+    "Norway": "NOR",
+    "Peru": "PER",
+    "Sierra Leone": "SLE",
+    "Sweden": "SWE",
+    "USA": "USA",
+    "Ukraine": "UKR",
+    "Venezuela": "VEN",
 }
 
 translate_country_names_to_iso3 = {
@@ -113,6 +126,15 @@ def read_regional_input_prices_from_master_excel(
         input_costs_sheet (str): Name of the sheet containing input costs.
     Returns:
         list[InputCosts]: A list of InputCosts objects containing the regional input prices.
+
+    Notes:
+        Sub-national rows (ISO-3 code like "CHN:CN-HE") may author only a subset of
+        commodities; the gaps are filled from the parent country's row so a province
+        never silently prices an unauthored commodity at zero.
+
+    Raises:
+        ValueError: If any commodity remains unpriced after the country fallback —
+            a silent 0.0 would zero that carrier's cost downstream.
     """
 
     # 1) Load raw data
@@ -123,9 +145,11 @@ def read_regional_input_prices_from_master_excel(
 
     # 2) Build input_cost_dict = { year: { ISO3: { commodity: cost_in_raw_units, … } } }
     input_costs_df.columns.name = "Year"
+    # min_count=1 keeps unauthored (geo, commodity) pairs as NaN through the pivot so the
+    # sub-national fallback below can tell "not authored" apart from an authored 0.0
     input_cost_stacked = (
         input_costs_df.groupby(["ISO-3 code", "Commodity"])
-        .sum(numeric_only=True)
+        .sum(numeric_only=True, min_count=1)
         .unstack(level=1)
         .stack(level="Year")
         .reset_index()
@@ -168,7 +192,7 @@ def read_regional_input_prices_from_master_excel(
 
     grouped: dict[str, dict[str, dict[str, float]]] = (
         input_cost_stacked.groupby(["year", "iso-3 code"])
-        .sum(numeric_only=True)
+        .sum(numeric_only=True, min_count=1)
         .apply(lambda row: row.to_dict(), axis=1)
         .unstack(level="year")
         .to_dict()
@@ -180,12 +204,33 @@ def read_regional_input_prices_from_master_excel(
         int(year): country_data for year, country_data in grouped.items()
     }
 
-    # 6) Build a List[InputCosts], sorted by year then iso3
+    # 4b) Sub-national rows author only some commodities (e.g. province electricity);
+    # fill the gaps from the parent country so unauthored commodities are never
+    # priced at zero. A gap that survives the fallback (missing at country level
+    # too) would silently price that commodity at 0.0 downstream, so fail loudly.
+    for year_key, by_geo in input_cost_dict.items():
+        for geo_key, costs in by_geo.items():
+            iso3, _, code = geo_key.partition(":")
+            if code:
+                parent = by_geo.get(iso3) or {}
+                for commodity, value in costs.items():
+                    if pd.isna(value):
+                        costs[commodity] = parent.get(commodity, float("nan"))
+            unpriced = sorted(commodity for commodity, value in costs.items() if pd.isna(value))
+            if unpriced:
+                raise ValueError(
+                    f"Input costs: {geo_key} has no authored value in {year_key} "
+                    f"(and no country fallback) for: {unpriced}"
+                )
+
+    # 5) Build a List[InputCosts], sorted by year then geo_key. The "ISO-3 code" column holds
+    # either a country (CHN) or a sub-national geo_key (CHN:CN-HE); split into iso3 + geo_unit.
     result: list[InputCosts] = []
     for year in sorted(input_cost_dict):
-        for iso3 in sorted(input_cost_dict[year]):
-            costs = input_cost_dict[year][iso3]
-            result.append(InputCosts(year=Year(year), iso3=iso3, costs=costs))
+        for geo_key in sorted(input_cost_dict[year]):
+            costs = input_cost_dict[year][geo_key]
+            iso3, _, code = geo_key.partition(":")
+            result.append(InputCosts(year=Year(year), iso3=iso3, costs=costs, geo_unit=code or None))
 
     return result
 
@@ -647,6 +692,10 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
 def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str, location_csv: str) -> list[Supplier]:
     """
     Read mine supply data from Excel and return a list of Supplier domain objects for mines.
+
+    Raises:
+        ValueError: When a mine with capacity sits in a region that ``translate_mine_regions_to_iso3``
+            does not map, or when the suppliers fail validation against the sheet.
     """
     import json
     import unicodedata
@@ -769,13 +818,21 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             skipped_rows += 1
             continue
 
+        # The trade LP keys transport costs and tariffs on iso3, so an unmapped region would ship for free.
+        try:
+            mine_iso3 = translate_mine_regions_to_iso3[row["Region"]]
+        except KeyError:
+            raise ValueError(
+                f"Iron ore mine region {row['Region']!r} has no ISO3 in translate_mine_regions_to_iso3"
+            ) from None
+
         # Create a unique location for each mine (not reused)
         mine_location = Location(
             lat=row["lat"],
             lon=row["lon"],
             country=row["Region"],  # FIXME just to be able to create a valid Location 2025-05-22 Jochen
             region=row["Region"],
-            iso3=translate_mine_regions_to_iso3.get(row["Region"], ""),
+            iso3=mine_iso3,
         )
         product = row["Products"]
 
@@ -901,17 +958,83 @@ def refine_demand_centers_for_major_countries(old_centers):
     return corrected_old_centers + new_centers
 
 
+def _select_scenario_rows(df: pd.DataFrame, scenario: str, sheet_name: str) -> pd.DataFrame:
+    """
+    Return the rows of a demand/scrap sheet that belong to one scenario.
+
+    Args:
+        df: Sheet contents with a "Scenario" column.
+        scenario: Scenario name to keep.
+        sheet_name: Sheet name, used in the error message only.
+
+    Returns:
+        pd.DataFrame: The matching rows.
+
+    Raises:
+        ValueError: If no row carries the scenario, listing the names the sheet does have.
+    """
+    selected = df[df["Scenario"] == scenario]
+    if selected.empty:
+        available = sorted(df["Scenario"].dropna().unique())
+        raise ValueError(f"No rows for scenario {scenario!r} in sheet {sheet_name!r}; available: {available}")
+    return selected
+
+
+def read_demand_and_scrap_scenarios(excel_path: Path, sheet_name: str) -> dict[str, list[str]]:
+    """
+    Read the scenario names of the demand and scrap sheet, per kind.
+
+    Args:
+        excel_path: Workbook holding the sheet.
+        sheet_name: Sheet with "Scenario" and "Metric" columns.
+
+    Returns:
+        dict[str, list[str]]: Under "demand" the sorted names with rows of metric "Crude steel consumption for
+        forming [kt]", under "scrap" those with rows of "Total available scrap".
+
+    Raises:
+        ValueError: If a name of either kind is not text, such as a number, naming each one and the sheet.
+    """
+    df = pd.read_excel(excel_path, sheet_name=sheet_name, usecols=["Scenario", "Metric"])
+    metric = df["Metric"].str.strip()
+    names = {
+        "demand": df.loc[metric == "Crude steel consumption for forming [kt]", "Scenario"].dropna().unique(),
+        "scrap": df.loc[metric == "Total available scrap", "Scenario"].dropna().unique(),
+    }
+    not_text = sorted({str(name) for kind_names in names.values() for name in kind_names if not isinstance(name, str)})
+    if not_text:
+        raise ValueError(f"Scenario names in sheet {sheet_name!r} must be text; found {', '.join(not_text)}")
+    return {kind: sorted(kind_names) for kind, kind_names in names.items()}
+
+
 def read_demand_centers(
     *,
     gravity_distances_path: Path,
     demand_excel_path: Path,
     demand_sheet_name: str,
     location_csv: Path,
+    demand_scenario: str,
 ) -> list[DemandCenter]:
+    """
+    Read steel demand centres for one scenario from the demand sheet.
+
+    Args:
+        gravity_distances_path: Pickled {iso3: {iso3: distance}} dict.
+        demand_excel_path: Workbook holding the demand sheet.
+        demand_sheet_name: Sheet with "Scenario" / "Metric" columns and one column per year.
+        location_csv: Country centroid CSV used to place each centre.
+        demand_scenario: Value of the "Scenario" column to read.
+
+    Returns:
+        list[DemandCenter]: One centre per country, major countries split into sub-centres.
+
+    Raises:
+        ValueError: If the scenario is not present in the sheet.
+    """
     with gravity_distances_path.open("rb") as f:
         gravity_dict = pickle.load(f)
     demand_df = pd.read_excel(demand_excel_path, sheet_name=demand_sheet_name)
-    demand_df = demand_df[demand_df["Scenario"] == CHOSEN_DEMAND_SCENARIO]
+    demand_df = _select_scenario_rows(demand_df, demand_scenario, demand_sheet_name)
     # Strip whitespace from metric names to handle Excel inconsistencies
     demand_df["Metric"] = demand_df["Metric"].str.strip()
     demand_df = demand_df[demand_df["Metric"] == "Crude steel consumption for forming [kt]"]
@@ -971,6 +1094,19 @@ def read_demand_centers(
     return refine_demand_centers_for_major_countries(demand_centers)
 
 
+def _initial_scrap_costs() -> dict[Year, float]:
+    """Placeholder scrap production cost for the whole simulation horizon.
+
+    Returns:
+        INITIAL_SCRAP_PRODUCTION_COST for every year from EXCEL_READER_START_YEAR to
+        EXCEL_READER_END_YEAR. Overwritten at run time: bootstrap applies the configured
+        value, then the annual repricing in handlers.py reprices from BOF hot-metal costs.
+    """
+    return {
+        Year(year): INITIAL_SCRAP_PRODUCTION_COST for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+    }
+
+
 def refine_scrap_centers_for_major_countries(old_centers):
     """
     Refine centers for major (scrap exporting) countries by breaking down the absolute amount from
@@ -1012,12 +1148,6 @@ def refine_scrap_centers_for_major_countries(old_centers):
             for year in years:
                 amount_by_year[Year(year)] = old_center.capacity_by_year[Year(year)] * center["share"]
 
-            # Create constant production cost dictionary for all years in simulation horizon
-            # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
-            production_cost_by_year = {
-                Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-            }
-
             # Create new center with the new location and amount_by_year
             new_centers.append(
                 Supplier(
@@ -1025,7 +1155,7 @@ def refine_scrap_centers_for_major_countries(old_centers):
                     supplier_id=new_id,
                     location=location,
                     capacity_by_year=amount_by_year,
-                    production_cost_by_year=production_cost_by_year,
+                    production_cost_by_year=_initial_scrap_costs(),
                     mine_cost_by_year={},
                     mine_price_by_year={},
                 )
@@ -1044,9 +1174,24 @@ def read_scrap_as_suppliers(
     scrap_sheet_name: str,
     location_csv: str,
     gravity_distances_pkl_path: Path | None = None,
+    *,
+    scrap_scenario: str,
 ) -> list[Supplier]:
     """
     Read scrap supply data from Excel and return a list of Supplier domain objects for scrap.
+
+    Args:
+        scrap_excel_path: Workbook holding the scrap sheet.
+        scrap_sheet_name: Sheet with "Scenario" / "Metric" columns and one column per year.
+        location_csv: Country centroid CSV used to place each supplier.
+        gravity_distances_pkl_path: Pickled {iso3: {iso3: distance}} dict (required).
+        scrap_scenario: Value of the "Scenario" column to read.
+
+    Returns:
+        list[Supplier]: One scrap supplier per country, major countries split into sub-centres.
+
+    Raises:
+        ValueError: If the scenario is not present in the sheet, or the gravity path is missing.
     """
     if not gravity_distances_pkl_path:
         raise ValueError("gravity_distances_pkl_path must be provided")
@@ -1054,7 +1199,7 @@ def read_scrap_as_suppliers(
     with gravity_path.open("rb") as f:
         gravity_dict = pickle.load(f)
     scrap_df = pd.read_excel(scrap_excel_path, sheet_name=scrap_sheet_name)
-    scrap_df = scrap_df[scrap_df["Scenario"] == CHOSEN_DEMAND_SCENARIO]
+    scrap_df = _select_scenario_rows(scrap_df, scrap_scenario, scrap_sheet_name)
     # Strip whitespace from metric names to handle Excel inconsistencies
     scrap_df["Metric"] = scrap_df["Metric"].str.strip()
     scrap_df = scrap_df[scrap_df["Metric"] == "Total available scrap"]
@@ -1100,18 +1245,12 @@ def read_scrap_as_suppliers(
             except ValueError:
                 continue
 
-        # Create constant production cost dictionary for all years in simulation horizon
-        # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
-        production_cost_by_year = {
-            Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-        }
-
         supply_center = Supplier(
             commodity=Commodities.SCRAP.value,
             supplier_id=f"{scrap_location.country}_scrap",
             location=scrap_location,
             capacity_by_year=scrap_by_year,
-            production_cost_by_year=production_cost_by_year,
+            production_cost_by_year=_initial_scrap_costs(),
             mine_cost_by_year={},
             mine_price_by_year={},
         )
@@ -1119,6 +1258,19 @@ def read_scrap_as_suppliers(
 
     # Refine scrap centers for major countries - split into multiple economic centers
     return refine_scrap_centers_for_major_countries(supply_centers)
+
+
+def normalise_bloc_name(name: str) -> str:
+    """Normalise a bloc/column name to its CountryMapping attribute name.
+
+    Args:
+        name: Bloc name as authored in a sheet (e.g. "EFTA/EUCU", "OECD but not EU").
+
+    Returns:
+        The attribute name: special characters become underscores, and the legacy
+        "EUCJ" spelling is canonicalised to the sheet's "EUCU".
+    """
+    return name.replace("/", "_").replace(" ", "_").replace("-", "_").replace("EUCJ", "EUCU")
 
 
 def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: bool = False) -> list[str]:
@@ -1140,12 +1292,7 @@ def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: b
     Raises:
         ValueError: If the bloc_name is not found as an attribute in any CountryMapping object.
     """
-    # Normalize bloc name to match CountryMapping attributes
-    # Replace special characters that might be in Excel column names
-    bloc_name_normalized = bloc_name.replace("/", "_").replace(" ", "_").replace("-", "_")
-
-    # Special case: EUCU maps to EUCJ for backwards compatibility
-    bloc_name_normalized = bloc_name_normalized.replace("EUCU", "EUCJ")
+    bloc_name_normalized = normalise_bloc_name(bloc_name)
 
     # Verify that at least one country mapping has this attribute
     if country_mappings and not hasattr(country_mappings[0], bloc_name_normalized):
@@ -1192,7 +1339,7 @@ def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_bl
     """
     if entry.startswith("NOT "):
         target = entry[4:]
-        if target in supported_blocs:
+        if normalise_bloc_name(target) in supported_blocs:
             return find_iso3s_of_trade_bloc(country_mappings, target, negation=True)
         all_iso3s = [c.iso3 for c in country_mappings] if country_mappings else []
         if target not in all_iso3s:
@@ -1201,7 +1348,7 @@ def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_bl
                 f"Available trade blocs: {', '.join(supported_blocs) if supported_blocs else '(none)'}"
             )
         return [iso3 for iso3 in all_iso3s if iso3 != target]
-    if entry in supported_blocs:
+    if normalise_bloc_name(entry) in supported_blocs:
         return find_iso3s_of_trade_bloc(country_mappings, entry)
     return [entry]
 
@@ -1212,7 +1359,9 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
 
     The function handles two formats:
     1. Legacy format: columns for "ISO 3-letter code", "year", "carbon_cost"
-    2. New format: "ISO 3-letter code_Bloc" column with year columns (2020, 2021, etc.)
+    2. New format: "ISO 3-letter code_Bloc" column with year columns (2020, 2021, etc.); bloc rows
+       (e.g. "EFTA/EUCU") are kept under the normalised bloc name a carbon border mechanism's
+       applying_region_column carries, so a common bloc price can be looked up beside the national series
 
     Args:
         carbon_cost_excel_path (str): Path to the Excel file containing carbon costs.
@@ -1232,13 +1381,14 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
     if has_new_format:
         # New format: ISO3 in "ISO 3-letter code_Bloc" column, years as column headers
         for _, row in carbon_cost_df.iterrows():
-            iso3 = row["ISO 3-letter code_Bloc"]
+            code = row["ISO 3-letter code_Bloc"]
 
-            # Skip rows with invalid ISO3 codes
-            if pd.isna(iso3) or not isinstance(iso3, str) or len(str(iso3).strip()) != 3:
+            # Only blank codes are skipped; a non-ISO3 code is a bloc row
+            if pd.isna(code) or not isinstance(code, str) or not code.strip():
                 continue
 
-            iso3 = str(iso3).strip()
+            code = code.strip()
+            iso3 = code if len(code) == 3 else normalise_bloc_name(code)
             if iso3 not in carbon_costs:
                 carbon_costs[iso3] = {}
 
@@ -1307,15 +1457,21 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
 
 def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet_name: str) -> list[RegionEmissivity]:
     """
-    Read grid_emissivity from from an Excel file and return a dictionary mapping ISO3 codes to Year and cost.
+    Read regional grid and gas/coke emissivities from the master Excel.
 
     Args:
         excel_path (Path): Path to the Excel file containing grid emissions data.
         grid_sheet_name (str): Name of the sheet containing grid emissions data.
         gas_sheet_name (str): Name of the sheet containing gas coke emissions data.
+
     Returns:
-        list[RegionEmissivity]: A list of RegionEmissivity objects containing emissions data
-        for each country and scenario.
+        list[RegionEmissivity]: One entry per geography and scenario.
+
+    Notes:
+        The grid sheet's ISO column holds either a country ("CHN") or a sub-national
+        geo_key ("CHN:CN-HE"). Sub-national groups take gas/coke factors from their
+        country, and years they do not author are filled from the country's
+        same-scenario values. Sheets without geo_keys are read unchanged.
     """
     grid_emission_df = pd.read_excel(excel_path, sheet_name=grid_sheet_name)
     gas_coke_emissions_df = pd.read_excel(excel_path, sheet_name=gas_sheet_name)
@@ -1358,6 +1514,11 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
     )
 
     # 2) Group gas coke emissions by vector name (only one year data) and no projections
+    # TODO FOR BACKLOG: coke/gas emissivity is scaffolding — it feeds env.fossil_emissivity,
+    # which nothing consumes. Known data bugs to fix before wiring it in: the sheet authors only
+    # ghg_factor_scope_1, so the .sum() below fabricates 0.0 for the all-NaN scope_2/scope_3_rest
+    # columns; the ghg_factor_scope3_methane_* columns miss the "ghg_factor_scope_" prefix and are
+    # silently dropped; units differ per vector (coal tCO2e/t vs gas tCO2e/GJ) and are not recorded.
     carbon_intensity_columns = [
         col for col in gas_coke_emissions_df.columns if col.lower().startswith("ghg_factor_scope_")
     ]
@@ -1377,16 +1538,41 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
 
     grouped_gas_coke = gas_coke_emissions_df.groupby([gas_iso_column, "Vector"])[carbon_intensity_columns].sum()
 
+    emissivity_by_group: dict[tuple[str, str], dict[Year, dict[str, float]]] = {
+        (str(key[0]), str(key[1])): dict(metrics)  # type: ignore[index]
+        for key, metrics in grouped_data.items()
+    }
+
+    # Fill years a sub-national group does not author from its country's same-scenario
+    # group, so a resolved sub-national entry never has a year hole the country could cover.
+    gap_fill_logger = logging.getLogger(f"{__name__}.read_regional_emissivities")
+    for (group_key, scenario_key), year_values in emissivity_by_group.items():
+        country_iso3, _, sub_code = group_key.partition(":")
+        if not sub_code:
+            continue
+        parent = emissivity_by_group.get((country_iso3, scenario_key)) or {}
+        filled = sorted(year for year in parent if year not in year_values)
+        if filled:
+            gap_fill_logger.warning(
+                "Grid emissivity: %s (%s) missing %d year(s); filled %s-%s from %s.",
+                group_key,
+                scenario_key,
+                len(filled),
+                filled[0],
+                filled[-1],
+                country_iso3,
+            )
+            for year in filled:
+                year_values[year] = parent[year]
+
     grid_emissivity_list: list[RegionEmissivity] = []
-    for key, metrics in grouped_data.items():
-        iso3_raw, scenario_raw = key  # type: ignore[misc]
-        iso3: str = str(iso3_raw)  # type: ignore[has-type]
-        scenario: str = str(scenario_raw)  # type: ignore[has-type]
-        # metrics is {'grid_carbon_intensity_value': {year: value}}
-        emissivity = metrics  # type: ignore[index]
+    for (group_key, scenario), emissivity in emissivity_by_group.items():
+        # The ISO column holds a country ("CHN") or a sub-national geo_key ("CHN:CN-HE");
+        # gas/coke factors are authored per country only.
+        iso3, _, geo_unit = group_key.partition(":")
 
         # look up the country name & net‐zero year
-        country_name: str = meta.at[(iso3_raw, scenario_raw), "country"]  # type: ignore[assignment]
+        country_name: str = meta.at[(group_key, scenario), "country"]  # type: ignore[assignment]
 
         # Cast the results of to_dict() to the expected type
         coke_dict = cast(dict[str, float], grouped_gas_coke.loc[iso3].loc["Coking coal"].to_dict())
@@ -1394,10 +1580,11 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
 
         grid_emissivity_list.append(
             RegionEmissivity(
-                iso3=iso3,  # type: ignore[has-type]
+                iso3=iso3,
+                geo_unit=geo_unit or None,
                 country_name=country_name,
-                scenario=scenario.removeprefix("projection_").replace("_", " ").title(),  # type: ignore[has-type]
-                grid_emissivity={key: value for key, value in emissivity.items()},
+                scenario=scenario.removeprefix("projection_").replace("_", " ").title(),
+                grid_emissivity=emissivity,
                 coke_emissivity=coke_dict,
                 gas_emissivity=gas_dict,
             )
@@ -1432,10 +1619,6 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
             for attr in dir(country_mappings[0])
             if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
         ]
-        # Add common variants with "/" for Excel column names (e.g., EFTA/EUCU)
-        # This allows the tariff sheet to use either EFTA_EUCJ or EFTA/EUCU
-        if "EFTA_EUCJ" in supported_blocs:
-            supported_blocs.append("EFTA/EUCU")
 
     logger.info(
         f"Detected {len(supported_blocs)} available trade blocs for tariff processing: {', '.join(supported_blocs)}"
@@ -1591,45 +1774,65 @@ def read_capex_and_learning_rate_data(
     return capex_list
 
 
-def read_cost_of_capital(coc_excel_path: str, sheet_name: str = "Cost of capital") -> list[CostOfCapital]:
+def read_cost_of_capital(
+    coc_excel_path: str,
+    sheet_name: str = "Cost of capital",
+    techno_economic_sheet: str = "Techno-economic details",
+) -> list[CostOfCapital]:
     """
-    Read cost of capital data from an Excel file and return a list of CostOfCapital objects.
+    Read per-country, per-technology cost of capital data from the master Excel.
+
+    The sheet is long-format with columns: Country, ISO-3 Code, Tech, Cost of debt,
+    Cost of equity, Cost of capital (all rates as fractions). Tech names are stored
+    verbatim; besides the model technologies the sheet carries the special
+    RENEWABLES_KEY and HYDROGEN_KEY categories.
 
     Args:
-        coc_excel_path (str): Path to the Excel file containing cost of capital data.
-        sheet_name (str): Name of the sheet in the Excel file to read from.
+        coc_excel_path (str): Path to the master Excel file.
+        sheet_name (str): Name of the cost of capital sheet.
+        techno_economic_sheet (str): Sheet whose Technology column defines the
+            model technologies each country must cover.
 
     Returns:
-        list[CostOfCapital]: A list of CostOfCapital objects containing the cost of capital data.
+        list[CostOfCapital]: One entry per country with its per-tech rates.
+
+    Raises:
+        ValueError: On duplicate (ISO3, Tech) rows with conflicting values, or on a
+            country missing a model technology (or Renewables/Hydrogen).
+
+    Notes:
+        Some ISO3 codes appear under several territory names (e.g. ATF, BES, ESP);
+        those duplicates are collapsed after checking their values agree.
+        The Cost of capital (WACC) column is stored informationally; the model
+        finances from the debt and equity columns with config.equity_share gearing.
     """
-
     data = pd.read_excel(coc_excel_path, sheet_name=sheet_name)
-
-    # Handle the case where "More risky assets" column might be unnamed (just whitespace)
-    # In the actual Excel file, this column has a single space as its header
-    if "More risky assets" not in data.columns:
-        # Check for columns that are just whitespace
-        for col in data.columns:
-            if col.strip() == "" and data.columns.get_loc(col) == 3:  # 4th column (index 3)
-                data = data.rename(columns={col: "More risky assets"})
-                break
-        else:
-            # If still not found, try to use the 4th column by position
-            if len(data.columns) >= 4:
-                data = data.rename(columns={data.columns[3]: "More risky assets"})
+    model_techs = set(pd.read_excel(coc_excel_path, sheet_name=techno_economic_sheet)["Technology"].dropna().unique())
+    required_techs = model_techs | {RENEWABLES_KEY, HYDROGEN_KEY}
 
     cost_of_capital_list = []
-    for _, row in data.iterrows():
+    for iso3, group in data.groupby("ISO-3 Code", sort=True):
+        techs: dict[str, TechFinancingRates] = {}
+        for _, row in group.iterrows():
+            rates = TechFinancingRates(
+                cost_of_debt=float(row["Cost of debt"]),
+                cost_of_equity=float(row["Cost of equity"]),
+                cost_of_capital=float(row["Cost of capital"]),
+            )
+            tech = row["Tech"]
+            if tech in techs and techs[tech] != rates:
+                raise ValueError(f"Conflicting duplicate cost of capital rows for {iso3}/{tech} in '{sheet_name}'")
+            techs[tech] = rates
+
+        missing = required_techs - techs.keys()
+        if missing:
+            raise ValueError(f"Cost of capital sheet is missing technologies for {iso3}: {sorted(missing)}")
+
         cost_of_capital_list.append(
             CostOfCapital(
-                country=row["Country"],
-                iso3=row["ISO-3 Code"],
-                debt_res=row["Debt - Renewables"],
-                equity_res=row["Equity - Renewables"],
-                wacc_res=row["WACC - Renewables"],
-                debt_other=row["Debt - Other assets"],
-                equity_other=row["Equity - Other assets"],
-                wacc_other=row["WACC - Other assets"],
+                country=group["Country"].iloc[0],
+                iso3=str(iso3),
+                techs=techs,
             )
         )
 
@@ -1768,9 +1971,7 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
                     else:
                         boolean_val = False
 
-                    # Normalize column name for attribute (replace special chars with underscores)
-                    attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
-                    mapping_kwargs[attr_name] = boolean_val
+                    mapping_kwargs[normalise_bloc_name(col)] = boolean_val
 
             mapping = CountryMapping(**mapping_kwargs)  # type: ignore[arg-type]
             mappings.append(mapping)
@@ -1792,7 +1993,8 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     - Row 0: "CBAM active?" - 1 if active, 0 if inactive
     - Row 1: "Year CBAM begins" - start year
     - Row 2: "Year CBAM ends" - end year
-    - Row 3: "Common carbon cost across the bloc?" - not used
+    - Row 3: "Common carbon cost across the bloc?" - 1 prices the border at the bloc's carbon-cost
+      series instead of each member's national series (absent row: every mechanism national)
 
     The function dynamically detects trade bloc columns (any column except the first
     descriptor column) and processes them as potential carbon border mechanisms.
@@ -1816,17 +2018,18 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     if len(df) < 3:
         logger.warning(f"CBAM sheet has insufficient rows ({len(df)}) - expected at least 3")
         return []
+    has_common_price_row = len(df) > 3
+    if not has_common_price_row:
+        logger.info(
+            "CBAM sheet has no 'Common carbon cost across the bloc?' row; every mechanism prices at national series"
+        )
 
     # Dynamically detect mechanism columns
     # Skip the first column (assumed to be the row descriptor/label column)
     # All other columns are potential mechanisms
     mechanism_configs = []
     for col in df.columns[1:]:  # Skip first column
-        # Normalize the column name to match CountryMapping attributes
-        region_column = col.replace("/", "_").replace(" ", "_").replace("-", "_")
-        # Special case: EUCU maps to EUCJ
-        region_column = region_column.replace("EUCU", "EUCJ")
-        mechanism_configs.append((col, region_column))
+        mechanism_configs.append((col, normalise_bloc_name(col)))
 
     if mechanism_configs:
         logger.info(
@@ -1872,12 +2075,16 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
                     logger.warning(f"Invalid end year for {mechanism_name}: {end_year_val}")
                     # Continue with None end year (ongoing mechanism)
 
+            # Row 3: common bloc price flag
+            common_carbon_cost = bool(has_common_price_row and df.iloc[3][mechanism_name] == 1)
+
             if start_year:
                 mechanism = CarbonBorderMechanism(
                     mechanism_name=mechanism_name,
                     applying_region_column=region_column,
                     start_year=start_year,
                     end_year=end_year,
+                    common_carbon_cost=common_carbon_cost,
                 )
                 mechanisms.append(mechanism)
                 logger.info(f"Created {mechanism_name} mechanism: {start_year}-{end_year if end_year else 'ongoing'}")
@@ -1992,7 +2199,8 @@ def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
         return "opex"
     elif normalized in ("capex",):
         return "capex"
-    elif normalized in ("cost of debt", "debt"):
+    # Underscore/hyphen spellings would otherwise fall through and be read as an energy carrier
+    elif normalized in ("cost of debt", "cost_of_debt", "cost-of-debt", "debt"):
         return "cost of debt"
     # Known aliases
     elif normalized == "h2":
@@ -2077,7 +2285,9 @@ def read_subsidies(
     - Single 'Subsidy amount' + 'Subsidy type' columns
     - Technology wildcard matching (e.g., 'CCS*' matches all CCS technologies)
     - Cost item normalization (OPEX, CAPEX, COST OF DEBT)
-    - Percentage values as whole numbers (10 = 10%), converted to decimal internally
+    - Relative amounts as decimal fractions (0.1 = 10%), read as given with a warning when outside -1 to 1;
+      cost-of-debt absolute amounts as percentage points (5 = 5 pp), converted to decimal internally
+    - Location as a trade bloc, a bare iso3, or a sub-national geo_key ("CHN:CN-HE")
 
     Args:
         excel_path: Path to the Excel file
@@ -2169,35 +2379,43 @@ def read_subsidies(
         if subsidy_type is None:
             continue
 
-        # Convert percentage values to decimal
-        # - Relative subsidies: percentage to decimal (e.g., 10% -> 0.1)
+        # - Relative subsidies: already a decimal fraction (e.g., 0.1 = 10%)
         # - Cost of debt absolute: percentage points to decimal (e.g., 5 -> 0.05)
         # - Other absolute subsidies: keep as-is (e.g., USD/t output)
         if subsidy_type == "relative":
-            subsidy_amount = float(subsidy_amount) / 100
-        elif cost_item == "cost_of_debt":
+            subsidy_amount = float(subsidy_amount)
+            if abs(subsidy_amount) > 1:
+                logger.warning(
+                    f"Row {_index}: relative subsidy amount {subsidy_amount} is outside -1 to 1 — "
+                    "relative amounts are decimal fractions (0.3 = 30%), not percentages"
+                )
+        elif cost_item == "cost of debt":
             # Absolute cost of debt subsidy is given as percentage point reduction
             subsidy_amount = float(subsidy_amount) / 100
         else:
             subsidy_amount = float(subsidy_amount)
 
-        # Expand trade bloc to ISO3 list
+        # The Location column holds a trade bloc (expanded to its member countries), a bare
+        # iso3, or a sub-national geo_key like "CHN:CN-HE" (split into iso3 + geo_unit).
         region = row["Location"]
+        locations: list[tuple[str, str | None]]
         if region in trade_bloc_columns:
-            iso3_list = country_df[country_df[region]]["ISO 3-letter code"].tolist()
+            locations = [(iso3, None) for iso3 in country_df[country_df[region]]["ISO 3-letter code"].tolist()]
         else:
-            iso3_list = [region]
+            iso3, _, code = str(region).partition(":")
+            locations = [(iso3, code or None)]
 
         # Expand technology pattern
         technology_list = _expand_technology_pattern(row["Technology"], all_technologies)
 
-        # Create subsidies for each ISO3 and technology combination
-        for iso3 in iso3_list:
+        # Create subsidies for each location and technology combination
+        for iso3, geo_unit in locations:
             for technology in technology_list:
                 subsidies.append(
                     Subsidy(
                         scenario_name=row["Scenario name"],
                         iso3=iso3,
+                        geo_unit=geo_unit,
                         start_year=Year(int(row["Start year"])),
                         end_year=Year(int(row["End year"])),
                         technology_name=technology,
@@ -2297,8 +2515,11 @@ def read_biomass_availability(excel_path: Path, sheet_name: str = "Biomass avail
     df = pd.read_excel(excel_path, sheet_name=sheet_name)
 
     availabilities = []
-    # Year columns are integers from 2024 to 2050
-    year_columns = [col for col in df.columns if isinstance(col, int) and 2024 <= col <= 2050]
+    year_columns = [
+        col
+        for col in df.columns
+        if isinstance(col, int) and EXCEL_BIOMASS_CO2_START_YEAR <= col <= EXCEL_BIOMASS_CO2_END_YEAR
+    ]
 
     for _, row in df.iterrows():
         # Skip rows with all NaN values in year columns
@@ -2318,6 +2539,10 @@ def read_biomass_availability(excel_path: Path, sheet_name: str = "Biomass avail
         for year in year_columns:
             if pd.notna(row[year]):
                 try:
+                    if "kg" in unit.lower():
+                        conversion_factor = 1e-3  # Convert kg to t
+                    else:
+                        conversion_factor = 1.0  # No conversion needed
                     availability = BiomassAvailability(
                         region=region,
                         country=country,
@@ -2325,7 +2550,7 @@ def read_biomass_availability(excel_path: Path, sheet_name: str = "Biomass avail
                         scenario=scenario,
                         unit=unit,
                         year=Year(int(year)),
-                        availability=float(row[year]),
+                        availability=float(row[year]) * conversion_factor,
                     )
                     availabilities.append(availability)
                 except (ValueError, TypeError) as e:
@@ -2357,8 +2582,11 @@ def read_co2_storage_availability(excel_path: Path, sheet_name: str = "CO2 stora
         return []
 
     availabilities = []
-    # Year columns are integers from 2024 to 2050
-    year_columns = [col for col in df.columns if isinstance(col, int) and 2024 <= col <= 2050]
+    year_columns = [
+        col
+        for col in df.columns
+        if isinstance(col, int) and EXCEL_BIOMASS_CO2_START_YEAR <= col <= EXCEL_BIOMASS_CO2_END_YEAR
+    ]
 
     for _, row in df.iterrows():
         # Skip rows with all NaN values in year columns
@@ -2828,3 +3056,230 @@ def read_willingness_to_pay(
 
     logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")
     return willingness_to_pay_entries
+
+
+def _read_capacity_pool_sheet(excel_path: Path, sheet_name: str, required_columns: set[str]) -> pd.DataFrame | None:
+    """Load one optional capacity pool sheet, checking its structure.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Sheet to load.
+        required_columns: Columns the sheet must carry when present.
+
+    Returns:
+        The sheet with fully-empty rows dropped, or None when the sheet is
+        absent — the sheets are optional, and absence means the fixture is
+        simply not produced.
+
+    Raises:
+        ValueError: If a present sheet is missing required columns.
+    """
+    try:
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    except ValueError:
+        logger.info(f"Sheet '{sheet_name}' not found in {excel_path} - capacity pool input not provided")
+        return None
+    missing = required_columns - set(df.columns)
+    if missing:
+        raise ValueError(f"Sheet '{sheet_name}' is missing required column(s): {sorted(missing)}")
+    return df.dropna(how="all")
+
+
+def _capacity_pool_str(value: Any) -> str | None:
+    """Return the stripped cell text, or None for a blank cell."""
+    if pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _capacity_pool_flag(value: Any, sheet_name: str, row_num: int, column: str) -> bool | None:
+    """Parse a classification flag cell: TRUE/FALSE/1/0, blank means unauthored.
+
+    Raises:
+        ValueError: On any other value — a mistyped flag must not silently
+            become unauthored.
+    """
+    if pd.isna(value):
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1"):
+            return True
+        if lowered in ("false", "0"):
+            return False
+    elif isinstance(value, (bool, int, float)) and float(value) in (0.0, 1.0):
+        return bool(value)
+    raise ValueError(f"Sheet '{sheet_name}' row {row_num}: {column} must be TRUE/FALSE or blank, got {value!r}")
+
+
+def _capacity_pool_number(value: Any, sheet_name: str, row_num: int, column: str, *, as_int: bool = False) -> Any:
+    """Parse a required numeric cell, as float or int.
+
+    Raises:
+        ValueError: On a blank or non-numeric cell, or a fractional value
+            where an integer is required.
+    """
+    try:
+        if pd.isna(value):
+            raise ValueError
+        number = float(value)
+        if as_int:
+            if number != int(number):
+                raise ValueError
+            return int(number)
+        return number
+    except (TypeError, ValueError):
+        kind = "an integer" if as_int else "a number"
+        raise ValueError(f"Sheet '{sheet_name}' row {row_num}: {column} must be {kind}, got {value!r}")
+
+
+def read_capacity_pool_provinces(
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - CHN provinces",
+) -> list[RegionRow]:
+    """Read the capacity pool provinces sheet from the master Excel file.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - CHN provinces").
+
+    Returns:
+        One RegionRow per sheet row, in sheet order; empty when the optional
+        sheet is absent.
+
+    Raises:
+        ValueError: On structural problems within a present sheet (missing
+            columns, blank geo_key). Semantic checks
+            live in ``steelo.capacity_policy.validation``.
+    """
+    df = _read_capacity_pool_sheet(excel_path, sheet_name, {"geo_key", "region_name", "type"})
+    if df is None:
+        return []
+
+    rows = []
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        geo_key = _capacity_pool_str(row["geo_key"])
+        if geo_key is None:
+            raise ValueError(f"Sheet '{sheet_name}' row {row_num}: geo_key must not be blank")
+        rows.append(
+            RegionRow(
+                geo_key=geo_key,
+                region_name=_capacity_pool_str(row["region_name"]),
+                type=_capacity_pool_str(row["type"]),
+            )
+        )
+    logger.info(f"Successfully read {len(rows)} capacity pool province rows from '{sheet_name}'")
+    return rows
+
+
+def read_capacity_pool_technologies(
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - technologies",
+) -> list[TechnologyRow]:
+    """Read the capacity pool technologies sheet from the master Excel file.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - technologies").
+
+    Returns:
+        One TechnologyRow per sheet row (classification and override rows
+        alike), in sheet order; empty when the optional sheet is absent.
+
+    Notes:
+        ``switching_to_reductant`` is an optional column: a sheet without it
+        reads as if every cell were blank.
+
+    Raises:
+        ValueError: On structural problems within a present sheet (missing
+            columns, blank technology, unparseable flag or ratio). Semantic
+            checks live in ``steelo.capacity_policy.validation``.
+    """
+    df = _read_capacity_pool_sheet(
+        excel_path,
+        sheet_name,
+        {
+            "technology",
+            "product",
+            "reductant",
+            "is_emission_intense",
+            "switching_to",
+            "swap_ratio",
+        },
+    )
+    if df is None:
+        return []
+
+    rows = []
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        technology = _capacity_pool_str(row["technology"])
+        if technology is None:
+            raise ValueError(f"Sheet '{sheet_name}' row {row_num}: technology must not be blank")
+        swap_ratio_raw = row["swap_ratio"]
+        rows.append(
+            TechnologyRow(
+                technology=technology,
+                product=_capacity_pool_str(row["product"]),
+                reductant=_capacity_pool_str(row["reductant"]),
+                is_emission_intense=_capacity_pool_flag(
+                    row["is_emission_intense"], sheet_name, row_num, "is_emission_intense"
+                ),
+                switching_to=_capacity_pool_str(row["switching_to"]),
+                swap_ratio=None
+                if pd.isna(swap_ratio_raw)
+                else _capacity_pool_number(swap_ratio_raw, sheet_name, row_num, "swap_ratio"),
+                switching_to_reductant=_capacity_pool_str(row.get("switching_to_reductant")),
+            )
+        )
+    logger.info(f"Successfully read {len(rows)} capacity pool technology rows from '{sheet_name}'")
+    return rows
+
+
+def read_capacity_pool_opening_credits(
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - opening credits",
+) -> list[OpeningCreditRow]:
+    """Read the capacity pool opening-credits sheet from the master Excel file.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - opening credits").
+
+    Returns:
+        One OpeningCreditRow per sheet row, in sheet order; empty when the
+        optional sheet is absent.
+
+    Raises:
+        ValueError: On structural problems within a present sheet (missing
+            columns, blank geo_key or product, non-numeric vintage or
+            capacity). Semantic checks live in
+            ``steelo.capacity_policy.validation``.
+    """
+    df = _read_capacity_pool_sheet(excel_path, sheet_name, {"vintage_year", "capacity_mt", "geo_key", "product"})
+    if df is None:
+        return []
+
+    rows = []
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        geo_key = _capacity_pool_str(row["geo_key"])
+        product = _capacity_pool_str(row["product"])
+        if geo_key is None or product is None:
+            raise ValueError(f"Sheet '{sheet_name}' row {row_num}: geo_key and product must not be blank")
+        rows.append(
+            OpeningCreditRow(
+                vintage_year=_capacity_pool_number(
+                    row["vintage_year"], sheet_name, row_num, "vintage_year", as_int=True
+                ),
+                capacity_mt=_capacity_pool_number(row["capacity_mt"], sheet_name, row_num, "capacity_mt"),
+                geo_key=geo_key,
+                product=product,
+                technology=_capacity_pool_str(row.get("technology")),
+                plant_group_id=_capacity_pool_str(row.get("plant_group_id")),
+            )
+        )
+    logger.info(f"Successfully read {len(rows)} capacity pool opening-credit rows from '{sheet_name}'")
+    return rows

@@ -54,7 +54,7 @@ class TestCheckpointIntegration:
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path(tmp_path) / "master.xlsx",
             output_dir=Path(tmp_path),
             technology_settings=get_default_technology_settings(),

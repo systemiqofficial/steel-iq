@@ -24,21 +24,24 @@ Complete guide to running steel model simulations on your local machine. Covers:
 - **Troubleshooting**: Common issues and debugging tips
 - **Output files**: Understanding simulation results and visualizations
 
+### [Scenario Viewer](scenario_viewer.md)
+Browsing and comparing the results of local runs, offline. Covers:
+- **Opening it**: `steelo-viewer` from the command line, or Scenario viewer in the app
+- **Filters and scenarios**: How the viewer groups runs, and how run names are made unique
+- **The panes**: Explore, Compare, Annual costs, View data and Download results
+- **Rebuilding a run's viewer files**: `steelo-viewer regenerate`
+
 ### [CLI Commands](cli_commands.md)
 Reference documentation for all command-line interface tools:
 - **run_simulation**: Main command to run simulations with automatic data preparation and caching
+- **steelo-viewer**: Serve the scenario viewer for local runs, or rebuild a run's viewer files
+- **steelo-data-prepare** and **steelo-data-recreate**: Prepare the data files a simulation needs
+- **generate-geo-options**: List the sub-national geography keys the master workbook can use
 - **list-binaries**: View available Steel Model standalone binaries on S3
 - **download-binaries**: Download specific builds of the Electron app
 - **download-latest**: Get the latest version of the Electron app for your platform
 
 Each command includes usage examples, options, and practical tips.
-
-### [Command-Line Entrypoints](commandline_entrypoints.md)
-Detailed reference for programmatic access to CLI functionality. Covers:
-- Python functions behind CLI commands
-- Integration patterns for custom workflows
-- Examples of programmatic usage
-- Advanced configuration options
 
 ### [Configuration](configuration.md)
 Comprehensive guide to configuring the Steel Model simulation:
@@ -48,6 +51,12 @@ Comprehensive guide to configuring the Steel Model simulation:
 - **Economic parameters**: Carbon pricing, capital costs, discount rates
 - **Geographic constraints**: Land use, infrastructure, and renewable energy
 - **Environment variables**: System-wide configuration options
+
+### [Master Input Reference](master_input_reference.md)
+What the master input workbook's columns may contain and what the model does with them:
+- **Per sheet**: allowed values, effect in the model, rules enforced at data preparation
+- **Parameters that interact**: the simulation levers that change how a sheet is used
+- Being built up sheet by sheet, starting with the China capacity-replacement policy sheets
 
 ### [Logging Guide](LOGGING_GUIDE.md)
 Understanding and controlling simulation logging:
@@ -110,11 +119,8 @@ run_simulation --start-year 2025 --end-year 2027 --log-level INFO
 
 #### Using Custom Data
 ```bash
-# Prepare data with your own master Excel
-steelo-data-prepare --master-excel path/to/your/master_input.xlsx
-
-# Run simulation
-run_simulation
+# Prepare data from your own master Excel and run the simulation on it
+run_simulation --master-excel path/to/your/master_input.xlsx
 ```
 
 #### Web Interface
@@ -122,14 +128,12 @@ run_simulation
 # Set up Django (first time only)
 cd src/django
 python manage.py migrate
-python manage.py prepare_default_data
 
-# Start services
-python manage.py runserver          # Terminal 1
-python manage.py db_worker          # Terminal 2
+# Start the web server
+python manage.py runserver
 ```
 
-Then open http://localhost:8000 in your browser.
+Then open http://localhost:8000 in your browser. The app starts a background worker itself when the Simulations page first loads, asking for a confirmation only when memory is short. Prepare data under **Master Excel** in the navigation bar, with **Prepare Data with This Master Excel** on a workbook's page.
 
 ## Key Concepts
 
@@ -154,7 +158,10 @@ The Steel Model uses a structured data flow:
 
 ## Related Documentation
 
+:::{only} not public
 - **[Architecture Overview](../architecture/overview_architecture.md)**: Overall system design
+:::
+
 - **[Dashboard & UI](../dashboard/overview_dashboard.md)**: Web interface and Electron app documentation
 
 ## Getting Help
@@ -173,3 +180,16 @@ Common issues and solutions are documented in:
 - **Issue Tracker**: Report bugs and request features
 - **Documentation**: Comprehensive guides and API references
 - **Community**: Share experiences and get help
+
+
+```{toctree}
+:hidden:
+
+installation_guide
+running_simulations_locally
+scenario_viewer
+configuration
+master_input_reference
+cli_commands
+LOGGING_GUIDE
+```

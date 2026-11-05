@@ -20,6 +20,7 @@ def master_excel_with_duplicates():
                 "Company name": ["Rizhao Steel", "Rizhao Steel", "Rizhao Steel", "Another Steel", "Third Steel"],
                 "Coordinates": ["35.416, 119.524", "35.416, 119.524", "35.416, 119.524", "40.0, 120.0", "30.0, 110.0"],
                 "Country": ["China", "China", "China", "Japan", "Germany"],
+                "ISO3": ["CHN", "CHN", "CHN", "JPN", "DEU"],
                 "Main production equipment": ["BF", "BOF", "EAF", "BF", "DRI"],
                 "Nominal BF capacity (ttpa)": [5000, None, None, 3000, None],
                 "Nominal BOF steel capacity (ttpa)": [None, 6000, None, None, None],

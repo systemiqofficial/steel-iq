@@ -1,5 +1,8 @@
 """Test that Django form GeoConfig fields correctly map to GeoConfig parameters."""
 
+import shutil
+from pathlib import Path
+
 import pytest
 from django.forms import DecimalField, BooleanField, ChoiceField, IntegerField
 from steeloweb.models import DataPreparation, DataPackage
@@ -56,7 +59,7 @@ def data_packages(db):
 
 
 @pytest.fixture
-def data_preparation(db, data_packages):
+def data_preparation(db, data_packages, prepared_data_directory):
     """Create a ready data preparation for model runs."""
     core_package, geo_package = data_packages
     return DataPreparation.objects.create(
@@ -64,7 +67,7 @@ def data_preparation(db, data_packages):
         status=DataPreparation.Status.READY,
         core_data_package=core_package,
         geo_data_package=geo_package,
-        data_directory="/fake/path",
+        data_directory=str(prepared_data_directory),
     )
 
 
@@ -77,7 +80,6 @@ def base_form_data(data_preparation):
         "end_year": 2030,
         "data_preparation": data_preparation.pk,
         # Required technology fields
-        "scrap_generation_scenario": "business_as_usual",
         "bf_allowed": True,
         "bf_from_year": 2025,
         "bof_allowed": True,
@@ -200,6 +202,7 @@ def test_included_power_mix_field_type(db):
     assert isinstance(field, ChoiceField)
     expected_choices = [
         ("85% baseload + 15% grid", "85% baseload + 15% grid"),
+        ("90% baseload + 10% grid", "90% baseload + 10% grid"),
         ("95% baseload + 5% grid", "95% baseload + 5% grid"),
         ("Not included", "Not included"),
         ("Grid only", "Grid only"),
@@ -315,7 +318,7 @@ def test_hydrogen_ceiling_percentile_default_value(db):
     """Test that hydrogen_ceiling_percentile has correct default value."""
     form = ModelRunCreateForm()
     field = form.fields.get("hydrogen_ceiling_percentile")
-    assert field.initial == 20.0
+    assert field.initial == 100.0
 
 
 def test_included_power_mix_default_value(db):
@@ -329,7 +332,7 @@ def test_intraregional_trade_allowed_default_value(db):
     """Test that intraregional_trade_allowed has correct default value."""
     form = ModelRunCreateForm()
     field = form.fields.get("intraregional_trade_allowed")
-    assert field.initial is True
+    assert field.initial is False
 
 
 def test_long_dist_pipeline_transport_cost_default_value(db):
@@ -464,7 +467,13 @@ def test_field_boundary_validation_valid_values(db, base_form_data, field_name, 
 
 def test_included_power_mix_choice_validation_valid(db, base_form_data):
     """Test that included_power_mix accepts valid choices."""
-    valid_choices = ["85% baseload + 15% grid", "95% baseload + 5% grid", "Not included", "Grid only"]
+    valid_choices = [
+        "85% baseload + 15% grid",
+        "90% baseload + 10% grid",
+        "95% baseload + 5% grid",
+        "Not included",
+        "Grid only",
+    ]
 
     for choice in valid_choices:
         form_data = base_form_data.copy()
@@ -500,6 +509,32 @@ def test_hydrogen_ceiling_percentile_propagation(db, base_form_data):
     modelrun.save()
 
     assert modelrun.config["hydrogen_ceiling_percentile"] == 35.5
+
+
+@pytest.mark.parametrize(
+    ("power_mix", "accepted"),
+    [("85% baseload + 15% grid", False), ("", False), ("Grid only", True), ("Not included", True)],
+)
+def test_run_form_refuses_a_baseload_mix_on_a_preparation_without_the_default_lcoe_files(
+    db,
+    base_form_data,
+    data_preparation,
+    power_mix,
+    accepted,
+):
+    """
+    Test that a preparation made before geo-data 3.0.0 refuses a baseload mix, a blank one meaning the class default,
+    with what to do in the app, and accepts a mix with no baseload share.
+    """
+    shutil.rmtree(Path(data_preparation.data_directory) / "data" / "outputs" / "GEO" / "baseload_lcoe")
+    form = ModelRunCreateForm(data={**base_form_data, "included_power_mix": power_mix})
+
+    assert form.is_valid() is accepted
+    if not accepted:
+        error = form.errors["included_power_mix"][0]
+        assert "made before geo-data 3.0.0" in error
+        assert "Pick Grid only, or upload the master again under a new name and prepare it" in error
+        assert "--boa-run" not in error
 
 
 def test_included_power_mix_propagation(db, base_form_data):
@@ -598,10 +633,10 @@ def test_max_slope_propagation(db, base_form_data):
     assert modelrun.config["max_slope"] == 5.5
 
 
-def test_priority_pct_propagation(db, base_form_data):
-    """Test that priority_pct is correctly passed to model config."""
+def test_pick_priority_sites_share_propagation(db, base_form_data):
+    """Test that pick_priority_sites_share is correctly passed to model config."""
     form_data = base_form_data.copy()
-    form_data["priority_pct"] = 15
+    form_data["pick_priority_sites_share"] = 0.15
 
     form = ModelRunCreateForm(data=form_data)
     assert form.is_valid(), f"Form errors: {form.errors}"
@@ -610,13 +645,13 @@ def test_priority_pct_propagation(db, base_form_data):
     modelrun.config = build_config_from_form(form)
     modelrun.save()
 
-    assert modelrun.config["priority_pct"] == 15
+    assert modelrun.config["pick_priority_sites_share"] == 0.15
 
 
-def test_priority_pct_default_propagation(db, base_form_data):
-    """Test that priority_pct defaults to 5 when not specified."""
+def test_pick_priority_sites_share_default_propagation(db, base_form_data):
+    """Test that pick_priority_sites_share defaults to 0.05 when not specified."""
     form_data = base_form_data.copy()
-    # Don't set priority_pct
+    # Don't set pick_priority_sites_share
 
     form = ModelRunCreateForm(data=form_data)
     assert form.is_valid(), f"Form errors: {form.errors}"
@@ -625,8 +660,8 @@ def test_priority_pct_default_propagation(db, base_form_data):
     modelrun.config = build_config_from_form(form)
     modelrun.save()
 
-    # Default value should be 5
-    assert modelrun.config.get("priority_pct", 5) == 5
+    # Default value should be 0.05
+    assert modelrun.config.get("pick_priority_sites_share", 0.05) == 0.05
 
 
 # === Default Value Propagation Tests ===
@@ -638,9 +673,9 @@ def test_default_values_propagation(db, base_form_data):
     form_data = base_form_data.copy()
     form_data.update(
         {
-            "hydrogen_ceiling_percentile": 20.0,
+            "hydrogen_ceiling_percentile": 100.0,
             "included_power_mix": "85% baseload + 15% grid",
-            "intraregional_trade_allowed": True,
+            "intraregional_trade_allowed": False,
             "long_dist_pipeline_transport_cost": 1.0,
             "iron_mine_to_plant": 0.013,
             "iron_to_steel_plant": 0.015,
@@ -662,9 +697,9 @@ def test_default_values_propagation(db, base_form_data):
 
     # Check that default values are present
     expected_defaults = {
-        "hydrogen_ceiling_percentile": 20.0,
+        "hydrogen_ceiling_percentile": 100.0,
         "included_power_mix": "85% baseload + 15% grid",
-        "intraregional_trade_allowed": True,
+        "intraregional_trade_allowed": False,
         "long_dist_pipeline_transport_cost": 1.0,
         "include_infrastructure_cost": True,
         "include_transport_cost": True,

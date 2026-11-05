@@ -1,3 +1,4 @@
+import functools
 import re
 
 import pandas as pd
@@ -7,6 +8,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from steelo.domain.models import FurnaceGroup
+
+_UNDERSCORE_RUN = re.compile(r"_+")
 
 
 def normalize_name(name: str | None) -> str:
@@ -32,8 +35,20 @@ def normalize_name(name: str | None) -> str:
     """
     if name is None:
         return ""
-    key = str(name).lower().replace(" ", "_").replace("-", "_")
-    return re.sub(r"_+", "_", key)
+    if type(name) is str:
+        return _normalize_str(name)
+    return _normalize_uncached(str(name))
+
+
+def _normalize_uncached(name: str) -> str:
+    key = name.lower().replace(" ", "_").replace("-", "_")
+    return _UNDERSCORE_RUN.sub("_", key)
+
+
+# The call count is in the hundreds of millions per run, over a few hundred distinct names.
+# Only exact str is cached: a str subclass (for example a str-mixin Enum) compares equal to its
+# value but can format differently under str(), so it would share a cache entry wrongly.
+_normalize_str = functools.lru_cache(maxsize=65536)(_normalize_uncached)
 
 
 def display_scrollable_dataframe(df) -> None:
@@ -101,15 +116,19 @@ def merge_two_dictionaries(target: dict, source: dict) -> dict:
     return target
 
 
-def get_most_common_reductant_by_technology(furnace_groups: list["FurnaceGroup"]) -> dict[str, str]:
+def get_most_common_reductant_by_technology(
+    furnace_groups: list["FurnaceGroup"], active_statuses: list[str]
+) -> dict[str, str]:
     """
     Get the most common reductant for each technology from a collection of furnace groups.
 
-    Aggregates reductant data from all furnace groups to determine the most frequently
-    used reductant for each technology type.
+    Aggregates reductant data from active-status furnace groups to determine the most
+    frequently used reductant for each technology type. Furnace groups whose status is
+    not in ``active_statuses`` (e.g. closed or discarded ones) do not vote.
 
     Args:
         furnace_groups: List of FurnaceGroup objects to aggregate from.
+        active_statuses: Status strings (lowercase) whose furnace groups count in the vote.
 
     Returns:
         dict[str, str]: Dictionary mapping technology name to most common reductant.
@@ -124,8 +143,11 @@ def get_most_common_reductant_by_technology(furnace_groups: list["FurnaceGroup"]
     """
     # Group reductants by technology
     tech_reductants: dict[str, list[str]] = defaultdict(list)
+    active_statuses_lower = {status.lower() for status in active_statuses}
 
     for fg in furnace_groups:
+        if fg.status.lower() not in active_statuses_lower:
+            continue
         tech_name = fg.technology.name
         reductant = fg.chosen_reductant
 

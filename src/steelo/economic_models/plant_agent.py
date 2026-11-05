@@ -6,26 +6,36 @@ import random
 import time
 from typing import cast
 
+from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
-from steelo.adapters.geospatial.geospatial_statistics import (
-    export_lcoe_lcoh_statistics_by_country,
-    export_overbuild_factor_statistics_by_country,
-)
+from steelo.adapters.geospatial.geospatial_statistics import export_lcoe_lcoh_outputs, load_ne_region_by_geo_key
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
+from steelo.capacity_policy.handlers import (
+    expansion_capacity_hook,
+    greenfield_capacity_hook,
+    greenfield_feasibility_hook,
+    greenfield_retry_cap,
+    increase_sizing_hook,
+    replace_capacity_hook,
+)
 from steelo.domain import Year
 from steelo.domain.commands import (
     AddFurnaceGroup,
     ChangeFurnaceGroupStatusToSwitchingTechnology,
     ChangeFurnaceGroupTechnology,
 )
+from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+    log_carbon_border_outcomes,
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
+from steelo.logging_config import LoggingConfig
+from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
-from steelo.utilities.file_output import export_commodity_allocations_to_csv
+from steelo.utilities.file_output import export_carbon_border_charges_to_csv, export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
 from steelo.utilities.plotting import (
     plot_detailed_trade_map,
@@ -82,13 +92,14 @@ class GeospatialModel:
             1. Produces all geospatial input layers (LCOE, transport costs, etc.) and calculates outgoing cashflow proxies
             to select the best locations globally and per country.
             2. Identifies new business opportunities in top locations for technologies that will be allowed at the earliest possible
-            construction start (current year + consideration time + announcement time). These are marked as 'considered'.
+            construction start (current year + consideration time, at least 2 years ahead). These are marked as 'considered'.
             3. Updates dynamic costs (e.g., grid cell-specific power and hydrogen prices, CAPEX, cost of debt, and subsidies) for all
             business opportunities yearly (status: considered and announced).
             4. Updates the NPV of all potential business opportunities each year with new costs (status: considered).
-            5. Business opportunities (status: considered) that remain NPV-positive for the first X years (default=3y) are announced
-            with a certain probability (default=70%; uniformly sampled), changing their status to 'announced'. This reflects that
-            not all opportunities are taken up by investors.
+            5. Business opportunities (status: considered) whose last X (=consideration_time, default=3y) yearly NPVs are all
+            positive (a rolling window, not necessarily the first years) are announced with a certain probability (default=70%;
+            uniformly sampled), changing their status to 'announced'. This reflects that not all opportunities are taken up by
+            investors.
             6. Business opportunities (status: considered) that have a negative NPV for at least X years (default=3y) in a row are
             discarded (status: discarded).
             7. Announced plants, if their technology is still allowed, are constructed after 1 year with a certain probability
@@ -103,6 +114,8 @@ class GeospatialModel:
 
         Side effects: Opens new plants and furnace groups, updates their energy costs (power and hydrogen), and manages
         the status progression of business opportunities through consideration, announcement, and construction.
+        Appends the year's rows to data/LCOE/lcoe_summary.csv, lcoe_detailed.csv, data/LCOH/lcoh_summary.csv and
+        lcoh_new_sites_detailed.csv in the output folder; the start year writes them afresh.
         """
         logger = logging.getLogger(f"{__name__}.GeospatialModel.run")
         logger.info(f"\n\n[GEO] ========== 🗺️  Starting GeospatialModel.run for Year {bus.env.year} ========== \n")
@@ -126,10 +139,19 @@ class GeospatialModel:
         for iso3, year_costs in bus.env.input_costs.items():
             if iso3 is not None:  # Filter out None keys
                 input_costs_converted[iso3] = {Year(year): costs for year, costs in year_costs.items()}
-        ## Make a price series for COSA and NPV calculations
+        ## Make a price series for COSA and NPV calculations, anchored at the current year.
+        ## Extended by consideration_time + 1 so the opportunity paths can re-anchor it at
+        ## their construction start (up to target_year, current year + max(consideration_time, 2))
+        ## and still cover the operating window.
         future_price_series: dict[str, list[float]] = {}
         start_year = bus.env.year
-        end_year = bus.env.year + bus.env.config.construction_time + bus.env.config.plant_lifetime
+        end_year = (
+            bus.env.year
+            + bus.env.config.consideration_time
+            + 1
+            + bus.env.config.construction_time
+            + bus.env.config.plant_lifetime
+        )
         steel_demand = []
         iron_demand = []
         for product in ["steel", "iron"]:
@@ -163,30 +185,21 @@ class GeospatialModel:
             if not top_locations.get(product):
                 logger.warning(f"[GEO] No {product} locations found! This will cause NPV error.")
 
-        # Export LCOE/LCOH statistics every 5 years (matching cost curve export frequency)
-        years_since_start = bus.env.year - bus.env.config.start_year
-        if years_since_start % 5 == 0:
-            try:
-                export_lcoe_lcoh_statistics_by_country(
-                    energy_prices=custom_energy_costs,
-                    year=bus.env.year,
-                    output_dir=bus.env.config.output_dir,
-                    hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
-
-            # Export overbuild factor statistics for solar, wind, and battery
-            for factor_name in ["solar_factor", "wind_factor", "battery_factor"]:
-                try:
-                    export_overbuild_factor_statistics_by_country(
-                        energy_prices=custom_energy_costs,
-                        year=bus.env.year,
-                        output_dir=bus.env.config.output_dir,
-                        factor_name=factor_name,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to export {factor_name} statistics for year {bus.env.year}: {e}")
+        # Append this year's rows to the all-years LCOE and LCOH files; a failure to write them stops the run
+        step_start = time.time()
+        export_lcoe_lcoh_outputs(
+            energy_prices=custom_energy_costs,
+            year=bus.env.year,
+            start_year=bus.env.config.start_year,
+            output_dir=bus.env.config.output_dir,
+            geo_config=geo_config,
+            irena_region_by_iso3=bus.env.country_mappings.code_to_irena_region_map,
+            ne_region_by_geo_key=load_ne_region_by_geo_key(
+                bus.env.geo_paths.data_dir / "fixtures" / "geo_hierarchy.json"
+            ),
+            existing_plant_lcoh=bus.env.capped_hydrogen_costs_for_year(bus.env.year),
+        )
+        logger.info(f"operation=lcoe_lcoh_outputs year={bus.env.year} duration_s={time.time() - step_start:.3f}")
 
         # Update dynamic costs for all existing business opportunities yearly
         step_start = time.time()
@@ -196,11 +209,14 @@ class GeospatialModel:
                 pg.update_dynamic_costs_for_business_opportunities(
                     current_year=bus.env.year,
                     consideration_time=bus.env.config.consideration_time,
+                    construction_time=bus.env.config.construction_time,
                     custom_energy_costs=custom_energy_costs,  # type: ignore[arg-type]  # needed to avoid importing xarray into the domain
                     capex_dict_all_locs=bus.env.name_to_capex["greenfield"],
-                    cost_debt_all_locs=bus.env.industrial_cost_of_debt,
+                    cost_debt_all_locs=bus.env.cost_of_debt_by_tech,
                     iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                     global_risk_free_rate=bus.env.config.global_risk_free_rate,
+                    avg_utilization=bus.env.avg_utilization,
+                    captive_energy_at=bus.env.captive_energy_at,
                     capex_subsidies=bus.env.capex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
                     energy_subsidies=bus.env.energy_subsidies,
@@ -223,7 +239,7 @@ class GeospatialModel:
                     current_year=bus.env.year,
                     consideration_time=bus.env.config.consideration_time,
                     market_price=future_price_series,
-                    cost_of_equity_all_locs=bus.env.industrial_cost_of_equity,
+                    cost_of_equity_all_locs=bus.env.cost_of_equity_by_tech,
                     probability_of_announcement=bus.env.config.probability_of_announcement,
                     probability_of_construction=bus.env.config.probability_of_construction,
                     plant_lifetime=bus.env.config.plant_lifetime,
@@ -234,15 +250,16 @@ class GeospatialModel:
                     capacity_limit_iron=bus.env.config.capacity_limit_iron,
                     capacity_limit_steel=bus.env.config.capacity_limit_steel,
                     new_capacity_share_from_new_plants=bus.env.config.new_capacity_share_from_new_plants,
+                    reductant_score_series=bus.env.reductant_score_series,
                     opex_subsidies=bus.env.opex_subsidies,
-                    technology_emission_factors=bus.env.technology_emission_factors,
-                    chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                    carbon_costs=bus.env.carbon_costs,
-                    dynamic_business_cases=bus.env.dynamic_feedstocks,
                     get_co2_headroom=bus.env.get_co2_headroom,
                     get_co2_need=bus.env.get_co2_need,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
+                    permitted_greenfield_capacity=greenfield_capacity_hook(),
+                    capacity_pool_max_retry_years=greenfield_retry_cap(),
+                    increase_sizing_query=increase_sizing_hook(),
+                    greenfield_feasibility_probe=greenfield_feasibility_hook(),
                 )
             )
         if status_commands:
@@ -267,30 +284,41 @@ class GeospatialModel:
                 iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                 market_price=future_price_series,
                 capex_dict_all_locs_techs=bus.env.name_to_capex["greenfield"],
-                cost_of_debt_all_locs=bus.env.industrial_cost_of_debt,
-                cost_of_equity_all_locs=bus.env.industrial_cost_of_equity,
+                cost_of_debt_all_locs=bus.env.cost_of_debt_by_tech,
+                cost_of_equity_all_locs=bus.env.cost_of_equity_by_tech,
                 steel_plant_capacity=bus.env.config.expanded_capacity,
                 all_plant_ids=[p.plant_id for p in bus.uow.plants.list()],
                 fopex_all_locs_techs=bus.env.fopex_by_country,
                 equity_share=bus.env.config.equity_share,
                 dynamic_feedstocks=bus.env.dynamic_feedstocks,
                 get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+                reductant_score_series=bus.env.reductant_score_series,
+                captive_energy_at=bus.env.captive_energy_at,
                 global_risk_free_rate=bus.env.config.global_risk_free_rate,
-                tech_to_product=bus.env.technology_to_product,
+                tech_to_product={
+                    tech: product
+                    for tech, product in bus.env.technology_to_product.items()
+                    if tech not in geo_config.excluded_greenfield_technologies
+                },
                 allowed_techs=bus.env.allowed_techs,
                 top_n_loctechs_as_business_op=bus.env.config.top_n_loctechs_as_business_op,
+                opportunity_pool_depth=bus.env.config.opportunity_pool_depth,
+                calculate_npv_sites_share=bus.env.config.calculate_npv_sites_share,
                 technology_emission_factors=bus.env.technology_emission_factors,
                 chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                carbon_costs=bus.env.carbon_costs,
                 capex_subsidies=bus.env.capex_subsidies,
                 debt_subsidies=bus.env.debt_subsidies,
                 opex_subsidies=bus.env.opex_subsidies,
                 energy_subsidies=bus.env.energy_subsidies,
+                active_statuses=bus.env.config.active_statuses,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                 disposal_cost_outputs=bus.env.config.disposal_cost_outputs,
                 get_co2_headroom=bus.env.get_co2_headroom,
                 get_co2_need_by_name=bus.env.get_co2_need_by_name,
                 co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                derive_geo_unit=derive_geo_unit_for_site,
+                probabilistic_agents=bus.env.config.probabilistic_agents,
+                increase_sizing_query=increase_sizing_hook(),
             )
         )
         step_time = time.time() - step_start
@@ -353,6 +381,8 @@ class AllocationModel:
             plant.update_furnace_group_carbon_costs(
                 current_year, bus.env.config.chosen_emissions_boundary_for_carbon_costs
             )
+        bus.env.update_trade_carbon_costs_of_furnace_groups(world_plants=bus.uow.plants.list())
+        bus.env.fill_missing_upstream_embedded_carbon(world_plants=bus.uow.plants.list())
 
         # Clustering: Reduce LP complexity by aggregating furnace groups
         meta_furnace_groups = None
@@ -405,6 +435,8 @@ class AllocationModel:
         # Warm-start from previous year's solution if available (OPT-2)
         if bus.env.previous_lp_solution is not None:
             trade_lp.previous_solution = bus.env.previous_lp_solution
+        if bus.env.output_dir is not None and LoggingConfig.DUMP_FAILED_LP:
+            trade_lp.failure_dump_path = bus.env.output_dir / "TM" / f"trade_lp_failed_{bus.env.year}.mps"
 
         setup_elapsed = time.time() - setup_start
         logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")
@@ -438,6 +470,9 @@ class AllocationModel:
 
         # Extract allocations before cleanup (needed for event publishing later)
         trade_lp_allocations = trade_lp.allocations if hasattr(trade_lp, "allocations") else None
+        # Tests stub the solved LP with plain dicts; only a real Allocations carries charges to summarise
+        if isinstance(trade_lp_allocations, Allocations):
+            log_carbon_border_outcomes(trade_lp_allocations, int(bus.env.year))
 
         # Disaggregation: Convert clustered allocations back to individual furnace groups
         # Use explicit True check to avoid MagicMock truthy values in tests
@@ -501,11 +536,7 @@ class AllocationModel:
         if output_dir is None:
             raise ValueError("output_dir must be set on bus.env")
 
-        if non_empty_allocations:
-            # # pickle the allocations for debugging purposes TODO: remove
-            # with open(output_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
-            #     pickle.dump(non_empty_allocations, f)
-
+        if non_empty_allocations and bus.env.plot_paths is not None and bus.env.plot_paths.tm_plots_dir is not None:
             # Create detailed trade map (existing pydeck visualization)
             plot_detailed_trade_map(
                 allocations_by_commodity=non_empty_allocations, chosen_year=bus.env.year, plot_paths=bus.env.plot_paths
@@ -584,6 +615,13 @@ class AllocationModel:
             tm_dir.mkdir(parents=True, exist_ok=True)
             with open(tm_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
                 pickle.dump(trade_lp_allocations, f)
+            # Tests stub the solved LP with plain dicts; only a real Allocations carries charges to export
+            if isinstance(trade_lp_allocations, Allocations):
+                export_carbon_border_charges_to_csv(
+                    allocations=trade_lp_allocations,
+                    year=int(bus.env.year),
+                    filename=str(tm_dir / "carbon_border_charges.csv"),
+                )
             if (event := SteelAllocationsCalculated(trade_allocations=trade_lp_allocations)) is not None:
                 bus.handle(event)
 
@@ -765,11 +803,15 @@ class PlantAgentsModel:
                     f"(year {bus.env.year}) === \n"
                 )
 
-                # Retrieve location-specific subsidies for this plant
-                # Empty dicts are returned if no subsidies exist - this is expected behavior
-                tech_capex_subsidies = bus.env.capex_subsidies.get(plant.location.iso3, {})
-                tech_opex_subsidies = bus.env.opex_subsidies.get(plant.location.iso3, {})
-                tech_debt_subsidies = bus.env.debt_subsidies.get(plant.location.iso3, {})
+                # Retrieve location-specific subsidies for this plant: country-wide rows plus
+                # any rows scoped to the plant's province. Empty dicts if no subsidies exist.
+                tech_capex_subsidies = collect_subsidies_for_geo(bus.env.capex_subsidies, plant.location.geo_key)
+                tech_opex_subsidies = collect_subsidies_for_geo(bus.env.opex_subsidies, plant.location.geo_key)
+                tech_debt_subsidies = collect_subsidies_for_geo(bus.env.debt_subsidies, plant.location.geo_key)
+                tech_energy_subsidies = {
+                    carrier: collect_subsidies_for_geo(carrier_subsidies, plant.location.geo_key)
+                    for carrier, carrier_subsidies in bus.env.energy_subsidies.items()
+                }
 
                 logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
                 logger.debug(f"[PAM] Plant group balance: ${pg.balance:,.2f}")
@@ -823,18 +865,14 @@ class PlantAgentsModel:
                     else:
                         raise KeyError("Region capex not found in bus.env.name_to_capex.")
 
-                    # Get cost of debt for the plant location (before subsidies)
-                    cost_of_debt = bus.env.industrial_cost_of_debt.get(plant.location.iso3)
-                    if cost_of_debt is None:
+                    # Get per-technology financing rates for the plant location (before subsidies)
+                    cost_of_debt_by_tech = bus.env.cost_of_debt_by_tech.get(plant.location.iso3)
+                    if cost_of_debt_by_tech is None:
                         raise ValueError(f"Cost of debt not found for ISO3 code {plant.location.iso3}.")
 
-                    # Get cost of equity for the plant location
-                    cost_of_equity = bus.env.industrial_cost_of_equity.get(plant.location.iso3)
-                    if cost_of_equity is None:
+                    cost_of_equity_by_tech = bus.env.cost_of_equity_by_tech.get(plant.location.iso3)
+                    if cost_of_equity_by_tech is None:
                         raise ValueError(f"Cost of equity not found for ISO3 code {plant.location.iso3}")
-
-                    logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
-                    logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
 
                     # Evaluate potential technology switch or renovation for this furnace group
                     # This considers: switching technology, renovating existing technology, or closing the furnace
@@ -844,16 +882,19 @@ class PlantAgentsModel:
                             plant_group=pg,
                             market_price_series=future_price_series,
                             region_capex=region_capex,
-                            cost_of_debt=cost_of_debt,
-                            cost_of_equity=cost_of_equity,
+                            cost_of_debt_by_tech=cost_of_debt_by_tech,
+                            cost_of_equity_by_tech=cost_of_equity_by_tech,
                             capex_renovation_share=capex_renovation_share,
                             get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+                            reductant_score_series=bus.env.reductant_score_series,
+                            captive_energy_at=bus.env.captive_energy_at,
                             allowed_furnace_transitions=bus.env.allowed_furnace_transitions,
                             dynamic_business_cases=bus.env.dynamic_feedstocks,
                             probabilistic_agents=bus.env.config.probabilistic_agents,
                             tech_capex_subsidies=tech_capex_subsidies,
                             tech_opex_subsidies=tech_opex_subsidies,
                             tech_debt_subsidies=tech_debt_subsidies,
+                            tech_energy_subsidies=tech_energy_subsidies,
                             current_year=bus.env.year,
                             allowed_techs=bus.env.allowed_techs,
                             chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
@@ -870,6 +911,7 @@ class PlantAgentsModel:
                             get_co2_headroom=bus.env.get_co2_headroom,
                             get_co2_need_by_name=bus.env.get_co2_need_by_name,
                             co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                            permitted_replace_capacity=replace_capacity_hook(),
                         )
                     ) is not None:
                         logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
@@ -937,21 +979,27 @@ class PlantAgentsModel:
                     construction_time=bus.env.config.construction_time,
                     current_year=bus.env.year,
                     allowed_techs=bus.env.allowed_techs,
-                    cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-                    cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+                    cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+                    cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
                     get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+                    reductant_score_series=bus.env.reductant_score_series,
+                    captive_energy_at=bus.env.captive_energy_at,
                     capex_subsidies=bus.env.capex_subsidies,
                     opex_subsidies=bus.env.opex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
+                    energy_subsidies=bus.env.energy_subsidies,
                     capacity_limit_steel=capacity_limit_pam_steel,
                     capacity_limit_iron=capacity_limit_pam_iron,
                     installed_capacity_in_year=bus.env.installed_capacity_in_year,
                     new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                     new_capacity_share_from_new_plants=bus.env.config.new_capacity_share_from_new_plants,
+                    active_statuses=bus.env.config.active_statuses,
                     environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                     get_co2_headroom=bus.env.get_co2_headroom,
                     get_co2_need_by_name=bus.env.get_co2_need_by_name,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                    permitted_expansion_capacity=expansion_capacity_hook(),
+                    increase_sizing_query=increase_sizing_hook(),
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")

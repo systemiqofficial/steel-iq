@@ -5,6 +5,8 @@ This is not a pytest test file - it's a demonstration script.
 """
 
 import os
+from pathlib import Path
+
 import django
 
 
@@ -52,6 +54,8 @@ def test_data_preparation():
     os.environ["STEELO_DEVELOPMENT"] = "true"
     os.environ["STEELO_OUTPUT_DIR"] = "/tmp/steelo_outputs"
     os.environ["STEELO_HOME"] = "/tmp/steelo_home"
+    # Reuse the shared download cache so the throwaway home doesn't refetch packages
+    os.environ["STEELO_DATA_CACHE"] = str(Path.home() / ".steelo" / "data_cache")
     os.environ["MPLBACKEND"] = "Agg"
 
     success, message = service.prepare_data(preparation)

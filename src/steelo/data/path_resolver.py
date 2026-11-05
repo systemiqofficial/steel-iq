@@ -6,6 +6,7 @@ hardcoded settings paths. This enables the master Excel migration by
 removing dependencies on config.py paths.
 """
 
+import json
 import logging
 import zipfile
 from pathlib import Path
@@ -13,6 +14,39 @@ from typing import Iterable, Optional
 from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+GEO_DATA_VERSION_FILE = "geo_data_version.txt"
+
+
+def resolve_scenario_fixtures(fixtures_dir: Path, demand_scenario: str, scrap_scenario: str) -> tuple[Path, Path]:
+    """
+    Find the demand centres and suppliers files of a run's demand and scrap scenarios in a preparation.
+
+    Args:
+        fixtures_dir: The preparation's fixtures folder.
+        demand_scenario: The run's demand scenario, as named in the master's "Scenario" column.
+        scrap_scenario: The run's scrap scenario, named the same way.
+
+    Returns:
+        tuple[Path, Path]: The demand centres file and the suppliers file that ``scenarios.json`` maps the names to.
+
+    Raises:
+        ValueError: If the folder holds no ``scenarios.json``, or the index lacks a name, listing those it holds.
+        FileNotFoundError: If a file the index names is missing, which the JSON repositories would read as empty.
+    """
+    index_path = fixtures_dir / "scenarios.json"
+    if not index_path.is_file():
+        raise ValueError(f"{fixtures_dir} was prepared before run-time scenarios; prepare this master again")
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    paths = []
+    for kind, scenario in [("demand", demand_scenario), ("scrap", scrap_scenario)]:
+        if scenario not in index[kind]:
+            raise ValueError(f"No {kind} scenario {scenario!r} in {index_path}; available: {sorted(index[kind])}")
+        path = fixtures_dir / index[kind][scenario]
+        if not path.is_file():
+            raise FileNotFoundError(f"Required data file not found: {path}")
+        paths.append(path)
+    return paths[0], paths[1]
 
 
 class DataPathResolver:
@@ -70,14 +104,6 @@ class DataPathResolver:
         return self.get_fixtures_path("plants.json")
 
     @property
-    def demand_centers_json_path(self) -> Path:
-        return self.get_fixtures_path("demand_centers.json")
-
-    @property
-    def suppliers_json_path(self) -> Path:
-        return self.get_fixtures_path("suppliers.json")
-
-    @property
     def plant_groups_json_path(self) -> Path:
         return self.get_fixtures_path("plant_groups.json")
 
@@ -108,6 +134,10 @@ class DataPathResolver:
     @property
     def cost_of_capital_json_path(self) -> Path:
         return self.get_fixtures_path("cost_of_capital.json")
+
+    @property
+    def geo_hierarchy_json_path(self) -> Path:
+        return self.get_fixtures_path("geo_hierarchy.json")
 
     # Raw data file paths
     @property
@@ -145,6 +175,18 @@ class DataPathResolver:
     @property
     def cost_of_x_json_path(self) -> Path:
         return self.get_fixtures_path("cost_of_x.json")
+
+    @property
+    def capacity_pool_provinces_json_path(self) -> Path:
+        return self.get_fixtures_path("capacity_pool_provinces.json")
+
+    @property
+    def capacity_pool_technologies_json_path(self) -> Path:
+        return self.get_fixtures_path("capacity_pool_technologies.json")
+
+    @property
+    def capacity_pool_opening_credits_json_path(self) -> Path:
+        return self.get_fixtures_path("capacity_pool_opening_credits.json")
 
     @property
     def tech_switches_csv_path(self) -> Path:
@@ -213,8 +255,12 @@ class DataPathResolver:
         return self.get_data_path("LCOH_CAPEX_and_O&M_component.csv")
 
     @property
-    def baseload_power_sim_dir(self) -> Path:
-        return self.get_data_path("baseload_power_simulation", ["outputs", "GEO"])
+    def baseload_lcoe_dir(self) -> Path:
+        return self.get_data_path("baseload_lcoe", ["outputs", "GEO"])
+
+    @property
+    def geo_data_version_path(self) -> Path:
+        return self.get_data_path(GEO_DATA_VERSION_FILE)
 
     @property
     def feasibility_mask_path(self) -> Path:
@@ -287,6 +333,10 @@ class DataPathResolver:
         return self.get_data_path("ne_110m_admin_0_countries")
 
     @property
+    def admin1_shapefile_dir(self) -> Path:
+        return self.get_data_path("ne_10m_admin_1_states_provinces")
+
+    @property
     def landtype_percentage_nc_path(self) -> Path:
         return self.get_data_path("landtype_percentage.nc")
 
@@ -321,8 +371,6 @@ class DataPathResolver:
         return {
             # JSON repository paths
             "plants_json_path_repo": self.plants_json_path,
-            "demand_centers_json_path": self.demand_centers_json_path,
-            "suppliers_json_path": self.suppliers_json_path,
             "plant_groups_json_path": self.plant_groups_json_path,
             "tariffs_json_path": self.tariffs_json_path,
             "carbon_costs_json_path": self.carbon_costs_json_path,
@@ -341,7 +389,6 @@ class DataPathResolver:
             "railway_capex_csv_path": self.railway_capex_csv_path,
             "lcoh_capex_csv_path": self.lcoh_capex_csv_path,
             "regional_energy_prices_xlsx": self.regional_energy_prices_excel_path,
-            "baseload_power_sim_dir": self.baseload_power_sim_dir,
             "geo_plots_dir": self.geo_plots_dir,
             "countries_shapefile_dir": self.countries_shapefile_dir,
             "landtype_percentage_nc_path": self.landtype_percentage_nc_path,

@@ -80,7 +80,7 @@ def test_modelrun_geo_output_isolation():
 
 @pytest.mark.django_db
 def test_modelrun_creates_geo_subdirectories():
-    """Test that ModelRun creates necessary GEO subdirectories when fixed."""
+    """Test that ModelRun creates its GEO directory, and no LCOE folder: runs read the prepared data's files."""
     core_package = DataPackage.objects.create(
         name=DataPackage.PackageType.CORE_DATA,
         version="1.0",
@@ -111,13 +111,10 @@ def test_modelrun_creates_geo_subdirectories():
 
     output_path = modelrun.get_output_path()
 
-    # After implementing the fix, these directories should be created
     geo_dir = output_path / "GEO"
-    baseload_sim_dir = geo_dir / "baseload_power_simulation"
 
-    # These assertions will fail until we implement the fix
     assert geo_dir.exists(), f"GEO directory should exist: {geo_dir}"
-    assert baseload_sim_dir.exists(), f"Baseload simulation directory should exist: {baseload_sim_dir}"
+    assert [path.name for path in geo_dir.iterdir()] == []
 
 
 @pytest.mark.django_db

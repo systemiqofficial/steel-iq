@@ -4,6 +4,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 from steelo.domain.models import (
+    CaptiveEnergy,
     Environment,
     BiomassAvailability,
     ProductionThreshold,
@@ -18,6 +19,18 @@ from steelo.domain import calculate_costs
 import pytest
 from steelo.domain.constants import Volumes
 from steelo.simulation import SimulationConfig
+
+
+def _stack_at(location, year):
+    """The stack the re-valuation locks: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
 
 
 def create_test_environment(tech_switches_csv=None):
@@ -42,7 +55,7 @@ def create_test_environment(tech_switches_csv=None):
 
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=default_tech_settings,
@@ -254,17 +267,41 @@ def test_update_dynamic_costs_power_price_not_scaled():
     update_cmds = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=1,
+        construction_time=4,
         custom_energy_costs=custom_energy_costs,
         capex_dict_all_locs={"NAM": {"EAF": 100.0}},
-        cost_debt_all_locs={"USA": 0.05},
+        cost_debt_all_locs={
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        },
         iso3_to_region_map={"USA": "NAM"},
         global_risk_free_rate=0.03,
+        avg_utilization={},
+        captive_energy_at=_stack_at,
     )
 
     assert update_cmds, "Expected an UpdateDynamicCosts command to be enqueued."
     cmd = update_cmds[0]
     assert cmd.new_energy_costs["electricity"] == pytest.approx(0.05)
-    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(1.2)
+    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(1_200.0)  # 1.2 USD/kg raster value in USD/t
 
 
 def test_env_init(mock_cost_of_x_file, mock_tech_switches_file):
@@ -436,6 +473,26 @@ def test_unit_fopex_uses_minimum_utilization_threshold():
     # For utilisations above the threshold, the raw utilisation is used
     fg.utilization_rate = 0.5
     assert fg.unit_fopex == pytest.approx(80.0 / 0.5)
+
+
+def test_unit_current_debt_repayment_uses_minimum_utilization_threshold():
+    """Debt repayment per tonne floors utilisation at the low threshold, mirroring unit_fopex."""
+    fg = get_furnace_group(utilization_rate=0.01, fg_id="fg_low_util_debt", tech_name="BOF")
+    fg.technology.capex = 500.0
+    fg.production_threshold = ProductionThreshold(low=0.1, high=0.95)
+    debt = fg.debt_repayment_for_current_year
+    assert debt > 0
+
+    # Utilisation below the configured low threshold should clamp to the threshold value
+    assert fg.unit_current_debt_repayment == pytest.approx(debt / (0.1 * fg.capacity))
+
+    # Adjusting the threshold should change the clamped result accordingly
+    fg.production_threshold = ProductionThreshold(low=0.02, high=0.95)
+    assert fg.unit_current_debt_repayment == pytest.approx(debt / (0.02 * fg.capacity))
+
+    # For utilisations above the threshold, the raw production is used
+    fg.utilization_rate = 0.5
+    assert fg.unit_current_debt_repayment == pytest.approx(debt / fg.production)
 
 
 @pytest.fixture
@@ -903,7 +960,7 @@ def _make_price_env(
 
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings={

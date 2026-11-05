@@ -215,36 +215,36 @@ if not result.valid:
 
 ### Custom Data Pipeline
 
+Prepare a master workbook once, then configure runs on any of its demand and scrap scenarios. `prepare_data`'s `output_dir` is the data root: the fixtures go into its `fixtures/` folder, with `scenarios.json` mapping each scenario to its file.
+
 ```python
 from pathlib import Path
-from steelo.data import DataManager, DataRecreator
+from steelo.data import DataPreparationService
+from steelo.data.path_resolver import resolve_scenario_fixtures
+from steelo.domain import Year
 from steelo.simulation import SimulationConfig
 
-class DataPipeline:
-    """Custom data pipeline for simulations."""
-    
-    def __init__(self, cache_dir: Path | None = None):
-        self.manager = DataManager(cache_dir=cache_dir)
-        self.recreator = DataRecreator(self.manager)
-        
-    def prepare_simulation_data(self, output_dir: Path) -> SimulationConfig:
-        """Prepare all data for simulation."""
-        # Download if needed
-        self.manager.download_required_data()
-        
-        # Recreate repositories
-        paths = self.recreator.recreate_from_package(
-            "core-data",
-            output_dir / "core"
-        )
-        
-        # Create simulation config
-        return SimulationConfig(
-            plants_json_path=paths["plants"],
-            demand_centers_json_path=paths["demand_centers"],
-            suppliers_json_path=paths["suppliers"],
-            # ... other paths
-        )
+
+def configure_run(
+    data_dir: Path, master_excel: Path, output_dir: Path, demand_scenario: str, scrap_scenario: str
+) -> SimulationConfig:
+    """Prepare the workbook (reused from the preparation cache when it is there) and configure one run."""
+    DataPreparationService().prepare_data(output_dir=data_dir, master_excel_path=master_excel)
+
+    # The scenario pair's files; a ValueError lists the scenarios the preparation holds when one is missing
+    demand_centers_json, suppliers_json = resolve_scenario_fixtures(
+        data_dir / "fixtures", demand_scenario, scrap_scenario
+    )
+
+    return SimulationConfig.from_data_directory(
+        start_year=Year(2025),
+        end_year=Year(2030),
+        data_dir=data_dir,
+        output_dir=output_dir,
+        master_excel_path=master_excel,
+        chosen_demand_scenario=demand_scenario,
+        chosen_scrap_scenario=scrap_scenario,
+    )
 ```
 
 ### Error Handling
@@ -273,33 +273,14 @@ except Exception as e:
 
 ### Integration with Existing Code
 
+Code that reads package files takes their paths as arguments; there is no global settings object to override.
+
 ```python
 from steelo.data import DataManager
-from steelo.config import settings
 
-# Override settings to use downloaded data
 manager = DataManager()
 package_path = manager.get_package_path("core-data")
-
-# Temporarily override settings
-original_path = settings.steel_plants_csv
-try:
-    settings.steel_plants_csv = package_path / "steel_plants.csv"
-    # Run existing code that uses settings
-    from steelo.data.recreation_functions import recreate_plants_data
-    from steelo.adapters.dataprocessing.excel_reader import read_plants
-    
-    # First read plants from CSV
-    plants = read_plants(
-        steel_plants_csv=package_path / "steel_plants.csv",
-        # ... other required parameters
-    )
-    
-    # Then write them to JSON
-    recreate_plants_data(plants=plants, json_path=output_path)
-finally:
-    # Restore original settings
-    settings.steel_plants_csv = original_path
+# Hand package_path / "<file>" to the function that reads it
 ```
 
 ## Exceptions

@@ -16,6 +16,7 @@ def test_master_excel_path(tmp_path):
         "Plant ID": ["P100000000001", "P100000000002", "P100000000003"],
         "Plant name (English)": ["Test Steel Plant 1", "Test Steel Plant 2", "Test Steel Plant 3"],
         "Country": ["USA", "Germany", "Japan"],
+        "ISO3": ["USA", "DEU", "JPN"],
         "Subnational unit (province/state)": ["Ohio", "Bavaria", "Tokyo"],
         "Coordinates": ["40.123,-82.456", "48.789,11.234", "35.678,139.901"],
         "Capacity operating status": ["operating", "operating", "construction"],

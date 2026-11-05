@@ -1,37 +1,49 @@
 # TODO: Move FurnaceGroup, Plant, PlantGroup, and Environment classes to separate files
 from __future__ import annotations
+import dataclasses
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 import copy
+import csv
 import math
 import logging
 import random
+import time
 import uuid
 from geopy.distance import geodesic  # type: ignore
-from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional
+from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional, TypedDict
 from collections import defaultdict, Counter
 from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
+    build_direct_ghg_lookup,
     calculate_capex_with_subsidies,
+    carbon_price_from_series,
+    calculate_debt_repayment,
     calculate_debt_with_subsidies,
     calculate_energy_costs_and_most_common_reductant,
     calculate_opex_list_with_subsidies,
     calculate_unit_total_opex,
     calculate_variable_opex,
+    scale_fopex_to_production,
+    ZeroUtilisationError,
     filter_subsidies_for_year,
+    get_subsidised_energy_costs,
     collect_active_subsidies_over_period,
+    collect_subsidies_for_geo,
+    score_reductants_for_business_cases,
+    compile_reductant_business_cases,
+    score_compiled_reductant_business_cases,
+    CompiledBusinessCase,
+    summarise_reductant_picks,
     ENERGY_FEEDSTOCK_KEYS,
+    ReductantScoreSeries,
 )
 from steelo.utilities.utils import normalize_name
-from steelo.domain.calculate_emissions import (
-    calculate_emissions,
-    calculate_emissions_cost_series,
-    materiall_bill_business_case_match,
-)
 from steelo.domain.carbon_cost import CarbonCost, CarbonCostService
 from steelo.domain import diagnostics as diag
 from steelo.utilities.utils import merge_two_dictionaries
+from steelo.utilities import energy_trace
 from steelo.core.parse import normalize_code
 from steelo.simulation_types import TechSettingsMap
 
@@ -45,9 +57,16 @@ from steelo.domain.constants import (
     MioUSD_TO_USD,
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
+    CLOSELY_ALLOCATED_PRODUCTS,
+    MWH_TO_KWH,
+    PERkWh_TO_PERMWh,
+    PERMWh_TO_PERkWh,
 )
 
 if TYPE_CHECKING:
+    import xarray as xr
+
+    from steelo.capacity_policy.pool import Credit
     from steelo.simulation import SimulationConfig
 
 
@@ -83,66 +102,6 @@ def is_technology_allowed(config: TechSettingsMap, raw_code: str, year: int) -> 
     return True
 
 
-def _recalculate_feedstock_energy_unit_cost(
-    fg: "FurnaceGroup", feedstock_key: str, energy_costs: dict[str, float]
-) -> float | None:
-    """
-    Recompute the per-unit energy cost for a feedstock using updated energy prices.
-
-    Args:
-        fg: FurnaceGroup whose dynamic business cases provide energy requirements.
-        feedstock_key: Normalized feedstock key (lowercase, underscores).
-        energy_costs: Mapping of energy carrier -> price (USD per unit).
-
-    Returns:
-        float | None: Updated cost per tonne of product, or None if it cannot be derived.
-    """
-    dynamic_cases = getattr(fg.technology, "dynamic_business_case", None) or []
-    if not dynamic_cases:
-        return None
-
-    chosen_reductant = normalize_name(getattr(fg, "chosen_reductant", "") or "")
-
-    for dbc in dynamic_cases:
-        metallic_charge = normalize_name(getattr(dbc, "metallic_charge", ""))
-        if metallic_charge != feedstock_key:
-            continue
-
-        reductant = normalize_name(getattr(dbc, "reductant", "") or "")
-        if chosen_reductant and reductant and reductant != chosen_reductant:
-            continue
-
-        required_qty = getattr(dbc, "required_quantity_per_ton_of_product", None)
-        if not required_qty:
-            return None
-
-        combined_requirements: dict[str, float] = {}
-
-        for energy_name, amount in (getattr(dbc, "energy_requirements", None) or {}).items():
-            combined_requirements[normalize_name(energy_name)] = amount
-
-        for secondary_name, amount in (getattr(dbc, "secondary_feedstock", None) or {}).items():
-            combined_requirements[normalize_name(secondary_name)] = amount
-
-        total_cost = 0.0
-        matched = False
-        for energy_name, amount in combined_requirements.items():
-            price = energy_costs.get(energy_name)
-            if price is None:
-                # Try alternative normalization (dash<->underscore)
-                alternate_key = energy_name.replace("_", "-")
-                price = energy_costs.get(alternate_key)
-            if price is None:
-                continue
-            total_cost += amount * price / required_qty
-            matched = True
-
-        if matched:
-            return total_cost
-
-    return None
-
-
 BoundedStringT = TypeVar("BoundedStringT", bound="BoundedString")
 
 
@@ -172,7 +131,7 @@ class TimeFrame:
     Holds the start and end year for the model calculations.
     """
 
-    def __init__(self, *, start: Year = Year(2025), end: Year = Year(2050)) -> None:
+    def __init__(self, *, start: Year = Year(2025), end: Year = Year(2060)) -> None:
         self.start = start
         self.end = end
 
@@ -303,6 +262,17 @@ class PointInTime:
         return self.remaining_number_of_years == 0
 
 
+# Value type carried through Location.resolve so the lookup's value type is preserved (e.g. float in → float out)
+_GeoValueT = TypeVar("_GeoValueT")
+
+
+def compose_geo_key(iso3: str, geo_unit: str | None) -> str:
+    """Compose the finest-available geographic key: ``iso3:geo_unit`` (e.g. ``"CHN:CN-HE"``)
+    when a sub-national unit is set, else the bare country ``iso3``. Single source of truth for
+    the key form — the country ``iso3`` is always recoverable via ``key.split(":", 1)[0]``."""
+    return f"{iso3}:{geo_unit}" if geo_unit else iso3
+
+
 @dataclass
 class Location:
     lat: float
@@ -311,9 +281,83 @@ class Location:
     region: str
     iso3: str
     distance_to_other_iso3: dict[str, float] | None = None
+    geo_unit: str | None = None  # sub-national division, ISO 3166-2 code e.g. "CN-HE"; None ⇒ country-level
 
     def __hash__(self):
         return hash((self.lat, self.lon))
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key: ``iso3:geo_unit`` (e.g. ``"CHN:CN-HE"``) when a
+        sub-national unit is set, else the bare country ``iso3``.
+
+        Returns:
+            ``iso3:geo_unit`` if ``geo_unit`` is set, otherwise ``iso3``. The country
+            ``iso3`` is always recoverable via ``geo_key.split(":", 1)[0]``.
+        """
+        return compose_geo_key(self.iso3, self.geo_unit)
+
+    def resolve(
+        self,
+        lookup: dict[str, _GeoValueT],
+        *,
+        what: str,
+        valid_geo_keys: set[str] | None = None,
+    ) -> _GeoValueT | None:
+        """Resolve a value from a geo-keyed lookup, finest-available first.
+
+        Tries the sub-national key (``self.geo_key``, e.g. ``"CHN:CN-HE"``) and falls back
+        up to the country ``iso3``.
+
+        Args:
+            lookup: Mapping keyed by ``geo_key`` strings — sub-national (``iso3:code``)
+                and/or bare country (``iso3``) keys.
+            what: Short label for the quantity, used in log and error messages.
+            valid_geo_keys: Optional set of recognised sub-national ``geo_key``s (from the
+                populated ``geo_hierarchy``). When given and this location's ``geo_key`` is
+                absent from it, a ``KeyError`` is raised.
+
+        Returns:
+            The sub-national value if present, else the country value, else ``None``.
+
+        Raises:
+            KeyError: If ``geo_unit`` is set but its ``geo_key`` is not in
+                ``valid_geo_keys`` (typo / wrong level / unsupported unit).
+        """
+        logger = logging.getLogger(f"{__name__}.Location.resolve")
+        if self.geo_unit is not None:
+            if valid_geo_keys is not None and self.geo_key not in valid_geo_keys:
+                raise KeyError(
+                    f"{what}: location declares sub-national unit {self.geo_key!r}, which is "
+                    f"not a recognised unit in geo_hierarchy — check the ISO 3166-2 code and level."
+                )
+            if self.geo_key in lookup:
+                logger.debug(
+                    "%s: resolved to sub-national unit %s (not country %s).",
+                    what,
+                    self.geo_key,
+                    self.iso3,
+                )
+                return lookup[self.geo_key]
+            logger.info(
+                "%s: no sub-national value for %s; falling back to country %s.",
+                what,
+                self.geo_key,
+                self.iso3,
+            )
+        return lookup.get(self.iso3)
+
+
+class HydrogenPriceInputs(TypedDict):
+    """The inputs behind one geo key's hydrogen price in one year: power in USD/kWh, hydrogen in USD/kg."""
+
+    coverage: float
+    grid: float
+    lcoe: float | None  # None when the power mix has no baseload share
+    electricity: float
+    lcoh: float
+    ceiling: float  # the effective ceiling the LCOH is capped against, trade-adjusted when trade is allowed
+    capped_lcoh: float
 
 
 @dataclass
@@ -322,8 +366,7 @@ class GeoDataPaths:
 
     # Base directories
     data_dir: Path
-    atlite_dir: Path
-    geo_plots_dir: Path
+    geo_plots_dir: Optional[Path]  # None disables the plots/GEO output
 
     # Specific data files
     terrain_nc_path: Path
@@ -335,11 +378,14 @@ class GeoDataPaths:
     disputed_areas_shapefile_dir: Path
 
     # Output paths for different analyses
-    baseload_power_sim_dir: Path
+    baseload_lcoe_dir: Path  # Folder of the promoted BOA LCOE files: the named run's, else the prepared data's
     static_layers_dir: (
         Path  # Directory for static geospatial layers (feasibility_mask.nc, rail_cost.nc, global_grid_with_iso3.nc)
     )
     landtype_percentage_path: Path
+
+    # Natural Earth admin-1 (first-order divisions), used by the geo_hierarchy calibration.
+    admin1_shapefile_dir: Optional[Path] = None
 
 
 @dataclass
@@ -353,17 +399,24 @@ class PlotPaths:
 
 
 class InputCosts:
-    def __init__(self, year, iso3, costs: dict[str, float]) -> None:
+    def __init__(self, year, iso3, costs: dict[str, float], geo_unit: str | None = None) -> None:
         self.year = year
         self.iso3 = iso3
+        self.geo_unit = geo_unit  # ISO 3166-2 code, e.g. "CN-HE"; None ⇒ country-level
         self.costs = costs
-        self.name = f"{self.iso3}_{self.year}"
+        self.name = f"{self.geo_key}_{self.year}"
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key (mirrors ``Location.geo_key``)."""
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def __repr__(self) -> str:
         return f"Country={self.iso3}, Year={self.year})"
 
     def __eq__(self, other):
-        # Technologies are equal if they have the same name
+        # Equal if they share the same name (geo_key_year) — so a country row and a province
+        # row for the same iso3+year are distinct.
         return self.name == other.name
 
 
@@ -441,15 +494,6 @@ class CountryMapping:
         ws_region: str | None = None,
         eu_region: str | None = None,
         tiam_ucl_region: str,
-        # Deprecated explicit parameters (kept for backwards compatibility)
-        EU: bool = False,
-        EFTA_EUCJ: bool = False,
-        OECD: bool = False,
-        NAFTA: bool = False,
-        Mercosur: bool = False,
-        ASEAN: bool = False,
-        RCEP: bool = False,
-        # Accept any additional boolean attributes dynamically
         **trade_bloc_memberships: bool,
     ) -> None:
         self.country = country
@@ -464,17 +508,6 @@ class CountryMapping:
         self.eu_region = eu_region
         self.tiam_ucl_region = tiam_ucl_region
 
-        # Set explicit parameters (for backwards compatibility)
-        # These will be overridden by kwargs if provided
-        self.EU = EU
-        self.EFTA_EUCJ = EFTA_EUCJ
-        self.OECD = OECD
-        self.NAFTA = NAFTA
-        self.Mercosur = Mercosur
-        self.ASEAN = ASEAN
-        self.RCEP = RCEP
-
-        # Set any additional trade bloc memberships dynamically
         for attr_name, attr_value in trade_bloc_memberships.items():
             setattr(self, attr_name, attr_value)
 
@@ -513,10 +546,11 @@ class TechnologyEmissionFactors:
 class CarbonBorderMechanism:
     """Represents a carbon border adjustment mechanism applied by a region to all non-members."""
 
-    mechanism_name: str  # e.g., "CBAM", "EFTA/EUCJ", "OECD", "NAFTA", etc.
-    applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCJ", "OECD")
+    mechanism_name: str  # e.g., "CBAM", "EFTA/EUCU", "OECD", "NAFTA", etc.
+    applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCU", "OECD")
     start_year: int
     end_year: int | None = None  # None if it doesn't end
+    common_carbon_cost: bool = False  # Price the border at the bloc's series instead of each member's national one
 
     def is_active(self, year: int) -> bool:
         """Check if this mechanism is active in a given year."""
@@ -547,14 +581,21 @@ class RegionEmissivity:
         grid_emissivity: dict[Year, dict[str, float]],
         coke_emissivity: dict[str, float],
         gas_emissivity: dict[str, float],
+        geo_unit: str | None = None,
     ) -> None:
         self.iso3 = iso3
+        self.geo_unit = geo_unit  # ISO 3166-2 code, e.g. "CN-HE"; None ⇒ country-level
         self.country_name = country_name
         self.scenario = scenario
         self.grid_emissivity = grid_emissivity
         self.coke_emissivity = coke_emissivity
         self.gas_emissivity = gas_emissivity
-        self.id = f"{self.iso3}_{self.scenario.lower().replace(' ', '_')}"
+        self.id = f"{self.geo_key}_{self.scenario.lower().replace(' ', '_')}"
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key (mirrors ``Location.geo_key``)."""
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def __repr__(self) -> str:
         return f"RegionEmissivity: <{self.id}>"
@@ -1056,6 +1097,58 @@ class Technology:
             self.product = Commodities.STEEL.value
 
 
+@dataclass(frozen=True)
+class CaptiveEnergy:
+    """
+    The power system and electrolyser a new site owns, at the values of the year it invested.
+
+    Attributes:
+        lock_year: The year the stack was locked: the construction start, or the start of a later investment.
+        coverage: The share of power demand the site's own baseload system covers (fraction); 0 under a power
+            mix without a baseload share.
+        lcoe: The levelised cost of the site's baseload system built in ``lock_year`` (USD/kWh); 0 when
+            ``coverage`` is 0.
+        electrolyser_use: The electrolyser's electricity use in ``lock_year`` (MWh/kg).
+        electrolyser_cost: The electrolyser's capital and operating cost in ``lock_year`` (USD/kg).
+        hydrogen_contract: The region's hydrogen ceiling in ``lock_year`` (USD/kg) when the site's own hydrogen
+            price in that year was above it, else None.
+    """
+
+    lock_year: Year
+    coverage: float
+    lcoe: float
+    electrolyser_use: float
+    electrolyser_cost: float
+    hydrogen_contract: float | None
+
+    def electricity(self, grid: float) -> float:
+        """
+        The site's electricity price in a year.
+
+        Args:
+            grid: The year's grid price at the site (USD/kWh).
+
+        Returns:
+            The baseload share at the locked LCOE plus the grid share at the year's grid price (USD/kWh).
+        """
+        return self.coverage * self.lcoe + (1 - self.coverage) * grid
+
+    def hydrogen(self, grid: float) -> float:
+        """
+        The site's hydrogen price in a year.
+
+        Args:
+            grid: The year's grid price at the site (USD/kWh).
+
+        Returns:
+            The contract price when the site holds one, else its own electrolyser's cost at the year's
+            electricity price, in USD/t.
+        """
+        if self.hydrogen_contract is not None:
+            return self.hydrogen_contract * T_TO_KG
+        return (self.electrolyser_use * MWH_TO_KWH * self.electricity(grid) + self.electrolyser_cost) * T_TO_KG
+
+
 @dataclass
 class ProductionThreshold:
     """Production thresholds for the utilization rate of a furnace group."""
@@ -1083,6 +1176,7 @@ class FurnaceGroup:
         emissions: dict[str, dict[str, float]] | None = {},
         emissions_factor: dict[str, dict[str, float]] | None = None,
         historical_npv_business_opportunities: Optional[dict[int, float]] = None,
+        historical_utilization: Optional[dict[int, float]] = None,
         bill_of_materials: dict[str, dict[str, dict[str, float]]] | None = None,
         energy_cost_dict: dict = {},
         chosen_reductant: str = "",
@@ -1100,6 +1194,7 @@ class FurnaceGroup:
         cost_breakdown_keys: list[str] | None = None,
         carbon_breakdown_keys: list[str] | None = None,
         disposal_cost_outputs: frozenset[str] | None = None,
+        output_shares: dict[str, float] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1117,10 +1212,20 @@ class FurnaceGroup:
         self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
         self.disposal_cost_outputs = disposal_cost_outputs
+        # Metallic charge -> share of product for the candidate BOM; set only for
+        # PAM-created business opportunities (feeds the re-check's score series)
+        self.output_shares = output_shares
 
         # Future technology switch (accounts for construction time while operating with old technology)
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
         self.future_switch_year: Optional[int] = None
+
+        # Capacity-policy stash set by a live greenfield gate at announcement; a discard refunds the slices
+        self.capacity_pool_granted_withdraw_mt: float | None = None
+        self.capacity_pool_attributed_owner_id: str | None = None
+        self.capacity_pool_consumed_credits: tuple["Credit", ...] | None = None
+        # Years the capacity gate has blocked this opportunity; discarded at the configured cap
+        self.capacity_pool_blocked_years: int = 0
 
         # Economic variables
         self.equity_share = equity_share
@@ -1129,6 +1234,8 @@ class FurnaceGroup:
         self.balance = balance  # furnaces are initiated with a balance of 0
         self.historic_balance = historic_balance
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
+        self.historical_utilization = historical_utilization
+        self.capacity_at_allocation: Volumes | None = None
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
         self.has_hot_metal_access = False
@@ -1140,6 +1247,8 @@ class FurnaceGroup:
         }
         # Original energy prices before subsidies (for verification)
         self.energy_costs_no_subsidy: dict[str, float] = {}
+        # A new site's locked power and electrolyser stack; None for every existing plant
+        self.captive_energy: CaptiveEnergy | None = None
         # Energy costs used for output revenue (by-product sales)
         self.output_energy_costs: dict[str, float] = {}
         self.set_energy_costs(**energy_cost_dict)  # must follow output_energy_costs init
@@ -1156,6 +1265,16 @@ class FurnaceGroup:
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
         self.emissions = emissions
         self.transport_emissions = 0.0
+        # Own-stage direct tCO2/t product at the business-case factors and the USD/t the trade LP
+        # prices on it; both independent of utilisation (see direct_emission_intensity)
+        self.trade_emission_intensity: float = 0.0
+        self.trade_carbon_cost_per_unit: float = 0.0
+        # Direct emissions embedded in, and carbon already paid on, last year's inputs, per tonne of
+        # product; set by the TM-PAM connector after each solve and read at the next LP set-up
+        self.upstream_emission_intensity: float = 0.0
+        self.upstream_carbon_cost_paid: float = 0.0
+        # Year whose solved inbound flows set the two upstream fields; None when no solve observed them
+        self.upstream_carbon_year: int | None = None
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -1196,6 +1315,7 @@ class FurnaceGroup:
         Note:
             Hydrogen costs are typically set separately via Plant.update_furnace_hydrogen_costs()
             to use capped country-level prices calculated from LCOH.
+            The incoming prices are unsubsidised, so energy_costs_no_subsidy is refreshed too.
         """
         logger = logging.getLogger(f"{__name__}.set_energy_costs")
         # Store costs with normalized keys to ensure downstream lookups succeed.
@@ -1213,6 +1333,9 @@ class FurnaceGroup:
 
         self.energy_costs = energy_costs
         self.output_energy_costs = energy_costs.copy()
+        # Full copy (not {}): update_furnace_hydrogen_costs writes a lone "hydrogen" key into
+        # this dict, so it must never hold a partial snapshot
+        self.energy_costs_no_subsidy = energy_costs.copy()
         logger.debug(
             "[ENERGY COSTS] FG %s: set %d carriers, sample: %s",
             getattr(self, "furnace_group_id", "?"),
@@ -1280,6 +1403,28 @@ class FurnaceGroup:
         # Set baseline interest rate without subsidies
         self.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
 
+    def record_utilization(self, year: int) -> None:
+        """
+        Record the current utilisation rate under the given simulation year.
+
+        The scalar utilization_rate is overwritten every year by the trade-module
+        allocation; this keeps the per-year history that survives the overwrite.
+
+        Args:
+            year: Simulation year the current utilization_rate belongs to.
+
+        Notes:
+            Re-recording the same year overwrites its entry, so replaying a year
+            is idempotent. The capacity the rate refers to is kept in
+            ``capacity_at_allocation``: a renovation can shrink the group later in
+            the same year, and reporting needs the capacity its production was
+            allocated on.
+        """
+        if self.historical_utilization is None:
+            self.historical_utilization = {}
+        self.historical_utilization[year] = self.utilization_rate
+        self.capacity_at_allocation = self.capacity
+
     def report_bill_of_materials(self):
         return {
             item_name: item_dict["demand"] * item_dict["unit_cost"]["Value"] * self.production
@@ -1321,6 +1466,15 @@ class FurnaceGroup:
     def is_ccs_or_ccu(self) -> bool:
         name = self.technology.name.lower()
         return "ccs" in name or "ccu" in name
+
+    @property
+    def produces_hot_metal(self) -> bool:
+        """Whether the technology's bill of materials outputs hot metal, the feedstock behind a BOF's minimum share."""
+        return any(
+            normalize_name(output) == Commodities.HOT_METAL.value
+            for feedstock in self.technology.dynamic_business_case or []
+            for output in feedstock.outputs
+        )
 
     @property
     def effective_primary_feedstocks(self) -> list[PrimaryFeedstock]:
@@ -1401,6 +1555,89 @@ class FurnaceGroup:
     #     Sets the grid emissivity for the furnace group.
     #     """
     #     self.grid_emissivity = grid_emission
+
+    def direct_emission_intensity(
+        self,
+        ef_by_key: dict[tuple[str, str, str], float],
+        fallback_input_shares: dict[str, float] | None = None,
+    ) -> float:
+        """
+        Own-stage direct emission intensity in tCO2 per tonne of product, independent of utilisation.
+
+        Args:
+            ef_by_key: Direct GHG factors keyed ``(technology, reductant, metallic charge)`` for the
+                configured boundary, as built by ``build_direct_ghg_lookup``.
+            fallback_input_shares: Fleet-average input shares of the technology keyed by normalised
+                metallic charge (``avg_boms[tech][charge]["input_share_pct"]``); used only when the
+                furnace group has no bill-of-materials shares.
+
+        Returns:
+            Sum over the effective primary feedstocks of direct GHG factor times product share.
+
+        Raises:
+            ValueError: If there are no effective primary feedstocks, or a feedstock whose share is
+                needed has no required quantity per tonne of product.
+            KeyError: If a feedstock has no emission factor; the EF table is validated complete at load.
+
+        Notes:
+            Product shares come from the bill of materials (``demand_share_pct / required_quantity``,
+            the product-share maths of the cost breakdown), else from the fallback input shares
+            converted to product shares and renormalised as ``get_bom_from_avg_boms`` does, else
+            equal shares.
+        """
+        return self._direct_emission_intensity_with_source(ef_by_key, fallback_input_shares)[0]
+
+    def _direct_emission_intensity_with_source(
+        self,
+        ef_by_key: dict[tuple[str, str, str], float],
+        fallback_input_shares: dict[str, float] | None,
+    ) -> tuple[float, str]:
+        """Intensity as in ``direct_emission_intensity`` plus its share source: ``bom``, ``avg_bom`` or ``equal``."""
+        feedstocks = self.effective_primary_feedstocks
+        if not feedstocks:
+            raise ValueError(f"Furnace group {self.furnace_group_id} has no effective primary feedstocks")
+
+        def product_share(feedstock: PrimaryFeedstock, input_share: float) -> float:
+            required_quantity = feedstock.required_quantity_per_ton_of_product
+            if not required_quantity:
+                raise ValueError(
+                    f"Feedstock {feedstock.name} of furnace group {self.furnace_group_id} has no "
+                    "required quantity per tonne of product to derive its product share with"
+                )
+            return input_share / required_quantity
+
+        materials = self.bill_of_materials["materials"] if self.bill_of_materials else {}
+        shares = {
+            feedstock.metallic_charge: product_share(
+                feedstock, materials[feedstock.metallic_charge.lower()]["demand_share_pct"]
+            )
+            for feedstock in feedstocks
+            if feedstock.metallic_charge.lower() in materials
+        }
+        source = "bom"
+        if not shares and fallback_input_shares:
+            raw_shares = {
+                feedstock.metallic_charge: product_share(
+                    feedstock, fallback_input_shares[normalize_name(feedstock.metallic_charge)]
+                )
+                for feedstock in feedstocks
+                if normalize_name(feedstock.metallic_charge) in fallback_input_shares
+            }
+            total = sum(raw_shares.values())
+            if total > 0:
+                shares = {charge: share / total for charge, share in raw_shares.items()}
+                source = "avg_bom"
+        if not shares:
+            shares = {feedstock.metallic_charge: 1.0 / len(feedstocks) for feedstock in feedstocks}
+            source = "equal"
+
+        # A feedstock absent from the share source was not charged, so it carries no emissions
+        intensity = sum(
+            ef_by_key[(feedstock.technology.lower(), normalize_name(feedstock.reductant), feedstock.metallic_charge)]
+            * shares.get(feedstock.metallic_charge, 0.0)
+            for feedstock in feedstocks
+        )
+        return intensity, source
 
     @property
     def emissions_per_unit(self) -> dict[str, dict[str, float]]:
@@ -2153,13 +2390,23 @@ class FurnaceGroup:
         """
         Debt repayment per unit of production (USD/t) or per unit of capacity if not producing.
 
+        Mirrors the unit_fopex floor: utilisation is floored at production_threshold.low so a
+        barely-producing furnace group does not spread its debt over a near-zero tonnage.
+
         Returns:
-            float: Debt repayment divided by production when utilization > 0, otherwise divided by capacity.
+            float: Debt repayment divided by floored production when utilization > 0, otherwise
+            divided by capacity.
         """
-        if self.utilization_rate > 0.0:
-            return self.debt_repayment_for_current_year / self.production
-        else:
+        if self.utilization_rate <= 0.0:
             return self.debt_repayment_for_current_year / self.capacity
+
+        threshold_low = self.production_threshold.low
+        if threshold_low is not None and threshold_low > 0:
+            effective_utilisation = max(self.utilization_rate, threshold_low)
+        else:
+            effective_utilisation = self.utilization_rate
+
+        return self.debt_repayment_for_current_year / (effective_utilisation * self.capacity)
 
     @property
     def cost_breakdown_by_feedstock(self) -> dict[str, dict[str, float]]:
@@ -2199,11 +2446,13 @@ class FurnaceGroup:
     def optimal_technology_name(
         self,
         market_price_series: dict[str, list[float]],
-        cost_of_debt: float,
-        cost_of_equity: float,
+        cost_of_debt_by_tech: dict[str, float],
+        cost_of_equity_by_tech: dict[str, float],
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
+            [dict[str, float], str, float, str | None],
+            tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
+        score_series_for_tech: Callable[[str, dict[str, float], Year, Year], ReductantScoreSeries],
         capex_dict: dict[str, float],
         capex_renovation_share: dict[str, float],
         technology_fopex_dict: dict[str, float],
@@ -2220,28 +2469,45 @@ class FurnaceGroup:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        tech_energy_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         most_common_reductant_by_tech: dict[str, str] = {},
-    ) -> tuple[dict[str, float], dict[str, float], float | None, dict[str, dict[str, dict[str, dict[str, float]]]]]:
+        candidate_capacities: dict[str, float] | None = None,
+    ) -> tuple[
+        dict[str, float],
+        dict[str, float],
+        float | None,
+        dict[str, dict[str, dict[str, dict[str, float]]]],
+        dict[str, str],
+    ]:
         """
         Identify the optimal technology transition for this furnace group by comparing NPVs of allowed technology
         options.
 
         Steps:
-        1. Calculate Cost of Stranded Assets (COSA) for abandoning current technology (max of remaining debt and
-            economic COSA).
+        1. Calculate Cost of Stranded Assets (COSA) for abandoning current technology: the discounted
+            foregone operating margin after the construction window (remaining debt is excluded; it
+            persists via the legacy-debt schedule).
         2. For each allowed technology transition:
            a. Apply subsidies to capex and cost of debt.
-           b. Determine if brownfield renovation (same tech) or greenfield installation (new tech).
-           c. Get or calculate BOM, utilization rate, and emissions.
-           d. Calculate NPV including carbon costs and operating subsidies.
+           b. Determine if brownfield renovation (same tech, no construction lag) or greenfield
+              installation (new tech).
+           c. Get the BOM, utilization rate and output shares.
+           d. Calculate NPV from materials-only VOPEX + scaled fixed OPEX + the year-wise reductant
+              score (energy, carbon, by-products), with operating subsidies per year.
            e. Adjust NPV by subtracting COSA (for technology switches only).
-        3. Return NPV comparison results with BOMs for each viable technology.
+        3. Return NPV comparison results with BOMs and committed reductants for each viable technology.
 
         Args:
             market_price_series (dict[str, list[float]]): Future market prices for steel and iron in $/tonne.
-            cost_of_debt (float): Interest rate for debt financing (decimal, e.g., 0.05 for 5%).
-            cost_of_equity (float): Expected return rate for equity financing (decimal).
+            cost_of_debt_by_tech (dict[str, float]): Interest rate for debt financing per technology (decimal),
+                for this plant's country; each candidate is financed at its own rate.
+            cost_of_equity_by_tech (dict[str, float]): Expected return rate for equity financing per technology
+                (decimal), for this plant's country.
             get_bom_from_avg_boms (Callable): Function that retrieves average BOM for a technology.
+            score_series_for_tech (Callable): (tech, output_shares, start, end) -> ReductantScoreSeries;
+                the year-wise reductant-optimised score (energy VOPEX + carbon + secondary-output
+                adjustment at each year's exogenous prices) that replaces the flat energy/carbon/
+                by-product terms in the NPV.
             capex_dict (dict[str, float]): Capital expenditure per tonne of capacity for each technology ($/tonne).
             capex_renovation_share (dict[str, float]): Share of full capex required for renovating existing technology
                 (decimal, e.g., 0.7 for 70%).
@@ -2262,9 +2528,18 @@ class FurnaceGroup:
             tech_capex_subsidies (dict[str, list[Subsidy]]): Available capital subsidies by technology.
             tech_opex_subsidies (dict[str, list[Subsidy]]): Available operating subsidies by technology.
             tech_debt_subsidies (dict[str, list[Subsidy]]): Available debt interest rate subsidies by technology.
+            tech_energy_subsidies (dict[str, dict[str, list[Subsidy]]]): Energy carrier subsidies
+                (carrier -> technology -> subsidies), already collected for the plant's geography.
+                Candidate technologies are priced from unsubsidised carrier prices with these
+                applied for the candidate's operating start year, so the incumbent's energy
+                subsidies do not leak into candidate costings.
+            candidate_capacities (dict[str, float] | None): Capacity each candidate technology
+                may be built at, resolved by the capacity policy before this call. When set it
+                covers every candidate on the menu and the candidate's BOM and NPV are evaluated
+                at its entry; None (default) evaluates everything at the group's own capacity.
 
         Returns:
-            tuple: (npv_dict, npv_capex_dict, cosa, bom_dict) where:
+            tuple: (npv_dict, npv_capex_dict, cosa, bom_dict, reductant_dict) where:
                 - npv_dict (dict[str, float]): NPV in $ for each evaluated technology (after COSA adjustment for
                     switches).
                 - npv_capex_dict (dict[str, float]): Effective capex per tonne in $ after subsidies for each technology.
@@ -2272,6 +2547,8 @@ class FurnaceGroup:
                     transitions allowed).
                 - bom_dict (dict[str, dict[str, dict[str, dict[str, float]]]]): Bill of Materials for each evaluated
                     technology.
+                - reductant_dict (dict[str, str]): Operating-start-year reductant pick per evaluated
+                    technology (what a commitment should install).
 
         Notes:
         - Returns empty dicts and None for COSA if no transitions are allowed for current technology.
@@ -2285,15 +2562,10 @@ class FurnaceGroup:
             calculate_npv_full,
             stranding_asset_cost,
             calculate_capex_with_subsidies,
-            calculate_cost_adjustments_from_secondary_outputs,
             calculate_opex_list_with_subsidies,
             calculate_variable_opex,
         )
-        from .calculate_emissions import (
-            materiall_bill_business_case_match,
-            calculate_emissions,
-            calculate_emissions_cost_series,
-        )
+        from .calculate_emissions import calculate_emissions_cost_series
 
         logger = logging.getLogger(f"{__name__}.optimal_technology_name")
 
@@ -2315,9 +2587,10 @@ class FurnaceGroup:
         )
 
         # Log current operating costs
-        logger.debug(f"[OPTIMAL TECH] Unit fixed OPEX: ${self.unit_fopex:,.2f}/t")
-        logger.debug(f"[OPTIMAL TECH] Unit variable OPEX: ${self.unit_vopex:,.2f}/t")
-        logger.debug(f"[OPTIMAL TECH] Unit total OPEX: ${self.unit_total_opex:,.2f}/t")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[OPTIMAL TECH] Unit fixed OPEX: ${self.unit_fopex:,.2f}/t")
+            logger.debug(f"[OPTIMAL TECH] Unit variable OPEX: ${self.unit_vopex:,.2f}/t")
+            logger.debug(f"[OPTIMAL TECH] Unit total OPEX: ${self.unit_total_opex:,.2f}/t")
         logger.debug(f"[OPTIMAL TECH] Debt repayment number of years: {len(self.debt_repayment_per_year)}")
 
         # ========== STAGE 2: Calculate Current Technology OPEX with Subsidies ==========
@@ -2325,7 +2598,7 @@ class FurnaceGroup:
         applied_opex_subsidies = collect_active_subsidies_over_period(
             tech_opex_subsidies.get(self.technology.name, []),
             start_year=Year(current_year),
-            end_year=Year(current_year + self.lifetime.end),
+            end_year=self.lifetime.end,
         )
 
         # Calculate unit OPEX with subsidies (without carbon costs yet)
@@ -2386,32 +2659,27 @@ class FurnaceGroup:
         )
         logger.debug(f"[OPTIMAL TECH] Price series ($/t): {market_price_series.get(self.technology.product)}")
 
-        # Calculate economic COSA based on remaining cash flows
-        original_cosa = stranding_asset_cost(
-            debt_repayment_per_year=self.debt_repayment_per_year,
+        # COSA = foregone operating margin only; remaining debt is excluded (carried by the legacy-debt schedule).
+        # Discounted at the incumbent technology's cost of equity.
+        incumbent_cost_of_equity = cost_of_equity_by_tech.get(self.technology.name)
+        if incumbent_cost_of_equity is None:
+            raise ValueError(f"No cost of equity data for technology {self.technology.name}")
+        cosa = stranding_asset_cost(
             unit_total_opex_list=unit_opex_carbon_costs,
             remaining_time=self.lifetime.remaining_number_of_years,
             market_price_series=market_price_series[self.technology.product],
             expected_production=self.production,
-            cost_of_equity=cost_of_equity,
+            cost_of_equity=incumbent_cost_of_equity,
+            construction_time=construction_time,
         )
 
-        # COSA must be at least the remaining debt (can't walk away from debt obligations)
-        remaining_debt = sum(self.debt_repayment_per_year[: self.lifetime.remaining_number_of_years])
-        cosa = max(remaining_debt, original_cosa)
-
-        logger.debug(
-            f"[OPTIMAL TECH] COSA calculation - Original: ${original_cosa:,.0f}, "
-            f"Remaining debt: ${remaining_debt:,.0f}, Final COSA: ${cosa:,.0f}"
-        )
-        logger.debug(
-            f"[OPTIMAL TECH] COSA decision - Using {'remaining debt' if cosa == remaining_debt else 'calculated COSA'} as final value"
-        )
+        logger.debug(f"[OPTIMAL TECH] COSA (foregone operating margin): ${cosa:,.0f}")
 
         # ========== STAGE 5: Check for Allowed Technology Transitions ==========
         npv_dict = {}
         npv_capex_dict: dict[str, float] = {}
         bom_dict: dict[str, Any] = {}
+        reductant_dict: dict[str, str] = {}
 
         # Check if current technology has any allowed transitions defined
         if self.technology.name not in allowed_furnace_transitions:
@@ -2421,7 +2689,7 @@ class FurnaceGroup:
             logger.info(f"[OPTIMAL TECH] NPV capex dict: {npv_capex_dict}")
             logger.info("[OPTIMAL TECH] COSA: None")
             logger.info(f"[OPTIMAL TECH] BOM dict: {bom_dict}")
-            return {}, npv_capex_dict, None, bom_dict
+            return {}, npv_capex_dict, None, bom_dict, reductant_dict
 
         # ========== STAGE 6: Evaluate Each Allowed Technology Transition ==========
         logger.debug(
@@ -2437,18 +2705,25 @@ class FurnaceGroup:
                 logger.info(f"[OPTIMAL TECH] SKIPPING {tech} - No capex data available")
                 continue
 
-            # BOF requires smelter furnace (for pig iron production)
+            # BOF requires an active hot-metal producer within hot_metal_radius
             if tech == "BOF" and not self.has_hot_metal_access:
-                logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
+                logger.info("[OPTIMAL TECH] SKIPPING BOF - No active hot-metal producer within radius")
                 continue
+
+            # The capacity policy may have shrunk this candidate; everything downstream —
+            # BOM, NPV, and ultimately the command — is evaluated at the permitted capacity
+            tech_capacity = self.capacity if candidate_capacities is None else Volumes(candidate_capacities[tech])
+
+            # current tech renovates in place and keeps producing, so its NPV carries no construction lag
+            tech_construction_time = 0 if tech == self.technology.name else construction_time
 
             # Collect all active subsidies for this technology
             capex_subsidies = filter_subsidies_for_year(tech_capex_subsidies.get(tech, []), current_year)
             debt_subsidies = filter_subsidies_for_year(tech_debt_subsidies.get(tech, []), current_year)
             opex_subsidies = collect_active_subsidies_over_period(
                 tech_opex_subsidies.get(tech, []),
-                start_year=Year(current_year + construction_time),
-                end_year=Year(current_year + construction_time + plant_lifetime),
+                start_year=Year(current_year + tech_construction_time),
+                end_year=Year(current_year + tech_construction_time + plant_lifetime),
             )
 
             # Apply subsidies to capex
@@ -2475,10 +2750,7 @@ class FurnaceGroup:
                 # Reuse existing BOM and utilization rate (no technology change)
                 bill_of_materials = self.bill_of_materials
                 util_rate = self.utilization_rate
-                secondary_output_adj = self.cost_adjustments_from_secondary_outputs
-                logger.debug(
-                    f"[OPTIMAL TECH] {tech} brownfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                )
+                reductant = self.chosen_reductant
 
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
@@ -2486,13 +2758,17 @@ class FurnaceGroup:
                     logger.warning(f"Invalid or missing BOM for current technology {tech}, skipping")
                     continue
 
-                # Calculate carbon costs using existing emissions profile
-                carbon_cost_list = calculate_emissions_cost_series(
-                    emissions=self.emissions,
-                    carbon_price_dict=carbon_cost_series,
-                    chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                    start_year=self.lifetime.current,
-                    end_year=self.lifetime.current + self.lifetime.plant_lifetime,
+                # Incumbent charge mix from the FG's own BOM; input-demand weights proxy
+                # output shares — only relative charge weights enter the score series
+                material_demands = {
+                    normalize_name(material): float(data["demand"])
+                    for material, data in bill_of_materials["materials"].items()
+                }
+                total_demand = sum(material_demands.values())
+                output_shares = (
+                    {charge: demand / total_demand for charge, demand in material_demands.items()}
+                    if total_demand > 0
+                    else {}
                 )
 
                 logger.debug(f"[OPTIMAL TECH] Evaluating CURRENT technology {tech} as brownfield renovation")
@@ -2500,26 +2776,36 @@ class FurnaceGroup:
                     f"[OPTIMAL TECH] Capex renovation share adjustment - Share: {capex_renovation_share_for_tech:.2%}, Adjusted: ${capex:,.2f}"
                 )
                 logger.debug(f"[OPTIMAL TECH] Using existing BOM and utilization rate: {util_rate:.2%}")
-                logger.debug(f"[OPTIMAL TECH] BOM for {tech}: {bill_of_materials}")
-                logger.debug(
-                    "[OPTIMAL TECH] Carbon costs calculated for plant lifetime horizon using existing emissions"
-                )
 
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
-                if self.energy_costs_no_subsidy:
-                    diffs = []
-                    for carrier, original in self.energy_costs_no_subsidy.items():
-                        current = self.energy_costs.get(carrier, original)
-                        if current != original:
-                            diffs.append(f"{carrier} ${original:.4f}->${current:.4f}")
-                    if diffs:
-                        logger.debug(f"[OPTIMAL TECH] {tech} using subsidised energy: {', '.join(diffs)}")
+                # Price the candidate from unsubsidised prices plus its own energy subsidies —
+                # the incumbent's subsidies must not leak into candidate costings
+                base_energy_costs = self.energy_costs_no_subsidy
+                operating_start_year = Year(current_year + construction_time)
+                active_energy_subs: dict[str, list[Subsidy]] = {}
+                for carrier, subsidies_by_tech in tech_energy_subsidies.items():
+                    active = filter_subsidies_for_year(subsidies_by_tech.get(tech, []), operating_start_year)
+                    if active:
+                        active_energy_subs[carrier] = active
+
+                if active_energy_subs:
+                    candidate_energy_costs, _, _ = get_subsidised_energy_costs(
+                        base_energy_costs,
+                        active_energy_subs,
+                    )
+                    sub_summary = ", ".join(f"{len(subs)} {carrier}" for carrier, subs in active_energy_subs.items())
+                    logger.debug(
+                        f"[OPTIMAL TECH] {tech} candidate energy subsidies for year {operating_start_year}: "
+                        f"{sub_summary}"
+                    )
+                else:
+                    candidate_energy_costs = base_energy_costs
 
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
-                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
-                bill_of_materials_opt, util_rate, reductant = bom_result
+                bom_result = get_bom_from_avg_boms(candidate_energy_costs, tech, tech_capacity, chosen_reductant)
+                bill_of_materials_opt, util_rate, reductant, output_shares = bom_result
 
                 # Skip if BOM retrieval failed
                 if bill_of_materials_opt is None:
@@ -2529,62 +2815,15 @@ class FurnaceGroup:
 
                 bill_of_materials = bill_of_materials_opt
 
-                # Match BOM materials to emission business cases for carbon cost calculation
-                tech_business_cases = dynamic_business_cases.get(tech, dynamic_business_cases.get(tech.lower(), []))
-                matched_business_cases = materiall_bill_business_case_match(
-                    dynamic_feedstocks=tech_business_cases,
-                    material_bill=bill_of_materials["materials"],
-                    tech=tech,
-                    reductant=reductant,
-                )
-
-                # Calculate secondary output cost adjustment for new technology
-                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
-                    bill_of_materials=bill_of_materials,
-                    dynamic_business_cases=list(matched_business_cases.values()),
-                    output_costs=self.output_energy_costs,
-                    disposal_cost_outputs=self.disposal_cost_outputs,
-                )
-                logger.debug(
-                    f"[OPTIMAL TECH] {tech} greenfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                )
-
-                # Calculate emissions profile for new technology
-                bom_emissions = calculate_emissions(
-                    business_cases=matched_business_cases,
-                    material_bill=bill_of_materials["materials"],
-                    technology_emission_factors=technology_emission_factors,
-                )
-
-                # Calculate carbon costs over plant lifetime (starting after construction period)
-                carbon_cost_list = calculate_emissions_cost_series(
-                    emissions=bom_emissions,
-                    carbon_price_dict=carbon_cost_series,
-                    chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                    start_year=self.lifetime.current + construction_time,
-                    end_year=self.lifetime.current + construction_time + self.lifetime.plant_lifetime,
-                )
-
                 logger.debug(f"[OPTIMAL TECH] Evaluating NEW technology {tech} as greenfield installation")
                 logger.debug(f"[OPTIMAL TECH] Full greenfield capex: ${capex:,.2f}")
                 logger.debug(
-                    f"[OPTIMAL TECH] Fetching average BOM for {tech} with capacity {self.capacity * T_TO_KT:.2f} kt"
-                )
-                logger.debug(
                     f"[OPTIMAL TECH] Retrieved BOM successfully - Utilization: {util_rate:.2%}, Reductant: {reductant}"
                 )
-                logger.debug(f"[OPTIMAL TECH] Found {len(tech_business_cases)} business cases for {tech}")
-                logger.debug(f"[OPTIMAL TECH] Business cases: {tech_business_cases}")
-                logger.debug(f"[OPTIMAL TECH] Matched {len(matched_business_cases)} business cases with BOM")
-                logger.debug(f"[OPTIMAL TECH] Matched business cases: {matched_business_cases}")
-                logger.debug(f"[OPTIMAL TECH] Calculated emissions for {len(bom_emissions)} boundaries")
-                logger.debug("[OPTIMAL TECH] Calculated carbon costs for new technology over plant lifetime")
 
             # ========== STAGE 8: Calculate NPV for Technology ==========
             # Only proceed if we have valid BOM data
             if bill_of_materials is not None and bill_of_materials["materials"]:
-                bom_dict[tech] = bill_of_materials
-
                 # Validate and retrieve product price series for this technology
                 product_type = tech_to_product[tech]
                 if not product_type or product_type not in market_price_series:
@@ -2592,48 +2831,95 @@ class FurnaceGroup:
                     continue
                 product_price_series = market_price_series[product_type]
 
-                # Calculate total OPEX (fixed + variable from BOM)
+                # Year-wise reductant-optimised score over the operating window; the NPV's
+                # energy, carbon and by-product terms all live inside this series
+                operating_start = Year(current_year + tech_construction_time)
+                operating_end = Year(current_year + tech_construction_time + plant_lifetime)
+                score_series = score_series_for_tech(tech, output_shares, operating_start, operating_end)
+                committed_reductant = score_series.picks[0] if score_series.picks else ""
+                if tech != self.technology.name and committed_reductant != reductant:
+                    # Commit the BOM the start-year pick implies (materials are reductant-
+                    # invariant; only the energy rows follow the pick)
+                    rebuilt_bom, util_rate, reductant, output_shares = get_bom_from_avg_boms(
+                        candidate_energy_costs, tech, tech_capacity, committed_reductant
+                    )
+                    if rebuilt_bom is None:
+                        raise ValueError(
+                            f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
+                        )
+                    bill_of_materials = rebuilt_bom
+
+                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+                # by-products enter through the per-year score
                 unit_fopex = technology_fopex_dict.get(tech.lower())
                 if unit_fopex is None:
                     raise ValueError(f"Unit FOPEX for technology {tech} not found")
 
-                unit_total_opex = calculate_unit_total_opex(
-                    unit_fopex=unit_fopex,
-                    unit_vopex=calculate_variable_opex(bill_of_materials["materials"], bill_of_materials["energy"]),
+                # A furnace group (incumbent or candidate) the market allocated no
+                # fleet-wide production for cannot price its fixed OPEX; skip it before
+                # committing it to bom_dict/reductant_dict
+                try:
+                    unit_fopex_scaled = scale_fopex_to_production(unit_fopex, util_rate)
+                except ZeroUtilisationError:
+                    logger.warning(
+                        f"[OPTIMAL TECH] SKIPPING {tech} - zero utilisation for furnace group "
+                        f"{self.furnace_group_id}, cannot price fixed OPEX"
+                    )
+                    continue
+
+                bom_dict[tech] = bill_of_materials
+                reductant_dict[tech] = committed_reductant
+
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[REDUCTANT NPV] FG %s: tech=%s committed=%r picks=%s",
+                        self.furnace_group_id,
+                        tech,
+                        committed_reductant,
+                        summarise_reductant_picks(score_series.picks, operating_start),
+                    )
+
+                unit_base_opex = calculate_unit_total_opex(
+                    unit_fopex=unit_fopex_scaled,
+                    unit_vopex=calculate_variable_opex(bill_of_materials["materials"], {}),
                     utilization_rate=util_rate,
                 )
 
                 # Apply operating subsidies over plant lifetime
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
-                    opex=unit_total_opex,
+                    opex=[unit_base_opex + score for score in score_series.scores],
                     opex_subsidies=opex_subsidies,
-                    start_year=Year(current_year + construction_time),
-                    end_year=Year(current_year + construction_time + plant_lifetime),
+                    start_year=operating_start,
+                    end_year=operating_end,
                 )
 
-                # Apply debt subsidies to cost of debt
+                # Apply debt subsidies to this technology's own cost of debt
                 npv_capex_dict[tech] = capex
-                original_cost_of_debt = cost_of_debt
+                original_cost_of_debt = cost_of_debt_by_tech.get(tech)
+                if original_cost_of_debt is None:
+                    raise ValueError(f"No cost of debt data for technology {tech}")
+                cost_of_equity = cost_of_equity_by_tech.get(tech)
+                if cost_of_equity is None:
+                    raise ValueError(f"No cost of equity data for technology {tech}")
                 cost_of_debt = calculate_debt_with_subsidies(
                     cost_of_debt=original_cost_of_debt,
                     debt_subsidies=debt_subsidies,
                     risk_free_rate=risk_free_rate,
                 )
 
-                # Calculate NPV using all cost and revenue components
+                # Calculate NPV using all cost and revenue components (carbon and
+                # by-product terms are already inside the per-year opex list)
                 npv_dict[tech] = calculate_npv_full(
                     capex=capex,
-                    capacity=self.capacity,
+                    capacity=tech_capacity,
                     unit_total_opex_list=unit_total_opex_list,
                     expected_utilisation_rate=util_rate,
                     price_series=product_price_series,
                     lifetime=plant_lifetime,
-                    construction_time=construction_time,
+                    construction_time=tech_construction_time,
                     cost_of_debt=cost_of_debt,
                     cost_of_equity=cost_of_equity,
                     equity_share=self.equity_share,
-                    carbon_costs=carbon_cost_list,
-                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 logger.debug(f"[OPTIMAL TECH] Proceeding with NPV calculation for {tech}")
@@ -2651,9 +2937,9 @@ class FurnaceGroup:
                     f"[OPTIMAL TECH]   - Capex per tonne: ${capex:,.2f} (before subsidy: ${original_capex:,.2f})"
                 )
                 logger.debug(
-                    f"[OPTIMAL TECH]   - Total opex per tonne: {unit_total_opex_list} (before subsidy: ${unit_total_opex:,.2f})"
+                    f"[OPTIMAL TECH]   - Total opex per tonne: {unit_total_opex_list} (base before score: ${unit_base_opex:,.2f})"
                 )
-                logger.debug(f"[OPTIMAL TECH]   - Capacity: {self.capacity:.2f} t")
+                logger.debug(f"[OPTIMAL TECH]   - Capacity: {tech_capacity:.2f} t")
                 logger.debug(f"[OPTIMAL TECH]   - Utilization rate: {util_rate:.2%}")
                 logger.debug(f"[OPTIMAL TECH]   - Price series ($/t): {product_price_series}")
                 logger.debug(f"[OPTIMAL TECH]   - Lifetime: {self.lifetime.plant_lifetime} years")
@@ -2710,7 +2996,7 @@ class FurnaceGroup:
             else:
                 logger.debug("[OPTIMAL TECH] COSA is None")
 
-        return npv_dict, npv_capex_dict, cosa, bom_dict
+        return npv_dict, npv_capex_dict, cosa, bom_dict, reductant_dict
 
     def update_balance_sheet(self, market_price: float) -> float:
         """
@@ -2751,52 +3037,82 @@ class FurnaceGroup:
 
         return self.balance
 
-    def generate_energy_vopex_by_reductant(self) -> dict[str, float]:
+    def generate_energy_vopex_by_reductant(
+        self,
+        carbon_price: float = 0.0,
+        technology_emission_factors: list[TechnologyEmissionFactors] | None = None,
+        chosen_emissions_boundary: str = "",
+    ) -> dict[str, float]:
         """
-        calculate the cost of energy considering the furnace technolgy and different production paths
+        Calculate energy VOPEX per (metallic charge, reductant) and pick the furnace
+        group's reductant.
+
+        With the default arguments the per-charge choice minimises energy VOPEX only
+        (legacy behaviour, used by the commit-time callers). When
+        ``technology_emission_factors`` is provided, the choice instead minimises the
+        total score: energy VOPEX + ``carbon_price`` x direct GHG factor (for
+        ``chosen_emissions_boundary``) + the business case's secondary-output
+        adjustment (by-product revenue / disposal and carbon storage costs).
+
+        Args:
+            carbon_price: Country carbon price for the current year (USD/tCO2e).
+            technology_emission_factors: Emission factors used to build the per-
+                (reductant, metallic charge) direct GHG lookup. None keeps the
+                energy-only choice. When provided, every business case of this
+                furnace group's technology must have a factor for the chosen
+                boundary (missing rows raise KeyError rather than scoring as 0).
+            chosen_emissions_boundary: Emissions boundary whose direct GHG factor
+                enters the score (e.g. "plant_boundary").
+
+        Returns:
+            dict[str, float]: Energy VOPEX per metallic charge for the chosen
+            reductant (pure energy VOPEX regardless of scoring mode).
+
+        Side Effects:
+            Sets self.chosen_reductant and the reporting dicts
+            (energy_vopex_by_input, energy_vopex_breakdown_by_input,
+            energy_vopex_by_carrier) — reporting stays pure energy VOPEX; only the
+            min-choice uses the total score.
+
+        Notes:
+            Logs a data-drift warning if a metallic charge's material requirements
+            (required quantity per tonne or non-energy secondary feedstocks) differ
+            across reductants — the score carries no material term because current
+            masters author materials identically across reductants.
         """
-        energy_vopex_by_input: dict[str, dict[str, float]] = {}
-        energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
+        logger = logging.getLogger(f"{__name__}.generate_energy_vopex_by_reductant")
         if self.technology.dynamic_business_case is None:
             return {}
 
-        for dbc in self.technology.dynamic_business_case:
-            metallic_input = dbc.metallic_charge
-            raw_energy_req = dbc.energy_requirements or {}
-            raw_secondary = dbc.secondary_feedstock or {}
+        ef_by_key = (
+            build_direct_ghg_lookup(technology_emission_factors, chosen_emissions_boundary)
+            if technology_emission_factors is not None
+            else None
+        )
+        scores = score_reductants_for_business_cases(
+            self.technology.dynamic_business_case,
+            self.energy_costs,
+            self.output_energy_costs,
+            carbon_price,
+            ef_by_key,
+            self.disposal_cost_outputs,
+        )
+        energy_vopex_by_input = scores.energy_vopex_by_input
+        energy_breakdown_by_input = scores.energy_breakdown_by_input
+        score_by_input = scores.score_by_input
 
-            combined_requirements: dict[str, float] = {}
-            for energy_type, volume in raw_energy_req.items():
-                normalized_energy = normalize_name(energy_type)
-                if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
-
-            for secondary_type, volume in raw_secondary.items():
-                normalized_secondary = normalize_name(secondary_type)
-                if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                combined_requirements[normalized_secondary] = (
-                    combined_requirements.get(normalized_secondary, 0.0) + volume
+        for metallic_input, profiles in scores.material_profile_by_input.items():
+            if len(set(profiles.values())) > 1:
+                logger.warning(
+                    "[REDUCTANT SCORE] FG %s: material requirements for charge '%s' differ across "
+                    "reductants (%s) — the reductant score carries no material term, so this "
+                    "difference is ignored. Check the master's Bill of Materials authoring.",
+                    self.furnace_group_id,
+                    metallic_input,
+                    ", ".join(sorted(profiles)),
                 )
 
-            if not combined_requirements:
-                continue
-
-            if metallic_input not in energy_vopex_by_input:
-                energy_vopex_by_input[metallic_input] = {}
-            if dbc.reductant not in energy_vopex_by_input[metallic_input]:
-                energy_vopex_by_input[metallic_input][dbc.reductant] = 0.0
-            energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(dbc.reductant, defaultdict(float))
-
-            for energy_type, volume in combined_requirements.items():
-                normalized_energy = normalize_name(energy_type)
-                price = self.energy_costs.get(normalized_energy, self.energy_costs.get(energy_type, 0.0))
-                cost_value = volume * price
-                energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
-                energy_breakdown_by_input[metallic_input][dbc.reductant][normalized_energy] += cost_value
-
-        mins = [min(costs, key=lambda k: costs[k]) for costs in energy_vopex_by_input.values() if costs]
+        mins = [min(costs, key=lambda k: costs[k]) for costs in score_by_input.values() if costs]
         counts = Counter(mins)
         if not counts:
             # logger.warning(f"No reductants found for furnace group {self.furnace_group_id}")
@@ -2807,7 +3123,20 @@ class FurnaceGroup:
             return {}
         most_common_reductant, _ = counts.most_common(1)[0]
 
+        previous_reductant = self.chosen_reductant
         self.chosen_reductant = str(most_common_reductant)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[REDUCTANT PICK] FG %s (%s): chosen=%r (was %r), scores=%s",
+                self.furnace_group_id,
+                self.technology.name,
+                self.chosen_reductant,
+                previous_reductant,
+                {
+                    charge: {reductant: round(score, 2) for reductant, score in costs.items()}
+                    for charge, costs in score_by_input.items()
+                },
+            )
         # Reporting only the energy_vopex by metallic charge, using vopex for the chosen reductatnt
         trimmed: dict[str, float] = {}
         trimmed_breakdown: dict[str, dict[str, float]] = {}
@@ -2839,51 +3168,87 @@ class FurnaceGroup:
         consideration_time: int,
         probability_of_announcement: float,
         all_opex_subsidies: list[Subsidy],
-        technology_emission_factors: list[TechnologyEmissionFactors],
-        chosen_emissions_boundary_for_carbon_costs: str,
-        dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
-        carbon_costs_for_iso3: dict[Year, float],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
         status_stats: Counter | None = None,
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
+        | None = None,
+        capacity_pool_max_retry_years: int | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
+        greenfield_feasibility_probe: Callable[..., str | None] | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
         major decisions based on outlier years.
 
         Steps:
-            1. Update the NPV of potential business opportunities each year (status: considered) based on:
-                - Electricity and hydrogen costs, CAPEX, market prices, cost of debt, cost of equity,
-                  equity share, and railway costs for the current year.
-                - Subsidies (both for CAPEX and cost of debt) for the earliest possible construction
-                  start year.
-                - OPEX and carbon costs (with subsidies) for the earliest possible operational years
-                  (taking into account consideration, construction, announcement, and plant lifetime).
-            2. Business opportunities (status: considered) which stay NPV-positive for the first X
-               (=consideration_time) years are announced (status: announced) with a given probability
-               (uniformly sampled), reflecting that not all opportunities are taken up by investors.
-            3. Business opportunities (status: considered) which have a negative NPV for at least X
-               (=consideration_time) years in a row (not necessarily the first ones) are discarded
-               (status: discarded).
+            1. Re-value the opportunity (status: considered) each year with the same metric used at
+               creation: materials-only variable OPEX plus fixed OPEX (scaled to production terms)
+               plus the year-wise reductant score over the earliest possible operating window.
+               It starts construction_time years after the earliest construction start,
+               [year + consideration_time - years considered] floored at [year + 1]. Energy,
+               carbon and by-products enter through the score; the series re-optimises the
+               reductant per year by design, while the committed ``chosen_reductant`` stays what
+               conversion uses. The site's electricity and hydrogen come from its stack
+               (``captive_energy``), locked at that construction start by the same year's
+               ``update_dynamic_costs_for_business_opportunities``, and the grid price of each year.
+            2. Business opportunities whose last X (=consideration_time) NPVs are all positive
+               (a rolling window, not necessarily the first years) are announced with a given
+               probability (uniformly sampled), reflecting that not all opportunities are taken
+               up by investors.
+            3. Business opportunities whose last X (=consideration_time) NPVs are all negative are
+               discarded. This is deliberate: the yearly site re-scan recreates opportunities at
+               sites whose conditions improve later, so discarding does not exclude the site.
 
         Args:
             year: Current simulation year
             location: Location of the plant (including latitude, longitude, and country ISO3)
-            market_price: Dictionary mapping product to list of future market prices
+            market_price: Dictionary mapping product to list of future market prices,
+                anchored at the current year; re-anchored to the opportunity's earliest
+                construction start before the NPV
             cost_of_equity: Cost of equity for NPV calculation
             plant_lifetime: Lifetime of the plant in years
             construction_time: Time required for plant construction in years
             consideration_time: Number of years to track NPV before decision
             probability_of_announcement: Probability that a viable opportunity will be announced
             all_opex_subsidies: List of available OPEX subsidies
-            technology_emission_factors: List of technology-specific emission factors
-            chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon cost calculation
-            dynamic_business_cases: Dictionary mapping technology to list of primary feedstocks
-            carbon_costs_for_iso3: Dictionary mapping year to carbon cost for the country
+            reductant_score_series: ``(location, tech, output_shares, start, end, *, captive)
+                -> ReductantScoreSeries`` (``Environment.reductant_score_series``)
+            permitted_greenfield_capacity: China capacity-policy withdrawal gate, called once
+                when the announcement draw succeeds (capacities in model tonnes end-to-end).
+                Returns ``(build_capacity, attributed_owner_id, withdrew, credits_consumed)``
+                on a grant — the capacity actually allowed, the single credit holder funding
+                it (None for the unowned pot or when no withdrawal ran), whether the pool was
+                drawn on, and the consumed credit slices a later discard refunds — or None
+                when the withdrawal is blocked, in which case the opportunity stays considered
+                and retries next year exactly like the CO2 gate. None (the default) leaves the
+                decision path untouched.
+            capacity_pool_max_retry_years: Cumulative years the capacity gate may block this
+                opportunity before it is discarded rather than retried. Counts capacity blocks
+                only — CO2 blocks sit in another branch and never reach the counter. With the
+                feasibility probe threaded a blocked year counts whether or not the
+                announcement draw ran; without it, only a blocked successful draw counts.
+                None (the default) retries forever.
+            increase_sizing_query: China capacity-policy sizing query, applied to each yearly
+                re-valuation so the announcement decision rests on the capacity the policy
+                permits. Non-consuming and never mutates ``self.capacity``, which stays the
+                planned amount the gate withdraws against. None (the default) re-values at the
+                planned capacity.
+            greenfield_feasibility_probe: China capacity-policy pre-draw probe: would the
+                single-owner withdrawal be granted at the current pool state? Non-consuming;
+                called before the announcement draw so an unfundable year counts toward the
+                retry cap regardless of the draw, and the blocked ledger row covers every
+                blocked year. A blocked probe skips the draw entirely (one fewer RNG call
+                than the pre-probe behaviour — enabled runs only). None (the default) leaves
+                the block accounting to the consuming gate alone.
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
+
+        Raises:
+            ValueError: If the opportunity holds no ``captive_energy`` stack when its NPV is re-valued.
 
         Note: This results in an adjusted NPV metric, which proved to be best to ensure the right plants
         are opened, because subsidized technologies would otherwise suffer a too long delay until the
@@ -2892,10 +3257,7 @@ class FurnaceGroup:
         opened.
         """
         logger = logging.getLogger(f"{__name__}.FurnaceGroup.track_business_opportunities")
-        from steelo.domain.calculate_costs import (
-            calculate_cost_adjustments_from_secondary_outputs,
-            calculate_npv_full,
-        )
+        from steelo.domain.calculate_costs import calculate_npv_full, scale_fopex_to_production
 
         # Verify prerequisites
         if self.historical_npv_business_opportunities is None:
@@ -2914,12 +3276,31 @@ class FurnaceGroup:
             npv_value = float("-inf")
             if status_stats is not None:
                 status_stats["npv_inputs_missing"] += 1
+        elif self.output_shares is None:
+            logger.warning(
+                f"[NEW PLANTS] Output shares are None for {self.technology.name}. Skipping NPV calculation and returning -inf."
+            )
+            npv_value = float("-inf")
+            if status_stats is not None:
+                status_stats["npv_inputs_missing"] += 1
+        elif self.utilization_rate <= 0:
+            logger.warning(
+                f"[NEW PLANTS] Zero utilisation for {self.technology.name} business opportunity at "
+                f"({location.lat}, {location.lon}) in {location.iso3}. Skipping NPV calculation and returning -inf."
+            )
+            npv_value = float("-inf")
+            if status_stats is not None:
+                status_stats["npv_inputs_missing"] += 1
         else:
-            # Get earliest possible operational time period
+            # Earliest possible operating window, floored at the soonest path still open to a
+            # considered opportunity: announce now, construct from next year
             years_already_considered = len(self.historical_npv_business_opportunities)
             earliest_operation_start_year = Year(
-                year + consideration_time + construction_time + 1 - years_already_considered
-            )  # 1 year of announcement time
+                max(
+                    year + consideration_time + construction_time - years_already_considered,
+                    year + 1 + construction_time,
+                )
+            )
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
             # Get OPEX (with subsidies) for the years the plant would be operational
@@ -2928,69 +3309,55 @@ class FurnaceGroup:
                 start_year=earliest_operation_start_year,
                 end_year=earliest_operation_end_year,
             )
-            unit_vopex = calculate_variable_opex(self.bill_of_materials["materials"], self.bill_of_materials["energy"])
-            unit_fopex = self.unit_fopex
-            unit_total_opex = unit_vopex + unit_fopex
+            # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+            # by-products enter through the per-year reductant score
+            unit_vopex = calculate_variable_opex(self.bill_of_materials["materials"], {})
+            unit_fopex = scale_fopex_to_production(self.tech_unit_fopex, self.utilization_rate)
+            # Every opportunity gets its stack at creation and each re-valuation; a missing one is a bug
+            if self.captive_energy is None:
+                raise ValueError(f"Business opportunity {self.furnace_group_id} has no captive energy stack")
+            score_series = reductant_score_series(
+                location,
+                self.technology.name,
+                self.output_shares,
+                earliest_operation_start_year,
+                earliest_operation_end_year,
+                captive=self.captive_energy,
+            )
             unit_total_opex_list = calculate_opex_list_with_subsidies(
-                opex=unit_total_opex,
+                opex=[unit_vopex + unit_fopex + score for score in score_series.scores],
                 opex_subsidies=selected_opex_subsidies,
                 start_year=earliest_operation_start_year,
                 end_year=earliest_operation_end_year,
             )
 
-            # Get carbon costs for the years the plant would be operational
-            tech_business_cases = dynamic_business_cases.get(
-                self.technology.name, dynamic_business_cases.get(self.technology.name.lower(), [])
+            # Calculate updated NPV (carbon and by-products live inside the score)
+            years_to_construction_start = int(earliest_operation_start_year) - construction_time - int(year)
+            # The capacity the policy would permit, known before the NPV that decides announcement
+            npv_capacity = (
+                self.capacity
+                if increase_sizing_query is None
+                else Volumes(
+                    increase_sizing_query(
+                        iso3=location.iso3,
+                        technology=self.technology.name,
+                        reductant=self.chosen_reductant,
+                        capacity=float(self.capacity),
+                    )
+                )
             )
-            matched_business_cases = materiall_bill_business_case_match(
-                dynamic_feedstocks=tech_business_cases,
-                material_bill=self.bill_of_materials["materials"],
-                tech=self.technology.name,
-                reductant=self.chosen_reductant,
-            )
-
-            # total emissions
-            bom_emissions = calculate_emissions(
-                business_cases=matched_business_cases,
-                material_bill=self.bill_of_materials["materials"],
-                technology_emission_factors=technology_emission_factors,
-            )
-
-            # total carbon costs
-            carbon_cost_list = calculate_emissions_cost_series(
-                emissions=bom_emissions,
-                carbon_price_dict=carbon_costs_for_iso3,
-                chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                start_year=earliest_operation_start_year,
-                end_year=earliest_operation_end_year,
-            )
-
-            # Calculate secondary output cost adjustment (by-product revenue/cost)
-            secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
-                bill_of_materials=self.bill_of_materials,
-                dynamic_business_cases=list(matched_business_cases.values()),
-                output_costs=self.output_energy_costs,
-                disposal_cost_outputs=self.disposal_cost_outputs,
-            )
-            logger.debug(
-                f"[NEW PLANTS] {self.technology.name} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-            )
-
-            # Calculate updated NPV
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
-                capacity=self.capacity,
+                capacity=npv_capacity,
                 unit_total_opex_list=unit_total_opex_list,
                 expected_utilisation_rate=self.utilization_rate,
-                price_series=market_price[self.technology.product],
+                price_series=market_price[self.technology.product][years_to_construction_start:],
                 lifetime=plant_lifetime,
                 construction_time=construction_time,
                 cost_of_debt=self.cost_of_debt,
                 cost_of_equity=cost_of_equity,
                 equity_share=self.equity_share,
                 infrastructure_costs=self.railway_cost,
-                carbon_costs=carbon_cost_list,
-                secondary_output_adjustment=secondary_output_adj,
             )
 
         # Set to very negative NPV if calculation returned NaN
@@ -3050,15 +3417,84 @@ class FurnaceGroup:
                                 status_stats["co2_storage_blocked"] += 1
                             return None  # stay considered
 
+                def register_capacity_block() -> commands.Command | None:
+                    """Count one blocked year; at the retry cap, discard the opportunity.
+
+                    Shared by the pre-draw probe and the consuming gate's blocked branch, so
+                    the counter has exactly one semantics wherever the block is detected. A
+                    cap discard never withdrew, so there is nothing to refund; the
+                    announced-only guard in the status handler keeps the CO2 release out of
+                    it too.
+                    """
+                    self.capacity_pool_blocked_years += 1
+                    if status_stats is not None:
+                        status_stats["capacity_pool_blocked"] += 1
+                    if (
+                        capacity_pool_max_retry_years is not None
+                        and self.capacity_pool_blocked_years >= capacity_pool_max_retry_years
+                    ):
+                        logger.info(
+                            f"[CAPACITY POOL] gate=greenfield decision=discarded_retry_cap "
+                            f"fg={self.furnace_group_id} iso3={location.iso3} "
+                            f"tech={self.technology.name} blocked_years={self.capacity_pool_blocked_years} "
+                            f"cap={capacity_pool_max_retry_years} year={int(year)}"
+                        )
+                        if status_stats is not None:
+                            status_stats["capacity_pool_retry_cap_discarded"] += 1
+                        return commands.UpdateFurnaceGroupStatus(
+                            fg_id=self.furnace_group_id,
+                            plant_id=self.get_furnace_plant_id(),
+                            new_status="discarded",
+                        )
+                    return None  # stay considered
+
+                # Non-consuming pre-draw probe: a blocked year counts towards the retry cap
+                # whether or not the draw would have run, so the cap measures years, not draws
+                if greenfield_feasibility_probe is not None:
+                    probe_blocked_reason = greenfield_feasibility_probe(
+                        iso3=location.iso3,
+                        geo_unit=location.geo_unit,
+                        technology=self.technology.name,
+                        reductant=self.chosen_reductant,
+                        capacity=float(self.capacity),
+                        product=self.technology.product,
+                        year=int(year),
+                    )
+                    if probe_blocked_reason is not None:
+                        return register_capacity_block()
+
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
+                    # Capacity-policy gate (③ INCREASE): announcement is the commitment point, so the
+                    # gate withdraws here or the opportunity stays considered, like the CO2 gate above
+                    if permitted_greenfield_capacity is not None:
+                        grant = permitted_greenfield_capacity(
+                            iso3=location.iso3,
+                            geo_unit=location.geo_unit,
+                            technology=self.technology.name,
+                            reductant=self.chosen_reductant,
+                            capacity=float(self.capacity),
+                            product=self.technology.product,
+                            year=int(year),
+                        )
+                        if grant is None:
+                            return register_capacity_block()
+                        build_capacity, attributed_owner_id, withdrew, credits_consumed = grant
+                        if withdrew:
+                            self.capacity_pool_granted_withdraw_mt = float(self.capacity)
+                            self.capacity_pool_attributed_owner_id = attributed_owner_id
+                            self.capacity_pool_consumed_credits = credits_consumed
+                            if build_capacity != self.capacity:
+                                # Emission-intense grant: the pool withdrew the planned
+                                # amount but the build itself is penalised
+                                self.capacity = Volumes(build_capacity)
                     if status_stats is not None:
                         status_stats["announced"] += 1
                     logger.debug(
                         f"[NEW PLANTS] Announcing the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-positive for {consideration_time} years in a row."
                     )
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="announced"
+                        fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="announced"
                     )
                 if status_stats is not None:
                     status_stats["announcement_probability_failed"] += 1
@@ -3071,7 +3507,7 @@ class FurnaceGroup:
                     f"[NEW PLANTS] Discarding the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-negative for {consideration_time} years in a row."
                 )
                 return commands.UpdateFurnaceGroupStatus(
-                    fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                    fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
                 )
             else:
                 if status_stats is not None:
@@ -3140,7 +3576,7 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["tech_not_allowed"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
             )
 
         # Get capacity from NEW PLANTS only (not expansions) and calculate limits
@@ -3189,8 +3625,8 @@ class FurnaceGroup:
                     if status_stats is not None:
                         status_stats["co2_storage_blocked"] += 1
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(),
-                        plant_id=self.furnace_group_id,
+                        fg_id=self.furnace_group_id,
+                        plant_id=self.get_furnace_plant_id(),
                         new_status="discarded",
                     )
 
@@ -3207,8 +3643,8 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["construction_started"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(),
-                plant_id=self.furnace_group_id,
+                fg_id=self.furnace_group_id,
+                plant_id=self.get_furnace_plant_id(),
                 new_status="construction",
             )
 
@@ -3370,26 +3806,6 @@ class Plant:
                 return True
         return False
 
-    @property
-    def most_common_reductant(self) -> dict[str, str]:
-        """
-        Get the most common reductant for each technology across all furnace groups in the plant.
-
-        Returns:
-            dict[str, str]: Dictionary mapping technology name to most common reductant.
-                           If no reductant is set for a technology, it will be omitted from the result.
-
-        Example:
-            {
-                "BOF": "coke",
-                "EAF": "electricity",
-                "DRI": "natural_gas"
-            }
-        """
-        from steelo.utilities.utils import get_most_common_reductant_by_technology
-
-        return get_most_common_reductant_by_technology(self.furnace_groups)
-
     def calculate_average_steel_cost_and_capacity(self, active_statuses: list[str]):
         """
         Calculates average steel cost and capacity for the plant for active steel furnaces
@@ -3471,16 +3887,27 @@ class Plant:
             existing_removed = self.removed_capacity_by_product.get(product_name, 0.0)
             self.removed_capacity_by_product[product_name] = existing_removed + float(furnace_group.capacity)
         furnace_group.status = "closed"
-        self.events.append(events.FurnaceGroupClosed(furnace_group_id=furnace_group_id))
+        self.events.append(
+            events.FurnaceGroupClosed(
+                furnace_group_id=furnace_group_id,
+                capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
+            )
+        )
 
     def renovate_furnace_group(
         self,
         furnace_group_id: str,
         plant_lifetime: int,
+        capacity: float,
         capex: float,
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
+        captive_energy: CaptiveEnergy | None,
         capex_subsidies: list[Subsidy] = [],
         debt_subsidies: list[Subsidy] = [],
     ) -> None:
@@ -3492,24 +3919,31 @@ class Plant:
         2. Set the last renovation date to January 1st of the current year.
         3. Reset the furnace group's lifetime to start from the current year with the new plant_lifetime duration.
         4. Change the technology CAPEX type to "brownfield" to reflect renovation economics.
-        5. Update the CAPEX and cost of debt values (both subsidized and unsubsidized versions).
+        5. Apply the renovated capacity and update the CAPEX and cost of debt values (both subsidized and
+           unsubsidized versions).
         6. Apply any provided CAPEX and debt subsidies to the furnace group's subsidy tracking.
-        7. Log a FurnaceGroupRenovated event to the event stream.
+        7. Log a FurnaceGroupRenovated event carrying the pre-renovation capacity as ``old_capacity``.
 
         Args:
             furnace_group_id (str): Unique identifier of the furnace group to renovate.
             plant_lifetime (int): New lifetime in years for the renovated furnace group.
+            capacity (float): Capacity the renovated group carries forward. Equal to the current
+                capacity except when the capacity-policy hook shrank the renovation, in which
+                case the freed difference is deposited by the policy's event handler.
             capex (float): Subsidized capital expenditure for the renovation.
             capex_no_subsidy (float): Unsubsidized capital expenditure for the renovation.
             cost_of_debt (float): Subsidized cost of debt financing for the renovation.
             cost_of_debt_no_subsidy (float): Unsubsidized cost of debt financing for the renovation.
+            captive_energy (CaptiveEnergy | None): The stack a new site locks in the renovation year, which
+                replaces its old one; None for an existing plant.
             capex_subsidies (list[Subsidy], optional): List of subsidies applied to CAPEX. Defaults to empty list.
             debt_subsidies (list[Subsidy], optional): List of subsidies applied to debt financing. Defaults to empty
                 list.
 
         Side Effects:
             - Modifies the furnace group's last_renovation_date, lifetime, technology.capex_type, technology.capex,
-              technology.capex_no_subsidy, cost_of_debt, cost_of_debt_no_subsidy, and applied_subsidies.
+              technology.capex_no_subsidy, cost_of_debt, cost_of_debt_no_subsidy, captive_energy and
+              applied_subsidies.
             - Appends a FurnaceGroupRenovated event to the plant's event list.
 
         Note:
@@ -3522,6 +3956,7 @@ class Plant:
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
         current_year = furnace_group.lifetime.current
+        old_capacity = furnace_group.capacity
 
         # Mark the renovation date
         furnace_group.last_renovation_date = date(current_year, 1, 1)
@@ -3536,18 +3971,35 @@ class Plant:
         # Switch to brownfield CAPEX (renovation costs are different from greenfield construction)
         furnace_group.technology.capex_type = "brownfield"
 
+        # Apply the renovated capacity; a no-op unless the capacity policy shrank the renovation
+        furnace_group.capacity = Volumes(capacity)
+
         # Update financial parameters with both subsidized and unsubsidized values
         furnace_group.technology.capex = capex
         furnace_group.technology.capex_no_subsidy = capex_no_subsidy
         furnace_group.cost_of_debt = cost_of_debt
         furnace_group.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
+        furnace_group.captive_energy = captive_energy
 
         # Track which subsidies were applied to this renovation for transparency and reporting
         furnace_group.applied_subsidies["capex"] = capex_subsidies
         furnace_group.applied_subsidies["debt"] = debt_subsidies
 
         # Log the renovation event for audit trail and event sourcing
-        self.events.append(events.FurnaceGroupRenovated(furnace_group_id=furnace_group_id))
+        # A renovation keeps the technology, so old and new names coincide
+        self.events.append(
+            events.FurnaceGroupRenovated(
+                furnace_group_id=furnace_group_id,
+                capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                old_technology_name=furnace_group.technology.name,
+                new_technology_name=furnace_group.technology.name,
+                old_capacity=old_capacity,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
+            )
+        )
 
     def change_furnace_group_status_to_switching_technology(
         self,
@@ -3587,14 +4039,18 @@ class Plant:
         technology_name: str,
         plant_lifetime: int,
         lag: int,
+        capacity: float,
         capex: float,
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
+        captive_energy: CaptiveEnergy | None,
         capex_subsidies: list[Subsidy] = [],
         debt_subsidies: list[Subsidy] = [],
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
         bom: dict | None = None,
+        chosen_reductant: str | None = None,
+        legacy_years: int | None = None,
     ) -> None:
         """
         Change the technology of a specified furnace group with debt preservation.
@@ -3618,19 +4074,29 @@ class Plant:
             technology_name (str): Name of the new technology to switch to.
             plant_lifetime (int): Lifetime of the new plant in years.
             lag (int): Construction lag in years before the plant becomes operational.
+            capacity (float): Capacity the new technology is built at. Equal to the current
+                capacity except when the capacity-policy hook shrank the replacement, in which
+                case the freed difference is deposited by the policy's event handler.
             capex (float): Capital expenditure for the new technology (after subsidies).
             capex_no_subsidy (float): Capital expenditure without subsidies applied.
             cost_of_debt (float): Cost of debt percentage for the new technology (after subsidies).
             cost_of_debt_no_subsidy (float): Cost of debt percentage without subsidies applied.
+            captive_energy (CaptiveEnergy | None): The stack a new site locked when it decided the switch,
+                which replaces its old one with the new technology; None for an existing plant.
             capex_subsidies (list[Subsidy]): List of subsidies applied to capital expenditure. Defaults to [].
             debt_subsidies (list[Subsidy]): List of subsidies applied to debt costs. Defaults to [].
             dynamic_business_case (list[PrimaryFeedstock] | None): Dynamic business case feedstock options.
                 Defaults to None.
             bom (dict | None): Bill of materials for the new technology. If None, keeps existing BOM.
                 Defaults to None.
+            legacy_years (int | None): Years of the old technology's debt still outstanding, anchored
+                to the decision-time lifetime. A deferred switch executes after the furnace group's
+                lifetime has been replaced for the new cycle, so the caller must supply this; None
+                falls back to the current lifetime's remaining years (same-tick execution).
 
         Side Effects:
-            - Updates furnace group's technology, lifetime, status, utilization rate, and debt schedules.
+            - Updates furnace group's technology, lifetime, status, utilization rate, captive energy stack and
+              debt schedules.
             - Appends FurnaceGroupTechChanged event to the plant's event list.
             - Marks furnace group as created_by_PAM.
 
@@ -3648,14 +4114,20 @@ class Plant:
             - See debt_repayment_per_year property for full details on debt accumulation logic.
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
+        old_technology_name = furnace_group.technology.name
+        old_capacity = furnace_group.capacity
 
-        # Capture remaining debt from the current technology before switching
+        # Capture the current technology's remaining debt tail before switching.
+        years_remaining = legacy_years if legacy_years is not None else furnace_group.lifetime.remaining_number_of_years
         old_remaining_debt = []
-        if furnace_group.lifetime.remaining_number_of_years > 0:
-            old_debt_schedule = furnace_group.debt_repayment_per_year
-            years_remaining = furnace_group.lifetime.remaining_number_of_years
-            if years_remaining > 0 and len(old_debt_schedule) >= years_remaining:
-                old_remaining_debt = old_debt_schedule[-years_remaining:]
+        if years_remaining > 0:
+            old_remaining_debt = calculate_debt_repayment(
+                total_investment=furnace_group.total_investment,
+                equity_share=furnace_group.equity_share,
+                lifetime=furnace_group.lifetime.plant_lifetime,
+                cost_of_debt=furnace_group.cost_of_debt,
+                lifetime_remaining=years_remaining,
+            )
 
         # Combine existing legacy debt with newly captured debt for cascading debt handling
         if furnace_group.legacy_debt_schedule:
@@ -3684,8 +4156,12 @@ class Plant:
         furnace_group.cost_of_debt = cost_of_debt
         furnace_group.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
 
-        # Apply new technology and reset operational state
+        # Apply new technology and reset operational state. The capacity lands after the
+        # legacy-debt capture above, which must price the outgoing technology's remaining
+        # debt on the old capacity; a shrink materialises only from here on
         furnace_group.technology = technology
+        furnace_group.captive_energy = captive_energy
+        furnace_group.capacity = Volumes(capacity)
         if bom is not None:
             furnace_group.bill_of_materials = bom
         furnace_group.utilization_rate = 0.0
@@ -3702,8 +4178,11 @@ class Plant:
         furnace_group.applied_subsidies["capex"] = capex_subsidies
         furnace_group.applied_subsidies["debt"] = debt_subsidies
 
-        # Update operational parameters
+        # Update operational parameters. The bare call rebuilds the reporting dicts with an
+        # energy-only pick; the evaluated reductant from the NPV wins when provided (C7)
         furnace_group.generate_energy_vopex_by_reductant()
+        if chosen_reductant is not None:
+            furnace_group.chosen_reductant = chosen_reductant
         fopex = self.technology_unit_fopex.get(furnace_group.technology.name.lower())
         if fopex is None:
             raise ValueError(f"Fixed OPEX for technology {furnace_group.technology.name} not found")
@@ -3716,8 +4195,32 @@ class Plant:
                 furnace_group_id=furnace_group_id,
                 technology_name=technology_name,
                 capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                old_technology_name=old_technology_name,
+                old_capacity=old_capacity,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
             )
         )
+
+    def investment_captive_energy(
+        self, captive_energy_at: Callable[[Location, Year], CaptiveEnergy], year: Year
+    ) -> CaptiveEnergy | None:
+        """
+        The stack a new investment at this plant locks: a switch, a renovation or an expansion.
+
+        Args:
+            captive_energy_at: ``Environment.captive_energy_at``.
+            year: The investment's start year.
+
+        Returns:
+            The stack of ``year`` at the plant's site for a new site (``parent_gem_id`` starting with ``indi``),
+            None for an existing plant, which pays market prices.
+        """
+        if self.parent_gem_id.lower().startswith("indi"):
+            return captive_energy_at(self.location, year)
+        return None
 
     def evaluate_furnace_group_strategy(
         self,
@@ -3726,11 +4229,14 @@ class Plant:
         market_price_series: dict,
         region_capex: dict[str, float],
         capex_renovation_share: dict[str, float],
-        cost_of_debt: float,
-        cost_of_equity: float,
+        cost_of_debt_by_tech: dict[str, float],
+        cost_of_equity_by_tech: dict[str, float],
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
+            [dict[str, float], str, float, str | None],
+            tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         probabilistic_agents: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         chosen_emissions_boundary_for_carbon_costs: str,
@@ -3749,10 +4255,12 @@ class Plant:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        tech_energy_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         most_common_reductant_by_tech: dict[str, str] = {},
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_replace_capacity: Callable[..., float | None] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3764,9 +4272,10 @@ class Plant:
         4. Calculate NPV for all technology options (adjusted for COSA when switching)
         5. Check if any technology option is profitable (NPV > 0)
         6. Identify optimal technology (maximum NPV)
-        7. Select technology (weighted random if probabilistic_agents=True, otherwise optimal)
-        8. If current tech is optimal and lifetime expired: evaluate renovation (gated on plant_group.balance)
-        9. If different tech is optimal: evaluate technology switch (gated on plant_group.balance)
+        7. Select technology: NPV-weighted random draw over all valid options, incumbent
+           included (probabilistic_agents=True), otherwise the max-NPV option
+        8. If the incumbent is selected and lifetime expired: evaluate renovation (gated on plant_group.balance)
+        9. If a different tech is selected: evaluate technology switch (gated on plant_group.balance)
         10. Check capacity limits for expansions/switches
         11. Apply probabilistic adoption decision (if enabled)
         12. Return appropriate command (ChangeFurnaceGroupTechnology, RenovateFurnaceGroup, CloseFurnaceGroup, or None)
@@ -3784,9 +4293,14 @@ class Plant:
             market_price_series: Time series of market prices for relevant commodities
             region_capex: Capital costs by technology for the region ($/tonne capacity), without subsidies
             capex_renovation_share: Fraction of greenfield CAPEX needed for renovation by technology (0-1)
-            cost_of_debt: Interest rate for debt financing (before subsidies)
-            cost_of_equity: Required return on equity (risk premium above risk-free rate)
+            cost_of_debt_by_tech: Interest rate for debt financing by technology (before subsidies), for this plant's country
+            cost_of_equity_by_tech: Required return on equity by technology, for this plant's country
             get_bom_from_avg_boms: Function to retrieve bill of materials for technologies
+            reductant_score_series: ``Environment.reductant_score_series``, the year-wise score every candidate,
+                the CO2 gate and the capacity-policy pick are priced with
+            captive_energy_at: ``Environment.captive_energy_at``. A new site builds one stack for the current
+                year, the start of the investment, and every candidate is priced from it; the renovation and
+                switch commands carry it. An existing plant builds none.
             probabilistic_agents: Whether to use probabilistic (weighted random) decision making
             dynamic_business_cases: Technology-specific feedstock options mapping technology names to primary feedstocks
             chosen_emissions_boundary_for_carbon_costs: Emissions scope for carbon pricing (e.g., "Scope 1", "Scope 2")
@@ -3809,10 +4323,21 @@ class Plant:
             tech_capex_subsidies: Capital subsidies by technology {tech_name: [Subsidy]}
             tech_opex_subsidies: Operating subsidies by technology {tech_name: [Subsidy]}
             tech_debt_subsidies: Debt subsidies by technology {tech_name: [Subsidy]}
+            tech_energy_subsidies: Energy carrier subsidies {carrier: {tech_name: [Subsidy]}},
+                already collected for the plant's geography; forwarded to
+                optimal_technology_name for candidate-technology energy pricing
+            permitted_replace_capacity: Optional capacity-policy gate for replacement decisions.
+                Called once per candidate technology with keyword arguments (iso3, geo_unit,
+                old_technology, old_reductant, new_technology, new_reductant, capacity,
+                historical_utilization, year); returns the capacity the candidate may be built
+                at — everything downstream (NPV, capex, debt, BOM, the command) is evaluated
+                there — or None to remove the candidate from the menu entirely. None (default)
+                leaves the decision path untouched.
 
         Returns:
             Command object (ChangeFurnaceGroupTechnology for switches, RenovateFurnaceGroup for renovations,
-            CloseFurnaceGroup for closures) or None if no action is profitable/feasible
+            CloseFurnaceGroup for closures) or None if no action is profitable/feasible. A switch command
+            carries the finite NPVs the selection draw ran over as ``competing_npvs``.
 
         Side Effects:
             Debits ``plant_group.balance`` via ``plant_group.deduct_equity`` when a
@@ -3867,7 +4392,8 @@ class Plant:
 
         if furnace_group.historic_balance < -closure_threshold:
             logger.info(
-                f"[FG STRATEGY] DECISION - CLOSE FG (historic losses ${furnace_group.historic_balance:,.2f} "
+                f"[FG STRATEGY] DECISION - CLOSE FG:{furnace_group.furnace_group_id} plant:{self.plant_id} "
+                f"tech:{furnace_group.technology.name} (historic losses ${furnace_group.historic_balance:,.2f} "
                 f"exceed threshold ${-closure_threshold:,.2f})"
             )
             return commands.CloseFurnaceGroup(plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id)
@@ -3878,12 +4404,23 @@ class Plant:
         if not allowed_techs_in_year:
             raise ValueError(f"[FG STRATEGY] No allowed techs in {current_year}")
 
-        # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom.
+        # Bind the score-series provider to this plant's location; a GEO ("indi") site invests now,
+        # so every candidate is priced from the stack it would lock this year
+        captive = self.investment_captive_energy(captive_energy_at, current_year)
+
+        def score_series_for_tech(
+            tech_name: str, output_shares: dict[str, float], start: Year, end: Year
+        ) -> ReductantScoreSeries:
+            return reductant_score_series(self.location, tech_name, output_shares, start, end, captive=captive)
+
+        # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom,
+        # sized with the reductant that would actually be built (operating-start-year pick)
         lookup_year = int(current_year) + construction_time
         headroom = (
             get_co2_headroom(self.location.iso3, lookup_year, 0.0) if get_co2_headroom is not None else float("inf")
         )
         dropped_ccs_techs: set[str] = set()
+        gate_pick_by_tech: dict[str, str] = {}
         filtered_allowed_furnace_transitions: dict[str, list[str]] = {}
         for from_tech, candidates in allowed_furnace_transitions.items():
             kept: list[str] = []
@@ -3891,11 +4428,16 @@ class Plant:
                 if tech not in allowed_techs_in_year:
                     continue
                 if get_co2_need_by_name is not None:
-                    reductant = most_common_reductant_by_tech.get(tech, "")
-                    need = get_co2_need_by_name(tech, float(furnace_group.capacity), reductant)
-                    if need > 0.0 and need > headroom:
-                        dropped_ccs_techs.add(tech)
-                        continue
+                    # Cheap pre-check: the empty-reductant lookup falls back to the
+                    # all-reductant maximum, so 0 means no CCS potential at all
+                    if get_co2_need_by_name(tech, float(furnace_group.capacity), "") > 0.0:
+                        if tech not in gate_pick_by_tech:
+                            gate_series = score_series_for_tech(tech, {}, Year(lookup_year), Year(lookup_year + 1))
+                            gate_pick_by_tech[tech] = gate_series.picks[0] if gate_series.picks else ""
+                        need = get_co2_need_by_name(tech, float(furnace_group.capacity), gate_pick_by_tech[tech])
+                        if need > 0.0 and need > headroom:
+                            dropped_ccs_techs.add(tech)
+                            continue
                 kept.append(tech)
             filtered_allowed_furnace_transitions[from_tech] = kept
 
@@ -3909,6 +4451,62 @@ class Plant:
                 f"dropped_count={len(dropped_ccs_techs)}"
             )
 
+        # ② REPLACE capacity policy: each candidate's permitted capacity is resolved before its
+        # NPV; None drops the candidate from the menu
+        candidate_capacities: dict[str, float] | None = None
+        if permitted_replace_capacity is not None:
+            candidate_capacities = {}
+            permitted_candidates: list[str] = []
+            gate_picks_computed = 0
+            gate_picks_elapsed = 0.0
+            for tech in filtered_allowed_furnace_transitions.get(furnace_group.technology.name, []):
+                if tech == furnace_group.technology.name:
+                    candidate_reductant: str | None = furnace_group.chosen_reductant
+                else:
+                    # The new side is classified by the candidate's own operating-start pick,
+                    # on the series and year anchor the P2 CO2 gate already uses
+                    if tech not in gate_pick_by_tech:
+                        started = time.perf_counter()
+                        gate_series = score_series_for_tech(tech, {}, Year(lookup_year), Year(lookup_year + 1))
+                        gate_picks_elapsed += time.perf_counter() - started
+                        gate_picks_computed += 1
+                        gate_pick_by_tech[tech] = gate_series.picks[0] if gate_series.picks else ""
+                    candidate_reductant = gate_pick_by_tech[tech]
+                permitted = permitted_replace_capacity(
+                    iso3=self.location.iso3,
+                    geo_unit=self.location.geo_unit,
+                    product=furnace_group.technology.product,
+                    old_technology=furnace_group.technology.name,
+                    old_reductant=furnace_group.chosen_reductant,
+                    new_technology=tech,
+                    new_reductant=candidate_reductant,
+                    capacity=float(furnace_group.capacity),
+                    historical_utilization=furnace_group.historical_utilization,
+                    year=int(current_year),
+                    furnace_group_id=furnace_group_id,
+                )
+                if permitted is None:
+                    continue
+                candidate_capacities[tech] = permitted
+                permitted_candidates.append(tech)
+            filtered_allowed_furnace_transitions[furnace_group.technology.name] = permitted_candidates
+            if gate_picks_computed:
+                # The picks are computed worldwide but read only for China (the adapter owns
+                # applicability); this is the evidence base for a CHN guard, should one be wanted
+                logger.debug(
+                    "[CAPACITY POOL] gate picks computed=%d elapsed_ms=%.1f iso3=%s fg=%s",
+                    gate_picks_computed,
+                    gate_picks_elapsed * 1e3,
+                    self.location.iso3,
+                    furnace_group_id,
+                )
+
+        def permitted_capacity_for(tech_name: str) -> Volumes:
+            """The capacity this candidate was evaluated at; the group's own when no policy ran."""
+            if candidate_capacities is None:
+                return furnace_group.capacity
+            return Volumes(candidate_capacities[tech_name])
+
         logger.debug(
             f"[FG STRATEGY] Allowed transitions from {furnace_group.technology.name}: "
             f"{filtered_allowed_furnace_transitions.get(furnace_group.technology.name)}"
@@ -3917,11 +4515,13 @@ class Plant:
         # ===== STAGE 4: Calculate NPV for all technology options =====
         logger.debug("[FG STRATEGY] === Calculating NPV for all technology options ===")
         logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
-        tech_npv_dict, npv_capex_dict, cosa, bom_dict = furnace_group.optimal_technology_name(
+
+        tech_npv_dict, npv_capex_dict, cosa, bom_dict, reductant_dict = furnace_group.optimal_technology_name(
             market_price_series=market_price_series,
-            cost_of_debt=cost_of_debt,
-            cost_of_equity=cost_of_equity,
+            cost_of_debt_by_tech=cost_of_debt_by_tech,
+            cost_of_equity_by_tech=cost_of_equity_by_tech,
             get_bom_from_avg_boms=get_bom_from_avg_boms,
+            score_series_for_tech=score_series_for_tech,
             allowed_furnace_transitions=filtered_allowed_furnace_transitions,
             capex_dict=region_capex,
             capex_renovation_share=capex_renovation_share,
@@ -3937,8 +4537,10 @@ class Plant:
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             tech_debt_subsidies=tech_debt_subsidies,
+            tech_energy_subsidies=tech_energy_subsidies,
             risk_free_rate=risk_free_rate,
             most_common_reductant_by_tech=most_common_reductant_by_tech,
+            candidate_capacities=candidate_capacities,
         )
 
         # Log NPV calculation results
@@ -3975,20 +4577,23 @@ class Plant:
             renovation_share = capex_renovation_share.get(incumbent)
             if renovation_share is None:
                 raise ValueError(f"CAPEX renovation share for technology {incumbent} not found")
-            full_capex_per_tonne = renovation_capex_per_tonne / renovation_share
             incumbent_capex_no_subsidy = region_capex.get(incumbent)
             if incumbent_capex_no_subsidy is None:
                 raise ValueError(f"CAPEX without subsidies for technology {incumbent} not found in region CAPEX dict")
 
             incumbent_capex_subs = filter_subsidies_for_year(tech_capex_subsidies.get(incumbent, []), current_year)
             incumbent_debt_subs = filter_subsidies_for_year(tech_debt_subsidies.get(incumbent, []), current_year)
-            incumbent_cost_of_debt = calculate_debt_with_subsidies(
-                cost_of_debt=cost_of_debt,
+            incumbent_cost_of_debt = cost_of_debt_by_tech.get(incumbent)
+            if incumbent_cost_of_debt is None:
+                raise ValueError(f"No cost of debt data for technology {incumbent} at plant {self.plant_id}")
+            incumbent_cost_of_debt_with_subs = calculate_debt_with_subsidies(
+                cost_of_debt=incumbent_cost_of_debt,
                 debt_subsidies=incumbent_debt_subs,
                 risk_free_rate=risk_free_rate,
             )
 
-            renovate_cost = renovation_capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
+            renovation_capacity = permitted_capacity_for(incumbent)
+            renovate_cost = renovation_capex_per_tonne * renovation_capacity * furnace_group.equity_share
             logger.info(
                 f"[FG STRATEGY] plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} "
                 f"renovate_cost=${renovate_cost:,.2f} balance=${plant_group.balance:,.2f} "
@@ -4015,12 +4620,14 @@ class Plant:
             return commands.RenovateFurnaceGroup(
                 plant_id=self.plant_id,
                 furnace_group_id=furnace_group.furnace_group_id,
-                capex=full_capex_per_tonne,
-                capex_no_subsidy=incumbent_capex_no_subsidy,
-                cost_of_debt=incumbent_cost_of_debt,
-                cost_of_debt_no_subsidy=cost_of_debt,
+                capacity=renovation_capacity,
+                capex=renovation_capex_per_tonne,
+                capex_no_subsidy=incumbent_capex_no_subsidy * renovation_share,
+                cost_of_debt=incumbent_cost_of_debt_with_subs,
+                cost_of_debt_no_subsidy=incumbent_cost_of_debt,
                 capex_subsidies=incumbent_capex_subs,
                 debt_subsidies=incumbent_debt_subs,
+                captive_energy=captive,
             )
 
         # ===== STAGE 5: Check if any technology option is profitable =====
@@ -4037,45 +4644,44 @@ class Plant:
         # ===== STAGE 6: Identify optimal technology =====
         current_tech = furnace_group.technology.name
         optimal_tech = max(tech_npv_dict, key=lambda k: tech_npv_dict[k])
-        is_current_best = current_tech == optimal_tech
 
-        logger.debug(
-            f"[FG STRATEGY] Current tech: {current_tech}, Optimal tech: {optimal_tech}, "
-            f"Current is best: {is_current_best}"
-        )
+        logger.debug(f"[FG STRATEGY] Current tech: {current_tech}, Optimal tech: {optimal_tech}")
 
         # ===== STAGE 7: Technology selection =====
-        # Use weighted random selection if current tech is not optimal
-        if not is_current_best:
-            logger.debug("[FG STRATEGY] Current technology is not optimal, selecting alternative")
+        # The draw always runs: the incumbent competes on its own NPV alongside the
+        # challengers — weighted random when probabilistic_agents, otherwise max NPV
 
-            # Filter out invalid NPV values (infinite, NaN)
-            valid_techs = {
-                k: v for k, v in tech_npv_dict.items() if v is not None and not math.isinf(v) and not math.isnan(v)
-            }
-            logger.debug(f"[FG STRATEGY] Valid technology options: {list(valid_techs.keys())}")
+        # Filter out invalid NPV values (infinite, NaN)
+        valid_techs = {
+            k: v for k, v in tech_npv_dict.items() if v is not None and not math.isinf(v) and not math.isnan(v)
+        }
+        logger.debug(f"[FG STRATEGY] Valid technology options: {list(valid_techs.keys())}")
 
-            if not valid_techs:
-                logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
-                if furnace_group.lifetime.expired:
-                    return renovate_or_close_expired()
-                return None
+        if not valid_techs:
+            logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
+            return None
 
+        weights = [max(v, 0) for v in valid_techs.values()]
+        total_weight = sum(weights)
+        if total_weight < 0.0001:
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
+            return None
+
+        if probabilistic_agents:
             # Weighted random selection based on NPV (negative NPVs get zero weight)
-            weights = [max(v, 0) for v in valid_techs.values()]
-            formatted_dict = {k: f"{v:,.0f}" for k, v in zip(valid_techs.keys(), weights)}
-            logger.debug(f"[FG STRATEGY] Selection weights: {formatted_dict}")
-
-            if sum(weights) < 0.0001:
-                if furnace_group.lifetime.expired:
-                    return renovate_or_close_expired()
-                return None
-
             best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
-            logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (weighted random)")
+            shares = ", ".join(f"{k}={w / total_weight:.3f}" for k, w in zip(valid_techs.keys(), weights))
+            logger.info(
+                f"[FG STRATEGY] DRAW plant_id={self.plant_id} "
+                f"furnace_group_id={furnace_group.furnace_group_id} incumbent={current_tech} "
+                f"selected={best_tech} p({shares})"
+            )
         else:
-            logger.debug("[FG STRATEGY] Current technology is already optimal")
-            best_tech = current_tech
+            best_tech = max(valid_techs, key=lambda k: valid_techs[k])
+            logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (deterministic, max NPV)")
 
         # Final profitability check for selected technology
         if tech_npv_dict[best_tech] <= 0:
@@ -4083,6 +4689,8 @@ class Plant:
                 f"[FG STRATEGY] DECISION - No action "
                 f"(selected tech {best_tech} has NPV ${tech_npv_dict[best_tech]:,.2f} <= 0)"
             )
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
             return None
 
         # ===== Filter and apply subsidies for selected technology =====
@@ -4090,6 +4698,10 @@ class Plant:
         all_debt_subs = tech_debt_subsidies.get(best_tech, [])
         capex_subs = filter_subsidies_for_year(all_capex_subs, current_year)
         debt_subs = filter_subsidies_for_year(all_debt_subs, current_year)
+
+        cost_of_debt = cost_of_debt_by_tech.get(best_tech)
+        if cost_of_debt is None:
+            raise ValueError(f"No cost of debt data for technology {best_tech} at plant {self.plant_id}")
 
         cost_of_debt_with_subsidies = calculate_debt_with_subsidies(
             cost_of_debt=cost_of_debt,
@@ -4152,12 +4764,13 @@ class Plant:
             raise ValueError(f"CAPEX (greenfield) for technology {best_tech} not found in NPV CAPEX dict")
         capex_per_tonne: float = capex_per_tonne_opt
 
-        # Calculate switching cost (equity portion only)
-        switch_cost = capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
+        # Calculate switching cost (equity portion only) at the permitted capacity
+        switch_capacity = permitted_capacity_for(best_tech)
+        switch_cost = capex_per_tonne * switch_capacity * furnace_group.equity_share
 
         logger.debug("[FG STRATEGY] Switch cost calculation:")
         logger.debug(f"[FG STRATEGY]   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t")
-        logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
+        logger.debug(f"[FG STRATEGY]   - Capacity: {switch_capacity * T_TO_KT:,.0f} kt")
         logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
         logger.debug(f"[FG STRATEGY]   - Total cost: ${switch_cost:,.2f}")
         logger.info(
@@ -4225,16 +4838,16 @@ class Plant:
                 logger.debug(
                     f"[FG STRATEGY]   - Expansions/switches so far: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
-                logger.debug(f"[FG STRATEGY]   - To add (switch): {furnace_group.capacity * T_TO_KT:,.0f} kt")
+                logger.debug(f"[FG STRATEGY]   - To add (switch): {switch_capacity * T_TO_KT:,.0f} kt")
                 logger.debug(
-                    f"[FG STRATEGY]   - Total after: {(expansion_and_switch_capacity + furnace_group.capacity) * T_TO_KT:,.0f} kt"
+                    f"[FG STRATEGY]   - Total after: {(expansion_and_switch_capacity + switch_capacity) * T_TO_KT:,.0f} kt"
                 )
                 logger.debug(f"[FG STRATEGY]   - Expansion/switch limit: {expansion_limit * T_TO_KT:,.0f} kt")
 
-                if expansion_and_switch_capacity + furnace_group.capacity > expansion_limit:
+                if expansion_and_switch_capacity + switch_capacity > expansion_limit:
                     logger.warning(
                         f"[FG STRATEGY] BLOCKED - Expansion/switch capacity limit reached for {tech_product}: "
-                        f"{expansion_and_switch_capacity * T_TO_KT:,.0f} kt + {furnace_group.capacity * T_TO_KT:,.0f} kt > "
+                        f"{expansion_and_switch_capacity * T_TO_KT:,.0f} kt + {switch_capacity * T_TO_KT:,.0f} kt > "
                         f"{expansion_limit * T_TO_KT:,.0f} kt"
                     )
                     if furnace_group.lifetime.expired:
@@ -4242,15 +4855,7 @@ class Plant:
                     return None
 
             # ===== STAGE 12: Execute technology switch =====
-            # Debit group treasury and return command
-            plant_group.deduct_equity(switch_cost, reason="switch")
-            logger.info(
-                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY {current_tech} → {best_tech} "
-                f"plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} gate_pass=True "
-                f"(NPV: ${tech_npv_dict.get(best_tech, 0):,.2f}, cost: ${switch_cost:,.2f}, "
-                f"new group balance: ${plant_group.balance:,.2f})"
-            )
-
+            # Validate the command inputs before debiting: an abort must leave the wallet intact
             npv_value = tech_npv_dict.get(best_tech)
             if npv_value is None:
                 raise ValueError(f"NPV for technology {best_tech} not found in NPV dict")
@@ -4280,6 +4885,14 @@ class Plant:
                 )
                 raise ValueError(f"Empty BOM for technology {best_tech} at switch time")
 
+            plant_group.deduct_equity(switch_cost, reason="switch")
+            logger.info(
+                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY {current_tech} → {best_tech} "
+                f"plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} gate_pass=True "
+                f"(NPV: ${tech_npv_dict.get(best_tech, 0):,.2f}, cost: ${switch_cost:,.2f}, "
+                f"new group balance: ${plant_group.balance:,.2f})"
+            )
+
             return commands.ChangeFurnaceGroupTechnology(
                 plant_id=self.plant_id,
                 furnace_group_id=furnace_group.furnace_group_id,
@@ -4290,13 +4903,16 @@ class Plant:
                 utilisation=furnace_group.utilization_rate,
                 capex=capex_per_tonne,
                 capex_no_subsidy=original_capex_per_tonne,
-                capacity=furnace_group.capacity,
+                capacity=switch_capacity,
                 bom=bom,
+                chosen_reductant=reductant_dict[best_tech],
                 remaining_lifetime=furnace_group.lifetime.remaining_number_of_years,
                 cost_of_debt=cost_of_debt_with_subsidies,
                 cost_of_debt_no_subsidy=cost_of_debt,
                 capex_subsidies=capex_subs,
                 debt_subsidies=debt_subs,
+                captive_energy=captive,
+                competing_npvs=dict(valid_techs),
             )
         else:
             # Probabilistic rejection or CCS/CCU equipped furnace
@@ -4440,7 +5056,10 @@ class Plant:
                 technology_name,
                 len(furnace_group.energy_costs),
             )
+        # The bare call rebuilds the reporting dicts with an energy-only pick; the
+        # evaluated reductant passed by the caller wins (C7)
         furnace_group.generate_energy_vopex_by_reductant()
+        furnace_group.chosen_reductant = chosen_reductant
 
         # Set fixed OPEX from technology lookup table
         fopex_value = self.technology_unit_fopex.get(technology_name.lower())
@@ -4601,23 +5220,27 @@ class Plant:
 
     def update_furnace_hydrogen_costs(self, capped_hydrogen_cost_dict: dict[str, float]) -> None:
         """
-        Update hydrogen costs for all furnace groups in the plant using country-specific capped prices.
+        Update hydrogen costs for all furnace groups of an existing plant using country-specific capped prices.
 
         Args:
             capped_hydrogen_cost_dict (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
                 Prices are converted internally to USD/t before being written to `energy_costs`.
 
         Side Effects:
-            Updates the "hydrogen" entry in energy_costs dictionary for each furnace group in the plant.
+            Updates the "hydrogen" entry in energy_costs, output_energy_costs and energy_costs_no_subsidy
+            for each furnace group of an existing plant.
 
         Notes:
-            Raises ValueError if the plant's ISO3 code is not found in the capped_hydrogen_cost_dict.
+            A new site (``parent_gem_id`` starting with ``indi``) is left unchanged: the year-end refresh
+            prices its electricity and hydrogen from its stack (``set_input_cost_in_furnace_groups``).
+            Raises ValueError if an existing plant's geo key is not found in the capped_hydrogen_cost_dict.
         """
+        if self.parent_gem_id.lower().startswith("indi"):
+            return
         logger = logging.getLogger(f"{__name__}.Plant.update_furnace_hydrogen_costs")
-        if self.location.iso3 not in capped_hydrogen_cost_dict:
-            raise ValueError(f"No hydrogen price calculated for {self.location.iso3} (plant {self.plant_id})")
-
-        capped_lcoh_usd_per_kg = capped_hydrogen_cost_dict[self.location.iso3]
+        capped_lcoh_usd_per_kg = self.location.resolve(capped_hydrogen_cost_dict, what="hydrogen price")
+        if capped_lcoh_usd_per_kg is None:
+            raise ValueError(f"No hydrogen price calculated for {self.location.geo_key} (plant {self.plant_id})")
         hydrogen_price_usd_per_t = capped_lcoh_usd_per_kg * T_TO_KG
 
         logger.debug(
@@ -4730,11 +5353,11 @@ class Plant:
             Updates carbon costs for all furnace groups via set_carbon_costs_for_emissions().
 
         Notes:
-            - If the year is not in the carbon cost series, defaults to $0/tCO2.
+            - Without a carbon cost series the price is $0/tCO2; years beyond the series end
+              reuse its last value (carbon_price_from_series).
             - Carbon costs affect furnace group variable costs in the trade optimization model.
         """
-        # Retrieve carbon price for the year, defaulting to 0 if not found
-        carbon_price = self.carbon_cost_series.get(year, 0.0)
+        carbon_price = carbon_price_from_series(self.carbon_cost_series, year)
 
         # Apply carbon price to all furnace groups
         for furnace_group in self.furnace_groups:
@@ -4789,12 +5412,74 @@ def get_new_plant_id(existent_plant_ids: list[str] = []) -> str:
     Generate a new plant id for a potential new plant in the plant group. Adds 1 to the number of the last plant
     id in the repository. Plant ids are formatted as P000000000001, P000000000002, etc.
     """
-    if len(existent_plant_ids) > 0:
-        sorted_plant_ids = sorted(existent_plant_ids, key=lambda x: int(x[1:]))
+    p_plant_ids = [pid for pid in existent_plant_ids if pid.startswith("P")]
+    if len(p_plant_ids) > 0:
+        sorted_plant_ids = sorted(p_plant_ids, key=lambda x: int(x[1:]))
         new_id = f"P{str(int(sorted_plant_ids[-1][1:]) + 1).zfill(12)}"
         return new_id
     else:
         return "P000000000001"
+
+
+def can_supply_hot_metal(producer: Plant, plant: Plant, hot_metal_radius: float, clustering_scope: str) -> bool:
+    """Whether hot metal from ``producer`` can reach ``plant`` under the trade LP's rule for hot flows.
+
+    Shared by the renovation access flag and by clustering, so neither keeps a BOF the LP cannot feed:
+        - ``plant`` (also used when clustering is off): within ``hot_metal_radius``, any owner, any country
+        - ``plant_group``: within the radius and in the same ultimate plant group
+        - ``iso3``: within the radius and in the same country
+
+    Args:
+        producer: Plant holding an active hot-metal producer.
+        plant: Plant that would consume the hot metal.
+        hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+        clustering_scope: ``geographical_clustering_scope``, or ``"plant"`` when clustering is off.
+    """
+    from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
+
+    if clustering_scope == "plant_group" and producer.ultimate_plant_group != plant.ultimate_plant_group:
+        return False
+    if clustering_scope == "iso3" and producer.location.iso3 != plant.location.iso3:
+        return False
+    distance = haversine_distance(
+        [plant.location.lat, plant.location.lon, producer.location.lat, producer.location.lon]
+    )
+    return distance <= hot_metal_radius
+
+
+def update_hot_metal_access(
+    plants: list[Plant], hot_metal_radius: float, active_statuses: list[str], clustering_scope: str
+) -> None:
+    """Flag every plant (and all its furnace groups) that an active hot-metal producer can feed.
+
+    Reachability follows ``can_supply_hot_metal``, the rule the trade LP and clustering apply to
+    hot-metal flows, so a BOF the LP can feed is never closed or switched at renovation for lack
+    of access.
+
+    Access is a property of the site, not of the technology already there: a BF-only plant
+    has access for a BOF expansion, and any furnace group inherits its plant's flag for a
+    switch to BOF.
+
+    Args:
+        plants: Every plant in the world; producers and candidates are drawn from the same list.
+        hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+        active_statuses: Furnace group statuses that count as producing; a retired,
+            mothballed or announced BF grants no access.
+        clustering_scope: ``geographical_clustering_scope``, or ``"plant"`` when clustering is off.
+    """
+    active = {status.lower() for status in active_statuses}
+    producer_plants = [
+        plant
+        for plant in plants
+        if any(fg.status.lower() in active and fg.produces_hot_metal for fg in plant.furnace_groups)
+    ]
+
+    for plant in plants:
+        plant.has_hot_metal_access = any(
+            can_supply_hot_metal(producer, plant, hot_metal_radius, clustering_scope) for producer in producer_plants
+        )
+        for fg in plant.furnace_groups:
+            fg.has_hot_metal_access = plant.has_hot_metal_access
 
 
 class PlantGroup:
@@ -4814,47 +5499,21 @@ class PlantGroup:
         self.plants = plants
         self.balance = 0.0
         self.events: list[events.Event] = []
-        self.hot_metal_access: dict[str, list[str]] = defaultdict(
-            list
-        )  # BOF furnace group -> list of furnace groups that produce hot metal for it
 
-    def update_hot_metal_access(self, hot_metal_radius: float) -> None:
-        """Update the hot metal access mapping for BOF furnace groups in the plant group.
-
-        Args:
-            hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+    @property
+    def is_dormant(self) -> bool:
         """
-        for plant in self.plants:
-            plant.has_hot_metal_access = False  # Initialize hot metal access for the plant
-            for fg in plant.furnace_groups:
-                if fg.technology.name.lower() == "bof":
-                    fg.has_hot_metal_access = False  # Initialize access flag
-                    self.hot_metal_access[fg.furnace_group_id] = []  # Initialize list for this BOF furnace group
-                    # Identify furnace groups that produce hot metal for this BOF group
-                    for other_plant in self.plants:
-                        for other_fg in other_plant.furnace_groups:
-                            # check if other furnace group produces hot metal and is within hot metal radius of the BOF plant
-                            if (
-                                other_fg.technology.name.lower()
-                                in [
-                                    "bf",
-                                    "dri+esf",
-                                    "sr",
-                                    "bf+ccu",
-                                    "dri+esf+ccu",
-                                    "sr+ccu",
-                                    "bf+ccs",
-                                    "dri+esf+ccs",
-                                    "sr+ccs",
-                                    "bf_charcoal",
-                                    "bf_charcoal+ccu",
-                                    "bf_charcoal+ccs",
-                                ]
-                                and plant.distance_to(other_plant.location) <= hot_metal_radius
-                            ):
-                                fg.has_hot_metal_access = True
-                                plant.has_hot_metal_access = True
-                                self.hot_metal_access[fg.furnace_group_id].append(other_fg.furnace_group_id)
+        Whether the group has no operating furnace groups across its plants.
+
+        Deliberately a derived property, not a stored flag — a flag would have
+        to be maintained and would drift from the plant list. Deliberately not
+        ``is_bankrupt`` either: insolvency is a balance condition and
+        ``balance`` exists, while a group can hold a healthy balance with every
+        asset closed — which is exactly the case this detects (the greenfield
+        attribution fallback sends such a company's plant to ``indi_<iso3>``).
+        """
+        operating_statuses = ("operating", "operating pre-retirement", "operating switching technology")
+        return not any(fg.status.lower() in operating_statuses for plant in self.plants for fg in plant.furnace_groups)
 
     def deduct_equity(self, amount: float, reason: str) -> None:
         """
@@ -4931,13 +5590,15 @@ class PlantGroup:
                 )
                 fg.balance = 0.0
 
-    @property
-    def most_common_reductant(self) -> dict[str, str]:
+    def most_common_reductant(self, active_statuses: list[str]) -> dict[str, str]:
         """
         Get the most common reductant for each technology across all plants in the plant group.
 
-        Aggregates reductant data from all furnace groups across all plants in this plant group
-        to determine the most frequently used reductant for each technology type.
+        Aggregates reductant data from active-status furnace groups across all plants in this
+        plant group to determine the most frequently used reductant for each technology type.
+
+        Args:
+            active_statuses: Status strings whose furnace groups count in the vote.
 
         Returns:
             dict[str, str]: Dictionary mapping technology name to most common reductant.
@@ -4955,7 +5616,7 @@ class PlantGroup:
         # Collect all furnace groups from all plants
         all_furnace_groups = [fg for plant in self.plants for fg in plant.furnace_groups]
 
-        return get_most_common_reductant_by_technology(all_furnace_groups)
+        return get_most_common_reductant_by_technology(all_furnace_groups, active_statuses)
 
     def generate_new_plant(
         self,
@@ -4973,6 +5634,7 @@ class PlantGroup:
         dynamic_feedstocks: list[PrimaryFeedstock],
         plant_lifetime: int,
         disposal_cost_outputs: frozenset[str] | None = None,
+        derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
     ) -> Plant:
         """
         Generate a new plant (and furnace group) in the plant group for a given location and technology.
@@ -4989,14 +5651,19 @@ class PlantGroup:
             steel_plant_capacity: Capacity of the steel plant in tonnes
             dynamic_feedstocks: List of primary feedstock options for the technology
             plant_lifetime: Lifetime of the plant in years
+            derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
+                from the geospatial adapter) tagging the spawn location's sub-national unit so
+                province-level costs and subsidies resolve for the new plant.
 
         Returns:
             New Plant object with a single furnace group.
 
         Note: The status is set to considered and the plant id is set to the next available id in the
-        plant group. The utilization rate is set to the average utilization rate for the technology to
-        calculate realistic NPVs for business opportunities and reset to 0 when the plant is made
-        operational by PAM.
+        plant group. The furnace group keeps the stack its NPV was priced with (``captive_energy``).
+        The utilization rate is set to the average utilization rate for the technology to
+        calculate realistic NPVs for business opportunities, refreshed yearly from the fleet average
+        while considered (update_dynamic_costs_for_business_opportunities), and reset to 0 when the
+        plant is made operational by PAM.
         """
         # Create new plant
         location = Location(
@@ -5005,6 +5672,7 @@ class PlantGroup:
             country=site_id[2],
             region="unknown",
             iso3=site_id[2],
+            geo_unit=derive_geo_unit(site_id[0], site_id[1], site_id[2]) if derive_geo_unit else None,
         )
         new_plant = Plant(
             plant_id=get_new_plant_id(existent_plant_ids),
@@ -5054,10 +5722,13 @@ class PlantGroup:
             output_energy_costs=cost_data[product][site_id][technology_name].get("output_costs"),  # type: ignore[arg-type]
             energy_costs_no_subsidy=cost_data[product][site_id][technology_name].get("no_subsidy_prices"),  # type: ignore[arg-type]
             disposal_cost_outputs=disposal_cost_outputs,
+            equity_share=equity_share,
+            output_shares=cost_data[product][site_id][technology_name]["output_shares"],
         )
         new_furnace.created_by_PAM = True
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts
         new_furnace.railway_cost = cost_data[product][site_id][technology_name]["railway_cost"]  # type: ignore[assignment]
+        new_furnace.captive_energy = cost_data[product][site_id][technology_name]["captive_energy"]  # type: ignore[assignment]
         new_plant.add_furnace_group(new_furnace)
         return new_plant
 
@@ -5066,12 +5737,12 @@ class PlantGroup:
         price_series: dict[str, list[float]],
         capacity: Volumes,
         region_capex: dict[str, dict[str, float]],
-        cost_of_debt_dict: dict[str, float] | None,
-        cost_of_equity_dict: dict[str, float] | None,
+        cost_of_debt_dict: dict[str, dict[str, float]] | None,
+        cost_of_equity_dict: dict[str, dict[str, float]] | None,
         get_bom_from_avg_boms: (
             Callable[
                 [dict[str, float], str, float, str | None],
-                tuple[dict[str, dict[str, dict[str, float]]] | None, float, str],
+                tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
             ]
             | None
         ),
@@ -5087,14 +5758,19 @@ class PlantGroup:
         construction_time: int,
         current_year: Year,
         allowed_techs: dict[Year, list[str]],
+        active_statuses: list[str],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
         environment_most_common_reductant: dict[str, str] = {},
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
-    ) -> dict[str, tuple[float | None, str, float]]:
+        increase_sizing_query: Callable[..., float] | None = None,
+    ) -> dict[str, tuple[float | None, str, float, str, Volumes]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
         subsidies.
@@ -5114,8 +5790,8 @@ class PlantGroup:
             price_series (dict[str, list[float]]): Product price forecasts by product type
             capacity (Volumes): Capacity of new furnace group to evaluate (in tonnes)
             region_capex (dict[str, dict[str, float]]): CAPEX by region and technology (USD/tonne)
-            cost_of_debt_dict (dict[str, float] | None): Cost of debt by ISO3 country code
-            cost_of_equity_dict (dict[str, float] | None): Cost of equity by ISO3 country code
+            cost_of_debt_dict (dict[str, dict[str, float]] | None): Cost of debt by ISO3 country code and technology
+            cost_of_equity_dict (dict[str, dict[str, float]] | None): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable | None): Function to retrieve bill of materials for a technology given
                 energy costs
             dynamic_feedstocks (dict[str, list[PrimaryFeedstock]]): Primary feedstocks by technology for emissions
@@ -5131,20 +5807,32 @@ class PlantGroup:
             construction_time (int): Time to construct new furnace (years)
             current_year (Year): Current simulation year
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
+            active_statuses (list[str]): Status strings whose furnace groups vote in the
+                group's most-common-reductant aggregation
+            reductant_score_series (Callable): ``Environment.reductant_score_series``
+            captive_energy_at (Callable): ``Environment.captive_energy_at``. Each new site builds one stack for
+                the current year, the expansion's start, and every candidate at it, the CO2 gate included, is
+                priced from it; an existing plant builds none.
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
+            energy_subsidies (dict[str, dict[str, dict[str, list[Subsidy]]]]): Energy carrier
+                subsidies (carrier -> geo_key -> technology -> subsidies). Collected per plant
+                geography inside the loop; candidate technologies are priced from unsubsidised
+                carrier prices with these applied for the candidate's operating start year
+            increase_sizing_query (Callable | None): China capacity-policy sizing query, called
+                per candidate with plain values (capacities in model tonnes) to resolve the
+                capacity the policy permits that technology to build. Non-consuming — it reads
+                no pool state — so the NPV values the build that would actually be allowed.
+                None (the default) values every candidate at its planned capacity.
 
         Returns:
-            dict[str, tuple[float | None, str, float]]: Dictionary mapping plant IDs to tuples of (NPV, best_technology,
-                subsidized_capex) for the optimal expansion option. Returns empty dict if no viable options exist.
+            dict[str, tuple[float | None, str, float, str, Volumes]]: Dictionary mapping plant IDs
+                to tuples of (NPV, best_technology, subsidized_capex, committed_reductant,
+                build_capacity) for the optimal expansion option, where build_capacity is the
+                capacity the NPV was taken at. Returns empty dict if no viable options exist.
         """
         from steelo.domain import calculate_costs as cc
-        from steelo.domain.calculate_emissions import (
-            calculate_emissions_cost_series,
-            calculate_emissions,
-            materiall_bill_business_case_match,
-        )
 
         # Function-level logger
         logger = logging.getLogger(f"{__name__}.evaluate_expansion_options")
@@ -5163,6 +5851,8 @@ class PlantGroup:
         # Dictionary to store best NPV and technology choice for each plant
         NPV_p = {}
 
+        group_most_common_reductant = self.most_common_reductant(active_statuses)
+
         # Evaluate expansion options for each plant in the group
         for plant in self.plants:
             NPV = {}
@@ -5180,24 +5870,51 @@ class PlantGroup:
 
             if cost_of_debt_dict is None:
                 raise ValueError("Cost of debt dictionary is not provided")
-            cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3)
-            if cost_of_debt_original is None:
+            cost_of_debt_for_iso3 = cost_of_debt_dict.get(plant.location.iso3)
+            if cost_of_debt_for_iso3 is None:
                 raise ValueError(f"No cost of debt data for country: {plant.location.iso3}")
 
             if cost_of_equity_dict is None:
                 raise ValueError("Cost of equity dictionary is not provided")
-            cost_of_equity = cost_of_equity_dict.get(plant.location.iso3)
-            if cost_of_equity is None:
+            cost_of_equity_for_iso3 = cost_of_equity_dict.get(plant.location.iso3)
+            if cost_of_equity_for_iso3 is None:
                 raise ValueError(f"No cost of equity data for country: {plant.location.iso3}")
+
+            # Candidates are priced from unsubsidised prices plus their own energy subsidies,
+            # geo-collected per plant (group plants sit in different geographies)
+            plant_energy_subsidies = {
+                carrier: collect_subsidies_for_geo(carrier_subsidies, plant.location.geo_key)
+                for carrier, carrier_subsidies in energy_subsidies.items()
+            }
+            base_energy_costs = plant.furnace_groups[-1].energy_costs_no_subsidy
+            operating_start_year = Year(current_year + construction_time)
+            operating_end_year = Year(current_year + construction_time + plant_lifetime)
+            # A GEO ("indi") site's expansion is priced from the stack it would lock this year
+            captive = plant.investment_captive_energy(captive_energy_at, current_year)
+            reductant_by_tech: dict[str, str] = {}
+            npv_capacity_by_tech: dict[str, Volumes] = {}
 
             # Evaluate each allowed technology for this plant
             for tech in allowed_techs_in_year:
+                # Technology-specific financing rates
+                cost_of_debt_original = cost_of_debt_for_iso3.get(tech)
+                if cost_of_debt_original is None:
+                    raise ValueError(f"No cost of debt data for {plant.location.iso3}/{tech}")
+                cost_of_equity = cost_of_equity_for_iso3.get(tech)
+                if cost_of_equity is None:
+                    raise ValueError(f"No cost of equity data for {plant.location.iso3}/{tech}")
+
                 # Get technology-specific CAPEX
                 capex = greenfield_capex.get(tech)
                 if capex is None:
                     raise ValueError(
                         f"No greenfield capex data for {tech} in region {iso3_to_region_map[plant.location.iso3]}"
                     )
+
+                # Apply CAPEX subsidies before the affordability pre-filter
+                all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(tech, [])
+                selected_capex_subsidies = cc.filter_subsidies_for_year(all_capex_subsidies, current_year)
+                capex = cc.calculate_capex_with_subsidies(capex, selected_capex_subsidies)
 
                 # Skip if the group treasury cannot cover equity for this (plant, tech)
                 num_pairs_evaluated += 1
@@ -5215,10 +5932,23 @@ class PlantGroup:
                 if tech == "BOF" and not plant.has_hot_metal_access:
                     continue
 
-                # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country headroom.
+                # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country
+                # headroom, sized with the reductant that would actually be built
                 if get_co2_need_by_name is not None and get_co2_headroom is not None:
-                    reductant = self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech, ""))
-                    need = get_co2_need_by_name(tech, float(capacity), reductant or "")
+                    # Cheap pre-check: the empty-reductant lookup falls back to the
+                    # all-reductant maximum, so 0 means no CCS potential at all
+                    need = 0.0
+                    if get_co2_need_by_name(tech, float(capacity), "") > 0.0:
+                        gate_series = reductant_score_series(
+                            plant.location,
+                            tech,
+                            {},
+                            operating_start_year,
+                            Year(operating_start_year + 1),
+                            captive=captive,
+                        )
+                        gate_pick = gate_series.picks[0] if gate_series.picks else ""
+                        need = get_co2_need_by_name(tech, float(capacity), gate_pick)
                     if need > 0.0:
                         headroom = get_co2_headroom(plant.location.iso3, int(current_year) + construction_time, 0.0)
                         if headroom < need:
@@ -5228,24 +5958,81 @@ class PlantGroup:
                 # Get bill of materials for this technology
                 if get_bom_from_avg_boms is None:
                     continue
+
+                active_energy_subs: dict[str, list[Subsidy]] = {}
+                for carrier, subsidies_by_tech in plant_energy_subsidies.items():
+                    active = cc.filter_subsidies_for_year(subsidies_by_tech.get(tech, []), operating_start_year)
+                    if active:
+                        active_energy_subs[carrier] = active
+                if active_energy_subs:
+                    candidate_energy_costs, _, _ = cc.get_subsidised_energy_costs(
+                        base_energy_costs,
+                        active_energy_subs,
+                    )
+                    sub_summary = ", ".join(f"{len(subs)} {carrier}" for carrier, subs in active_energy_subs.items())
+                    logger.debug(
+                        f"[PG EXPANSION] {plant.plant_id}/{tech} candidate energy subsidies for "
+                        f"year {operating_start_year}: {sub_summary}"
+                    )
+                else:
+                    candidate_energy_costs = base_energy_costs
+
                 bom_result = get_bom_from_avg_boms(
-                    plant.energy_costs,
+                    candidate_energy_costs,
                     tech,
                     capacity,
-                    self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
+                    group_most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
                 )
-                bill_of_materials_opt, util_rate, reductant = bom_result
+                bill_of_materials_opt, util_rate, reductant, output_shares = bom_result
                 if bill_of_materials_opt is None:
                     continue
                 bill_of_materials: dict[str, dict[str, dict[str, float]]] = bill_of_materials_opt
 
-                # Match bill of materials with business cases for emissions calculation
-                matched_business_cases = materiall_bill_business_case_match(
-                    dynamic_feedstocks=dynamic_feedstocks.get(tech, dynamic_feedstocks.get(tech.lower(), [])),
-                    material_bill=bill_of_materials["materials"],
-                    tech=tech,
-                    reductant=reductant,
+                # Year-wise reductant-optimised score over the operating window; the NPV's
+                # energy, carbon and by-product terms all live inside this series
+                score_series = reductant_score_series(
+                    plant.location,
+                    tech,
+                    output_shares,
+                    operating_start_year,
+                    operating_end_year,
+                    captive=captive,
                 )
+                committed_reductant = score_series.picks[0] if score_series.picks else ""
+                if committed_reductant != reductant:
+                    # Commit the BOM the start-year pick implies (materials are reductant-
+                    # invariant; only the energy rows follow the pick)
+                    rebuilt_bom, util_rate, reductant, output_shares = get_bom_from_avg_boms(
+                        candidate_energy_costs, tech, capacity, committed_reductant
+                    )
+                    if rebuilt_bom is None:
+                        raise ValueError(
+                            f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
+                        )
+                    bill_of_materials = rebuilt_bom
+                reductant_by_tech[tech] = committed_reductant
+                # The capacity the policy would permit this route, known before its NPV
+                npv_capacity = (
+                    capacity
+                    if increase_sizing_query is None
+                    else Volumes(
+                        increase_sizing_query(
+                            iso3=plant.location.iso3,
+                            technology=tech,
+                            reductant=committed_reductant,
+                            capacity=float(capacity),
+                        )
+                    )
+                )
+                npv_capacity_by_tech[tech] = npv_capacity
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[REDUCTANT NPV] plant %s: tech=%s committed=%r picks=%s",
+                        plant.plant_id,
+                        tech,
+                        committed_reductant,
+                        cc.summarise_reductant_picks(score_series.picks, operating_start_year),
+                    )
 
                 # Apply subsidies (filter to only active ones in current year)
                 from steelo.domain.calculate_costs import (
@@ -5253,14 +6040,8 @@ class PlantGroup:
                     collect_active_subsidies_over_period,
                 )
 
-                # CAPEX subsidies
-                all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
-                original_capex = capex
-                capex = cc.calculate_capex_with_subsidies(original_capex, selected_capex_subsidies)
-
-                # Debt subsidies
-                all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
+                # Debt subsidies (CAPEX subsidies were already applied above the affordability pre-filter)
+                all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(tech, [])
                 selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
                 cost_of_debt = cc.calculate_debt_with_subsidies(
                     cost_of_debt=cost_of_debt_original,
@@ -5268,48 +6049,6 @@ class PlantGroup:
                     risk_free_rate=global_risk_free_rate,
                 )
 
-                # Calculate OPEX (fixed + variable + subsidies)
-                tech_unit_fopex_value = technology_unit_fopex.get(tech.lower())
-                if tech_unit_fopex_value is None:
-                    raise ValueError(f"No fixed OPEX data for technology: {tech} in country: {plant.location.iso3}")
-                unit_fopex = float(tech_unit_fopex_value)
-
-                unit_total_opex = calculate_unit_total_opex(
-                    unit_fopex=unit_fopex,
-                    unit_vopex=cc.calculate_variable_opex(bill_of_materials["materials"], bill_of_materials["energy"]),
-                    utilization_rate=util_rate,
-                )
-
-                # OPEX subsidies (collect active subsidies across plant lifetime)
-                selected_opex_subsidies = collect_active_subsidies_over_period(
-                    opex_subsidies.get(plant.location.iso3, {}).get(tech, []),
-                    start_year=Year(current_year + construction_time),
-                    end_year=Year(current_year + construction_time + plant_lifetime),
-                )
-
-                unit_total_opex_list = cc.calculate_opex_list_with_subsidies(
-                    opex=unit_total_opex,
-                    opex_subsidies=selected_opex_subsidies,
-                    start_year=Year(current_year + construction_time),
-                    end_year=Year(current_year + construction_time + plant_lifetime),
-                )
-
-                # Calculate emissions and carbon costs
-                bom_emissions = calculate_emissions(
-                    business_cases=matched_business_cases,
-                    material_bill=bill_of_materials["materials"],
-                    technology_emission_factors=technology_emission_factors,
-                )
-
-                carbon_cost_list = calculate_emissions_cost_series(
-                    emissions=bom_emissions,
-                    carbon_price_dict=plant.carbon_cost_series,
-                    chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                    start_year=current_year + construction_time,
-                    end_year=current_year + construction_time + plant_lifetime,
-                )
-
-                # Calculate NPV using full financial model
                 product = tech_to_product[tech]
                 if not product or product not in price_series:
                     continue
@@ -5321,20 +6060,47 @@ class PlantGroup:
                     else util_rate
                 )
 
-                # Calculate secondary output cost adjustment (by-product revenue/cost)
-                secondary_output_adj = cc.calculate_cost_adjustments_from_secondary_outputs(
-                    bill_of_materials=bill_of_materials,
-                    dynamic_business_cases=list(matched_business_cases.values()),
-                    output_costs=plant.furnace_groups[-1].output_energy_costs,
-                    disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
-                )
-                # logger.debug(
-                #     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                # )
+                # Calculate OPEX (fixed + variable + subsidies)
+                tech_unit_fopex_value = technology_unit_fopex.get(tech.lower())
+                if tech_unit_fopex_value is None:
+                    raise ValueError(f"No fixed OPEX data for technology: {tech} in country: {plant.location.iso3}")
+                # Per-capacity fixed OPEX spread over the production the NPV multiplies by; a
+                # candidate the market allocated no production for cannot be priced this way
+                try:
+                    unit_fopex = cc.scale_fopex_to_production(float(tech_unit_fopex_value), expected_utilisation_rate)
+                except cc.ZeroUtilisationError:
+                    logger.warning(
+                        f"[PG EXPANSION] SKIPPING {tech} for plant {plant.plant_id} - zero expected "
+                        "utilisation, cannot price fixed OPEX"
+                    )
+                    continue
 
+                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+                # by-products enter through the per-year score
+                unit_base_opex = calculate_unit_total_opex(
+                    unit_fopex=unit_fopex,
+                    unit_vopex=cc.calculate_variable_opex(bill_of_materials["materials"], {}),
+                    utilization_rate=util_rate,
+                )
+
+                # OPEX subsidies (collect active subsidies across plant lifetime)
+                selected_opex_subsidies = collect_active_subsidies_over_period(
+                    collect_subsidies_for_geo(opex_subsidies, plant.location.geo_key).get(tech, []),
+                    start_year=Year(current_year + construction_time),
+                    end_year=Year(current_year + construction_time + plant_lifetime),
+                )
+
+                unit_total_opex_list = cc.calculate_opex_list_with_subsidies(
+                    opex=[unit_base_opex + score for score in score_series.scores],
+                    opex_subsidies=selected_opex_subsidies,
+                    start_year=Year(current_year + construction_time),
+                    end_year=Year(current_year + construction_time + plant_lifetime),
+                )
+
+                # Carbon and by-product terms are already inside the per-year opex list
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
-                    capacity=capacity,
+                    capacity=npv_capacity,
                     unit_total_opex_list=unit_total_opex_list,
                     cost_of_debt=cost_of_debt,
                     cost_of_equity=cost_of_equity,
@@ -5343,8 +6109,6 @@ class PlantGroup:
                     construction_time=construction_time,
                     expected_utilisation_rate=expected_utilisation_rate,
                     price_series=price_series[product],
-                    carbon_costs=carbon_cost_list,
-                    secondary_output_adjustment=secondary_output_adj,
                 )
 
             if dropped_ccs_techs and co2_storage_diagnostics is not None:
@@ -5364,11 +6128,19 @@ class PlantGroup:
                 best_tech = max(NPV, key=lambda k: NPV[k])
 
                 # Calculate subsidized CAPEX for best technology
-                all_best_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(best_tech, [])
+                all_best_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(
+                    best_tech, []
+                )
                 best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
-                NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex
+                NPV_p[plant.plant_id] = (
+                    NPV.get(best_tech),
+                    best_tech,
+                    best_capex,
+                    reductant_by_tech[best_tech],
+                    npv_capacity_by_tech[best_tech],
+                )
 
         logger.info(
             "[PG EXPANSION OPTIONS] plant_group_id=%s num_pairs_evaluated=%d "
@@ -5399,21 +6171,27 @@ class PlantGroup:
         construction_time: int,
         current_year: Year,
         allowed_techs: dict[Year, list[str]],
-        cost_of_debt_dict: dict[str, float],
-        cost_of_equity_dict: dict[str, float],
+        cost_of_debt_dict: dict[str, dict[str, float]],
+        cost_of_equity_dict: dict[str, dict[str, float]],
         get_bom_from_avg_boms: Callable,
+        reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capacity_limit_steel: Volumes,
         capacity_limit_iron: Volumes,
         installed_capacity_in_year: Callable[[str], Volumes],
         new_plant_capacity_in_year: Callable[[str], Volumes],
         new_capacity_share_from_new_plants: float,
+        active_statuses: list[str],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
         environment_most_common_reductant: dict[str, str] = {},
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_expansion_capacity: Callable[..., float | None] | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -5432,7 +6210,10 @@ class PlantGroup:
         8. Check capacity limits (separate limits for iron vs steel, PAM share vs new plants)
         9. Validate plant exists and has location data
         10. Apply subsidies (CAPEX, debt) and calculate subsidized costs
-        11. Create and return AddFurnaceGroup command with all parameters
+        11. Withdraw from the China capacity pool when the policy gate is threaded
+            (blocked means no expansion this year; the grant must match the capacity
+            the sizing query already valued the winner at)
+        12. Create and return AddFurnaceGroup command with all parameters
 
         Args:
             price_series (dict[str, list[float]]): Product price forecasts by product type
@@ -5451,9 +6232,12 @@ class PlantGroup:
             construction_time (int): Time to construct new furnace (years)
             current_year (Year): Current simulation year
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
-            cost_of_debt_dict (dict[str, float]): Cost of debt by ISO3 country code
-            cost_of_equity_dict (dict[str, float]): Cost of equity by ISO3 country code
+            cost_of_debt_dict (dict[str, dict[str, float]]): Cost of debt by ISO3 country code and technology
+            cost_of_equity_dict (dict[str, dict[str, float]]): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable): Function to retrieve bill of materials for a technology
+            reductant_score_series (Callable): ``Environment.reductant_score_series``
+            captive_energy_at (Callable): ``Environment.captive_energy_at``; the chosen new site's stack for the
+                current year goes on the command, so the new group locks it
             capacity_limit_steel (Volumes): Maximum allowed steel capacity from expansions/switches (PAM share)
             capacity_limit_iron (Volumes): Maximum allowed iron capacity from expansions/switches (PAM share)
             installed_capacity_in_year (Callable[[str], Volumes]): Function to get total installed capacity for product
@@ -5462,6 +6246,15 @@ class PlantGroup:
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
+            permitted_expansion_capacity (Callable | None): China capacity-policy withdrawal gate,
+                called once at the point of commitment with the winning option's plain values
+                (capacities in model tonnes end-to-end). Returns the capacity the pool allows to
+                be built, or None when the withdrawal is blocked and no expansion happens this
+                year. None (the default) leaves the decision path untouched.
+            increase_sizing_query (Callable | None): China capacity-policy sizing query, forwarded
+                to ``evaluate_expansion_options`` so every candidate is valued at the capacity the
+                policy permits. Bound in production from the same holder as the gate above, so a
+                gate threaded without it diverges at Stage 11.5 and raises.
 
         Returns:
             commands.Command | None: AddFurnaceGroup command if expansion is approved, None otherwise.
@@ -5500,9 +6293,13 @@ class PlantGroup:
             fopex_for_iso3=fopex_for_iso3,
             current_year=current_year,
             allowed_techs=allowed_techs,
+            active_statuses=active_statuses,
+            reductant_score_series=reductant_score_series,
+            captive_energy_at=captive_energy_at,
             capex_subsidies=capex_subsidies,
             opex_subsidies=opex_subsidies,
             debt_subsidies=debt_subsidies,
+            energy_subsidies=energy_subsidies,
             iso3_to_region_map=iso3_to_region_map,
             chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
             global_risk_free_rate=global_risk_free_rate,
@@ -5514,6 +6311,7 @@ class PlantGroup:
             get_co2_headroom=get_co2_headroom,
             get_co2_need_by_name=get_co2_need_by_name,
             co2_storage_diagnostics=co2_storage_diagnostics,
+            increase_sizing_query=increase_sizing_query,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5523,13 +6321,13 @@ class PlantGroup:
 
         # Log all expansion options found
         logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
-        for pid, (npv, tech, capex) in expansion_options.items():
+        for pid, (npv, tech, capex, _reductant, _build_capacity) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
             logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
-        plant_id, (npv, tech, capex) = highest_plant_and_tech
+        plant_id, (npv, tech, capex, chosen_reductant, build_capacity) = highest_plant_and_tech
 
         npv_str = "None" if npv is None else f"{npv:,.0f}"
         logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")
@@ -5542,8 +6340,8 @@ class PlantGroup:
             return None
 
         # ========== STAGE 6: CHECK BALANCE SUFFICIENCY ==========
-        # Equity = capex × capacity × equity_share
-        investment = capacity * capex
+        # Equity = capex × capacity × equity_share, on the capacity the policy permits
+        investment = build_capacity * capex
         equity_needed = investment * equity_share
 
         if self.balance < equity_needed:
@@ -5606,15 +6404,15 @@ class PlantGroup:
                 raise ValueError(f"Unknown product type: '{expansion_product}' for technology: '{tech}'")
 
             # Check if expansion would exceed limit
-            if expansion_and_switch_capacity + capacity > expansion_limit:
+            if expansion_and_switch_capacity + build_capacity > expansion_limit:
                 logger.warning("[PG EXPANSION] === Stage 8: Capacity limit EXCEEDED ===")
                 logger.warning(f"[PG EXPANSION]   - Product: {expansion_product}")
                 logger.warning(
                     f"[PG EXPANSION]   - Current expansion/switch capacity: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
-                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {capacity * T_TO_KT:,.0f} kt")
+                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {build_capacity * T_TO_KT:,.0f} kt")
                 logger.warning(
-                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt"
+                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + build_capacity) * T_TO_KT:,.0f} kt"
                 )
                 logger.warning(f"[PG EXPANSION]   - Limit: {expansion_limit * T_TO_KT:,.0f} kt")
                 logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
@@ -5647,10 +6445,10 @@ class PlantGroup:
             logger.warning(f"[PG EXPANSION] ERROR - No region mapping for ISO3: {plant.location.iso3}")
             return None
 
-        # Get base cost of debt
-        cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3)
+        # Get base cost of debt for the winning technology
+        cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3, {}).get(tech)
         if cost_of_debt_original is None:
-            raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
+            raise ValueError(f"No cost of debt data for {plant.location.iso3}/{tech} when expanding plant")
 
         # logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
         # logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
@@ -5660,8 +6458,8 @@ class PlantGroup:
         from steelo.domain import calculate_costs as cc
 
         # Get all subsidies for this location and technology, then filter to active ones
-        all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
-        all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
+        all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(tech, [])
+        all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(tech, [])
         selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
         selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
 
@@ -5699,6 +6497,29 @@ class PlantGroup:
             return None
         product = tech_to_product[tech]
 
+        # ========== STAGE 11.5: CHINA CAPACITY-POOL GATE ==========
+        # Withdraws the planned capacity at commitment; the granted build capacity must equal
+        # the sizing query's answer the NPV was taken at
+        if permitted_expansion_capacity is not None:
+            granted_capacity = permitted_expansion_capacity(
+                iso3=plant.location.iso3,
+                geo_unit=plant.location.geo_unit,
+                technology=tech,
+                reductant=chosen_reductant,
+                capacity=float(capacity),
+                product=product,
+                owner_id=self.plant_group_id,
+                year=int(current_year),
+            )
+            if granted_capacity is None:
+                logger.info("[PG EXPANSION] DECISION - No expansion (capacity pool blocked)")
+                return None
+            if granted_capacity != float(build_capacity):
+                raise ValueError(
+                    f"Capacity pool granted {granted_capacity} for {tech} at plant {plant_id} but the NPV was "
+                    f"taken at {float(build_capacity)}: the sizing query and the gate must agree"
+                )
+
         # Log subsidy details being passed to command
         subsidy_details = []
         if selected_capex_subsidies:
@@ -5722,7 +6543,7 @@ class PlantGroup:
 
         logger.info("[PG EXPANSION] ✓ SUCCESS - Expansion approved")
         logger.info(f"[PG EXPANSION]   - Plant: {plant_id}, Technology: {tech}, Product: {product}")
-        logger.info(f"[PG EXPANSION]   - Capacity: {capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
+        logger.info(f"[PG EXPANSION]   - Capacity: {build_capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
         logger.info(f"[PG EXPANSION]   - Investment: ${investment:,.0f} (equity to debit: ${equity_needed:,.0f})")
         logger.info(f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (with subsidies)")
         logger.info(
@@ -5738,8 +6559,10 @@ class PlantGroup:
             furnace_group_id=furnace_group_id,
             plant_id=plant_id,
             technology_name=tech,
-            capacity=capacity,
+            capacity=build_capacity,
             product=product,
+            chosen_reductant=chosen_reductant,
+            equity_share=equity_share,
             equity_needed=equity_needed,
             npv=npv,  # type: ignore # npv is not None due to check above
             capex=capex,
@@ -5748,6 +6571,8 @@ class PlantGroup:
             cost_of_debt_no_subsidy=cost_of_debt_original,
             capex_subsidies=selected_capex_subsidies,
             debt_subsidies=selected_debt_subsidies,
+            # The stack its options were priced with: the same site and year
+            captive_energy=plant.investment_captive_energy(captive_energy_at, current_year),
         )
 
     # ------------------------------------------------------------- New plant opening logic ------------------------------------------------------------- #
@@ -5762,23 +6587,28 @@ class PlantGroup:
         iso3_to_region_map: dict[str, str],
         market_price: dict[str, list[float]],  # product -> list of future prices
         capex_dict_all_locs_techs: dict[str, dict[str, float]],  # region -> tech -> capex
-        cost_of_debt_all_locs: dict[str, float],  # iso3 -> cost of debt
-        cost_of_equity_all_locs: dict[str, float],  # iso3 -> cost of equity
+        cost_of_debt_all_locs: dict[str, dict[str, float]],  # iso3 -> tech -> cost of debt
+        cost_of_equity_all_locs: dict[str, dict[str, float]],  # iso3 -> tech -> cost of equity
         steel_plant_capacity: float,
         all_plant_ids: list[str],
         fopex_all_locs_techs: dict[str, dict[str, float]],  # iso3 -> tech -> fopex
         equity_share: float,
         dynamic_feedstocks: dict[str, list[PrimaryFeedstock]],
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
+            [dict[str, float], str, float, str | None],
+            tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         global_risk_free_rate: float,
         tech_to_product: dict[str, str],
         allowed_techs: dict[Year, list[str]],
         technology_emission_factors: list[TechnologyEmissionFactors],
         chosen_emissions_boundary_for_carbon_costs: str,
-        carbon_costs: dict[str, dict[Year, float]],
-        top_n_loctechs_as_business_op: int = 5,
+        active_statuses: list[str],
+        top_n_loctechs_as_business_op: int,
+        opportunity_pool_depth: int,
+        calculate_npv_sites_share: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
@@ -5788,17 +6618,22 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
+        probabilistic_agents: bool = True,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
 
         Steps:
-            1. Find allowed technologies for the target year.
+            1. Find allowed technologies for the target year, the earliest construction start the
+               opportunity can reach: current_year + max(consideration_time, 2).
             2. Randomly select a subset of top locations for a more in-depth assessment to reduce runtime.
             3. Prepare all required inputs (input costs with electricity and hydrogen costs from own parc,
                capex and cost of debt with subsidies, cost of equity, fixed OPEX, market price of product,
-               railway costs, average BOM, and utilization rate). If any data is missing, the location-
-               technology pair is skipped (business opportunity not considered) and a warning is logged.
+               railway costs, average BOM, and utilization rate). Sites missing critical data
+               (energy costs, cost of equity or debt) raise a ValueError, as do invalid data types;
+               technologies with an incomplete field set are dropped in validation.
             4. Calculate the NPV for all business opportunities (location-technology pairs) for each product.
             5. Choose top N location-technology combinations with high NPVs and list them as potential
                business opportunities. This step includes some randomness, but is mainly driven by NPV
@@ -5815,27 +6650,51 @@ class PlantGroup:
             input_costs: Dictionary mapping iso3 -> year -> energy carrier -> cost
             locations: Dictionary of potential plant locations
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
-            market_price: Dictionary mapping product to list of future prices
+            market_price: Dictionary mapping product to list of future prices, anchored
+                at the current year; re-anchored to target_year before the NPV
             capex_dict_all_locs_techs: Dictionary mapping region -> tech -> capex
-            cost_of_debt_all_locs: Dictionary mapping iso3 -> cost of debt
-            cost_of_equity_all_locs: Dictionary mapping iso3 -> cost of equity
+            cost_of_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
+            cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             steel_plant_capacity: Capacity of the steel plant in tonnes
             all_plant_ids: List of all existing plant IDs
             fopex_all_locs_techs: Dictionary mapping iso3 -> tech -> fopex
             equity_share: Share of investment financed by equity
             dynamic_feedstocks: Dictionary mapping technology to list of primary feedstocks
             get_bom_from_avg_boms: Callable to get bill of materials from average BOMs
+            reductant_score_series: ``Environment.reductant_score_series``
+            captive_energy_at: ``Environment.captive_energy_at``, the stack each site locks at its earliest
+                construction start, which its NPV is priced with and its furnace group keeps
             global_risk_free_rate: Global risk-free interest rate
             tech_to_product: Dictionary mapping technology to product type
             allowed_techs: Dictionary mapping year to list of allowed technologies
             technology_emission_factors: List of technology-specific emission factors
             chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon costs
-            carbon_costs: Dictionary mapping iso3 -> year -> carbon cost
-            top_n_loctechs_as_business_op: Number of top opportunities to select (default: 5)
-            capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
-            debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
-            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            active_statuses: Status strings whose furnace groups vote in the group's
+                most-common-reductant aggregation
+            top_n_loctechs_as_business_op: Number of top opportunities to select per product
+                (single source of truth: SimulationConfig, default 15)
+            opportunity_pool_depth: Depth of the probabilistic draw's eligible pool: global
+                head of (depth * top_n) candidates by NPV unioned with each allowed
+                technology's best `depth` sites (see select_top_opportunities_by_npv)
+            calculate_npv_sites_share: Fraction (0.0-1.0) of the priority-location subset that is
+                randomly sampled for full NPV evaluation each year. Forced to 1.0 when
+                probabilistic_agents is False (see SimulationConfig.__post_init__)
+            capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
+                (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
+            debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
+            opex_subsidies: Dictionary mapping geo_key -> tech -> list of opex subsidies
+            energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
+            derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
+                from the geospatial adapter) tagging each spawned plant's sub-national unit
+            probabilistic_agents: If True (default), step 5 draws a rank-weighted mix of top
+                opportunities. If False, step 5 deterministically picks the top N by NPV, and
+                calculate_npv_sites_share is forced to 1.0 by SimulationConfig.__post_init__ so
+                step 2 evaluates every candidate location instead of a random sample — see
+                docs/domain_simulation_logic/geospatial_model/new_plant_opening.md.
+            increase_sizing_query: China capacity-policy sizing query, threaded into step 4 so
+                each candidate's NPV rests on the capacity the policy permits it to build. The
+                opportunity itself is still created at nameplate — what the policy shrinks is the
+                build, not the plan. None (the default) values every candidate at nameplate.
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -5879,8 +6738,9 @@ class PlantGroup:
         for product, value in initial_counts.items():
             candidate_stats[f"input_sites_{product}"] = value
 
-        # Set target year for technology filtering
-        target_year = Year(current_year + consideration_time + 1)
+        # Earliest construction start: announcement once the consideration window's NPVs exist,
+        # no sooner than next year, then construction the year after
+        target_year = Year(current_year + max(consideration_time, 2))
 
         # Step 1: Find allowed technologies for the target year
         product_to_tech = get_list_of_allowed_techs_for_target_year(
@@ -5895,7 +6755,7 @@ class PlantGroup:
         # Step 2: Select a subset of locations
         best_locations_subset = select_location_subset(
             locations=locations,
-            calculate_npv_pct=0.1,  # 10%; TODO: set as tuneable parameter
+            calculate_npv_sites_share=calculate_npv_sites_share,
         )
         subset_counts, subset_total = _count_entries(best_locations_subset)
         candidate_stats["subset_sites_total"] = subset_total
@@ -5914,16 +6774,20 @@ class PlantGroup:
             cost_of_equity_all_locs=cost_of_equity_all_locs,
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=steel_plant_capacity,
+            plant_lifetime=plant_lifetime,
+            construction_time=construction_time,
             get_bom_from_avg_boms=get_bom_from_avg_boms,
+            reductant_score_series=reductant_score_series,
+            captive_energy_at=captive_energy_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=global_risk_free_rate,
             capex_subsidies=capex_subsidies,
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
             energy_subsidies=energy_subsidies,
-            carbon_costs=carbon_costs,
-            most_common_reductant=self.most_common_reductant,
+            most_common_reductant=self.most_common_reductant(active_statuses),
             environment_most_common_reductant=environment_most_common_reductant,
+            derive_geo_unit=derive_geo_unit,
         )
         cost_counts, cost_total = _count_entries(cost_data)
         candidate_stats["costed_pairs_total"] = cost_total
@@ -5932,18 +6796,20 @@ class PlantGroup:
 
         # Step 4: Calculate NPVs for all allowed top location-technology combinations with enough data
         # npv_dict: product -> site_id (lat, lon, iso3) -> tech -> NPV
+        # Prices from construction start, so price year i is cost year i in calculate_npv_full
+        years_to_construction_start = int(target_year) - int(current_year)
+        market_price_from_construction_start = {
+            product: series[years_to_construction_start:] for product, series in market_price.items()
+        }
         npv_dict = calculate_business_opportunity_npvs(
             cost_data=cost_data,
             target_year=target_year,
-            market_price=market_price,
+            market_price=market_price_from_construction_start,
             steel_plant_capacity=steel_plant_capacity,
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             equity_share=equity_share,
-            technology_emission_factors=technology_emission_factors,
-            chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
-            dynamic_business_cases=dynamic_feedstocks,
-            disposal_cost_outputs=disposal_cost_outputs,
+            increase_sizing_query=increase_sizing_query,
         )
         # G1 CO2 storage gate: drop CCS techs per (iso3, tech) when annual need exceeds
         # country headroom at the opportunity's operating-start lookup year.
@@ -5955,7 +6821,8 @@ class PlantGroup:
                     iso3 = site_id[2]
                     kept_techs: dict[str, float] = {}
                     for tech, npv in sites[site_id].items():
-                        reductant = environment_most_common_reductant.get(tech, "")
+                        # cost_data carries the evaluated operating-start-year pick (C8)
+                        reductant = str(cost_data[product][site_id][tech]["reductant"])
                         need = get_co2_need_by_name(tech, float(steel_plant_capacity), reductant)
                         if need > 0.0:
                             headroom = get_co2_headroom(iso3, lookup_year, 0.0)
@@ -5985,6 +6852,8 @@ class PlantGroup:
         top_business_opportunities = select_top_opportunities_by_npv(
             npv_dict=npv_dict,
             top_n_loctechs_as_business_op=top_n_loctechs_as_business_op,
+            probabilistic_agents=probabilistic_agents,
+            opportunity_pool_depth=opportunity_pool_depth,
         )
         selected_counts, selected_total = _count_entries(top_business_opportunities)
         candidate_stats["selected_pairs_total"] = selected_total
@@ -6009,9 +6878,10 @@ class PlantGroup:
                         dynamic_feedstocks=dynamic_feedstocks.get(tech.lower(), []),
                         plant_lifetime=plant_lifetime,
                         disposal_cost_outputs=disposal_cost_outputs,
+                        derive_geo_unit=derive_geo_unit,
                     )
-                all_plant_ids.append(new_plant.plant_id)
-                new_plants.append(new_plant)
+                    all_plant_ids.append(new_plant.plant_id)
+                    new_plants.append(new_plant)
         candidate_stats["new_plants_created"] = len(new_plants)
         stats_payload = " ".join(f"{key}={value}" for key, value in candidate_stats.items())
         logger.info(f"operation=new_plant_candidate_summary {stats_payload}")
@@ -6021,11 +6891,14 @@ class PlantGroup:
         self,
         current_year: Year,
         consideration_time: int,
+        construction_time: int,
         custom_energy_costs: dict,
         capex_dict_all_locs: dict[str, dict[str, float]],
-        cost_debt_all_locs: dict[str, float],
+        cost_debt_all_locs: dict[str, dict[str, float]],
         iso3_to_region_map: dict[str, str],
         global_risk_free_rate: float,
+        avg_utilization: dict[str, dict[str, float]],
+        captive_energy_at: Callable[[Location, Year], CaptiveEnergy],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
@@ -6038,28 +6911,45 @@ class PlantGroup:
             - CAPEX with subsidies
             - Cost of debt with subsidies
             - Energy costs from custom energy model (with subsidies)
+            - Expected utilisation, refreshed from the current fleet average for the
+              technology (considered opportunities only — announced ones keep their value,
+              which is reset to 0 at construction anyway)
+            - The site's power and electrolyser stack (``CaptiveEnergy``), locked at the construction
+              start year below, which the NPV re-valuation prices the site with
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
-              current year.
-            - Subsidies: the subsidies which are applied on top of CAPEX and cost of debt are set to
-              the target year, which is the [current year + consideration time + announcement time -
-              years considered] for considered BOs and [current year + 1] for announced BOs.
+              current year. Hydrogen is the site's ``capped_lcoh`` (USD/kg) × ``T_TO_KG``, in USD/t
+              as every energy cost dict holds it and as opportunity creation writes it; a site with
+              no raster value keeps its stored no-subsidy price.
+            - CAPEX and debt subsidies: set to the construction start year, which is the earliest
+              one a considered BO can reach, [current year + consideration time - years considered]
+              floored at [current year + 1], and [current year] for announced BOs, since the
+              construction draw that can start them runs later in the same year.
+            - Energy subsidies: set to the operating start year [construction start + construction
+              time], since subsidised carrier prices are what the plant pays once running. This matches
+              opportunity creation, PAM and the window the score series prices.
 
         Args:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
+            construction_time: Years to build the plant, offsetting construction start to operating start
             custom_energy_costs: Dictionary containing power_price and capped_lcoh data arrays
             capex_dict_all_locs: Dictionary mapping region -> tech -> capex
-            cost_debt_all_locs: Dictionary mapping iso3 -> cost of debt
+            cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             global_risk_free_rate: Global risk-free interest rate
-            capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
-            debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            avg_utilization: Fleet-average utilisation per technology
+                (``Environment.avg_utilization``: tech -> {"utilization_rate": rate})
+            captive_energy_at: ``(location, lock year) -> CaptiveEnergy`` (``Environment.captive_energy_at``)
+            capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
+                (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
+            debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
+            energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
 
         Returns:
-            List of UpdateDynamicCosts commands for each furnace group that was updated.
+            List of UpdateDynamicCosts commands for each furnace group that was updated. A furnace group whose
+            costs, utilisation and stack all repeat what it holds gets none.
 
         Note: This results in an adjusted NPV metric, which proved to be best to ensure the right
         plants are opened, because subsidized technologies would otherwise suffer a too long delay
@@ -6079,9 +6969,9 @@ class PlantGroup:
             iso3 = plant.location.iso3
             region = iso3_to_region_map.get(iso3)
 
-            # Get cost of debt (without subsidies)
-            cost_of_debt = cost_debt_all_locs.get(iso3, None)
-            if not cost_of_debt:
+            # Get per-technology cost of debt (without subsidies)
+            cost_of_debt_for_iso3 = cost_debt_all_locs.get(iso3, None)
+            if not cost_of_debt_for_iso3:
                 logger.error(
                     f"[NEW PLANTS] Cost of debt not found for {iso3}. "
                     f"Cannot update costs for plant at ({plant.location.lat}, {plant.location.lon})."
@@ -6090,8 +6980,14 @@ class PlantGroup:
 
             for fg in plant.furnace_groups:
                 if fg.status in ["considered", "announced"]:
-                    # TODO: Check if PAM is doing the same update for announced plants (also present in GEM); if it is, we can skip
-                    # announced plants here to avoid double doing
+                    cost_of_debt = cost_of_debt_for_iso3.get(fg.technology.name, None)
+                    if not cost_of_debt:
+                        logger.error(
+                            f"[NEW PLANTS] Cost of debt not found for {iso3}/{fg.technology.name}. "
+                            f"Cannot update costs at ({plant.location.lat}, {plant.location.lon})."
+                        )
+                        continue
+
                     # Get CAPEX (without subsidies)
                     capex = capex_dict_all_locs.get(region, {}).get(fg.technology.name, None) if region else None
                     if not capex:
@@ -6102,19 +6998,25 @@ class PlantGroup:
                         continue
 
                     # Get subsidies for this location and technology - filter to only active ones
-                    all_debt_subsidies = debt_subsidies.get(iso3, {}).get(fg.technology.name, [])
-                    all_capex_subsidies = capex_subsidies.get(iso3, {}).get(fg.technology.name, [])
+                    all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(
+                        fg.technology.name, []
+                    )
+                    all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(
+                        fg.technology.name, []
+                    )
 
                     if fg.status == "announced":
-                        year = Year(current_year + 1)  # announcement_time = 1
+                        year = current_year
                     elif fg.status == "considered":
                         if fg.historical_npv_business_opportunities:
                             years_already_considered = len(fg.historical_npv_business_opportunities)
                         else:
                             years_already_considered = 0
-                        year = Year(
-                            current_year + consideration_time + 1 - years_already_considered
-                        )  # announcement_time = 1
+                        # Floored at the soonest path still open to a considered opportunity:
+                        # announce now, construct from next year (mirrors track_business_opportunities)
+                        year = Year(max(current_year + consideration_time - years_already_considered, current_year + 1))
+                    operating_start_year = Year(year + construction_time)
+                    captive = captive_energy_at(plant.location, year)
 
                     selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
                     selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
@@ -6146,7 +7048,7 @@ class PlantGroup:
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
-                    hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
+                    hydrogen_price = float(raw_hydrogen_price) * T_TO_KG if raw_hydrogen_price is not None else None
                     if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
                         hydrogen_price = no_sub.get("hydrogen")
 
@@ -6158,8 +7060,10 @@ class PlantGroup:
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
                     for carrier, carrier_subs in energy_subsidies.items():
-                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
-                        active = filter_subsidies_for_year(all_subs, year)
+                        all_subs = collect_subsidies_for_geo(carrier_subs, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        )
+                        active = filter_subsidies_for_year(all_subs, operating_start_year)
                         if active:
                             active_energy_subs[carrier] = active
 
@@ -6176,91 +7080,28 @@ class PlantGroup:
                         )
                         sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
                         logger.debug(
-                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}",
+                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={operating_start_year} Subs: {sub_summary}",
                         )
                     else:
                         new_energy_costs = dict(base_costs)
                         new_output_energy_costs = dict(base_costs)
                         new_energy_costs_no_subsidy = dict(base_costs)
+                    energy_trace.greenfield_revalue(
+                        plant,
+                        fg,
+                        current_year,
+                        raw_power_price,
+                        raw_hydrogen_price,
+                        new_energy_costs_no_subsidy,
+                        captive,
+                        custom_energy_costs,
+                    )
 
-                    # Calculate updated BOM with new energy prices
-                    new_bom: dict[str, dict[str, dict[str, Any]]] | None = None
-                    if fg.bill_of_materials and "energy" in fg.bill_of_materials:
-                        import copy
-
-                        new_bom = copy.deepcopy(fg.bill_of_materials)
-                        updated_energy_costs: dict[str, float] = {}
-                        if getattr(fg, "energy_costs", None):
-                            updated_energy_costs.update(
-                                {normalize_name(k): v for k, v in fg.energy_costs.items()},
-                            )
-                        # Apply subsidised input prices to BOM costs
-                        for cost_key, cost_val in new_energy_costs.items():
-                            if cost_val is not None:
-                                updated_energy_costs[cost_key] = cost_val
-
-                        for feed_key, energy_value in new_bom.get("energy", {}).items():
-                            normalized_feed_key = normalize_name(feed_key)
-                            if normalized_feed_key == "electricity":
-                                unit_cost = updated_energy_costs.get(
-                                    "electricity",
-                                    energy_value.get("unit_cost"),
-                                )
-                            elif normalized_feed_key == "hydrogen":
-                                unit_cost = updated_energy_costs.get(
-                                    "hydrogen",
-                                    energy_value.get("unit_cost"),
-                                )
-                            else:
-                                unit_cost = _recalculate_feedstock_energy_unit_cost(
-                                    fg=fg,
-                                    feedstock_key=normalized_feed_key,
-                                    energy_costs=updated_energy_costs,
-                                )
-                                if unit_cost is None:
-                                    logger.warning(
-                                        "[NEW PLANTS] Could not recompute energy cost for %s/%s; "
-                                        "retaining previous value %s.",
-                                        fg.furnace_group_id,
-                                        feed_key,
-                                        energy_value.get("unit_cost"),
-                                    )
-                                    unit_cost = energy_value.get("unit_cost")
-                                else:
-                                    logger.debug(
-                                        "[NEW PLANTS] Recomputed feedstock energy cost for %s/%s: %.4f",
-                                        fg.furnace_group_id,
-                                        feed_key,
-                                        unit_cost,
-                                    )
-
-                            if unit_cost is not None:
-                                energy_value["unit_cost"] = unit_cost
-                                energy_value["total_cost"] = unit_cost * energy_value.get("demand", 0.0)
-
-                            material_value = new_bom.get("materials", {}).get(feed_key)
-                            logger.debug(
-                                "[NEW PLANTS] BOM energy update for %s/%s: energy unit_cost=%s total=%s "
-                                "material unit_cost=%s total=%s",
-                                fg.furnace_group_id,
-                                feed_key,
-                                energy_value.get("unit_cost"),
-                                energy_value.get("total_cost"),
-                                material_value.get("unit_cost") if material_value else None,
-                                material_value.get("total_cost") if material_value else None,
-                            )
-                            if (
-                                material_value
-                                and energy_value.get("unit_cost") == material_value.get("unit_cost")
-                                and energy_value.get("total_cost") == material_value.get("total_cost")
-                            ):
-                                logger.warning(
-                                    "[NEW PLANTS] Energy entry for %s/%s still equals material cost after update "
-                                    "(unit_cost=%s).",
-                                    fg.furnace_group_id,
-                                    feed_key,
-                                    energy_value.get("unit_cost"),
-                                )
+                    # Refresh the expected utilisation from the current fleet average
+                    if fg.status == "considered":
+                        new_utilization_rate = avg_utilization.get(fg.technology.name, {}).get("utilization_rate", 0.6)
+                    else:
+                        new_utilization_rate = fg.utilization_rate
 
                     # Check if costs have actually changed
                     old_costs_cmp = {
@@ -6268,12 +7109,16 @@ class PlantGroup:
                         "capex": fg.technology.capex,
                         "energy_costs": fg.energy_costs,
                         "output_energy_costs": fg.output_energy_costs,
+                        "utilization_rate": fg.utilization_rate,
+                        "captive_energy": fg.captive_energy,
                     }
                     new_costs_cmp = {
                         "cost_of_debt": new_costs["cost_of_debt"],
                         "capex": new_costs["capex"],
                         "energy_costs": new_energy_costs,
                         "output_energy_costs": new_output_energy_costs,
+                        "utilization_rate": new_utilization_rate,
+                        "captive_energy": captive,
                     }
                     if old_costs_cmp == new_costs_cmp:
                         continue  # Skip if no changes
@@ -6292,7 +7137,8 @@ class PlantGroup:
                             new_energy_costs=new_energy_costs,
                             new_output_energy_costs=new_output_energy_costs,
                             new_energy_costs_no_subsidy=new_energy_costs_no_subsidy,
-                            new_bill_of_materials=new_bom,
+                            new_utilization_rate=new_utilization_rate,
+                            new_captive_energy=captive,
                         )
                     )
         return update_commands
@@ -6302,7 +7148,7 @@ class PlantGroup:
         current_year: Year,
         consideration_time: int,
         market_price: dict[str, list[float]],
-        cost_of_equity_all_locs: dict[str, float],
+        cost_of_equity_all_locs: dict[str, dict[str, float]],
         probability_of_announcement: float,
         probability_of_construction: float,
         plant_lifetime: int,
@@ -6313,15 +7159,17 @@ class PlantGroup:
         capacity_limit_iron: float,
         capacity_limit_steel: float,
         new_capacity_share_from_new_plants: float,
-        technology_emission_factors: list[TechnologyEmissionFactors],
-        chosen_emissions_boundary_for_carbon_costs: str,
-        dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
-        carbon_costs: dict[str, dict[Year, float]],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         reserved_discount_factor: float = 0.9,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
+        | None = None,
+        capacity_pool_max_retry_years: int | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
+        greenfield_feasibility_probe: Callable[..., str | None] | None = None,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6329,8 +7177,10 @@ class PlantGroup:
         Args:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
-            market_price: Dictionary mapping product to list of future market prices
-            cost_of_equity_all_locs: Dictionary mapping iso3 -> cost of equity
+            market_price: Dictionary mapping product to list of future market prices,
+                anchored at the current year; re-anchored to the opportunity's earliest
+                construction start before the NPV
+            cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             probability_of_announcement: Probability that a viable opportunity will be announced
             probability_of_construction: Probability that an announced plant starts construction
             plant_lifetime: Lifetime of the plant in years
@@ -6343,11 +7193,19 @@ class PlantGroup:
             capacity_limit_steel: Capacity limit for steel (in tonnes) added this year in total
                 (new plants and expansions)
             new_capacity_share_from_new_plants: Share of new capacity from new plants (vs expansions)
-            technology_emission_factors: List of technology-specific emission factors
-            chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon cost calculation
-            dynamic_business_cases: Dictionary mapping technology to list of primary feedstocks
-            carbon_costs: Dictionary mapping iso3 -> year -> carbon cost
+            reductant_score_series: ``Environment.reductant_score_series``, threaded to the
+                per-opportunity re-check
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
+            permitted_greenfield_capacity: China capacity-policy withdrawal gate, threaded to
+                the considered→announced transition; None (the default) leaves it untouched
+            capacity_pool_max_retry_years: Retry cap for opportunities that gate blocks,
+                threaded alongside it; None (the default) retries forever
+            increase_sizing_query: China capacity-policy sizing query, threaded to the yearly
+                re-valuation so it values the capacity the policy permits; None (the default)
+                leaves it untouched
+            greenfield_feasibility_probe: China capacity-policy pre-draw feasibility probe,
+                threaded to the considered→announced transition so blocked years count
+                toward the retry cap draw-independently; None (the default) leaves it out
 
         Returns:
             List of commands to update the status of furnace groups.
@@ -6376,8 +7234,8 @@ class PlantGroup:
             iso3 = plant.location.iso3
 
             # Extract cost of equity (not dynamic, but not stored in the furnace group and needed for the NPV calculation)
-            cost_of_equity = cost_of_equity_all_locs.get(iso3, None)
-            if not cost_of_equity:
+            cost_of_equity_for_iso3 = cost_of_equity_all_locs.get(iso3, None)
+            if not cost_of_equity_for_iso3:
                 logger.error(
                     f"[NEW PLANTS] Cost of equity not found for {iso3}. "
                     f"Cannot update status for business opportunity at ({plant.location.lat}, {plant.location.lon}) in {plant.location.iso3}."
@@ -6387,6 +7245,11 @@ class PlantGroup:
 
             for fg in plant.furnace_groups:
                 status_stats["furnace_groups_seen"] += 1
+                cost_of_equity = cost_of_equity_for_iso3.get(fg.technology.name, None)
+                if not cost_of_equity:
+                    logger.error(f"[NEW PLANTS] Cost of equity not found for {iso3}/{fg.technology.name}.")
+                    status_stats["missing_cost_of_equity"] += 1
+                    continue
                 # Planned and announced business opportunities are converted into actual projects with a certain probability
                 if fg.status == "announced":
                     status_stats["announced_opportunities"] += 1
@@ -6415,11 +7278,6 @@ class PlantGroup:
                 # Considered business opportunities are updated each year to see if they remain profitable
                 if fg.status == "considered":
                     status_stats["considered_opportunities"] += 1
-                    carbon_costs_for_iso3 = carbon_costs.get(iso3)
-                    if carbon_costs_for_iso3 is None:
-                        raise ValueError(
-                            f"Carbon costs not found for ISO3: {iso3}. Check carbon cost data initialization."
-                        )
                     update_status_cmd = fg.track_business_opportunities(
                         year=current_year,
                         location=plant.location,
@@ -6429,15 +7287,18 @@ class PlantGroup:
                         construction_time=construction_time,
                         consideration_time=consideration_time,
                         probability_of_announcement=probability_of_announcement,
-                        all_opex_subsidies=opex_subsidies.get(iso3, {}).get(fg.technology.name, []),
-                        technology_emission_factors=technology_emission_factors,
-                        chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
-                        dynamic_business_cases=dynamic_business_cases,
-                        carbon_costs_for_iso3=carbon_costs_for_iso3,
+                        all_opex_subsidies=collect_subsidies_for_geo(opex_subsidies, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        ),
+                        reductant_score_series=reductant_score_series,
                         status_stats=status_stats,
                         get_co2_headroom=get_co2_headroom,
                         get_co2_need=get_co2_need,
                         co2_storage_diagnostics=co2_storage_diagnostics,
+                        permitted_greenfield_capacity=permitted_greenfield_capacity,
+                        capacity_pool_max_retry_years=capacity_pool_max_retry_years,
+                        increase_sizing_query=increase_sizing_query,
+                        greenfield_feasibility_probe=greenfield_feasibility_probe,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)
@@ -6619,11 +7480,13 @@ class Subsidy:
     """Financial subsidy reducing costs for specific technologies and regions.
 
     Represents a policy instrument that reduces costs for steel production technologies
-    within a country during a specified time period.
+    within a country — or a sub-national unit of it — during a specified time period.
 
     Attributes:
         scenario_name: Name of the subsidy scenario/policy.
         iso3: ISO3 country code where the subsidy applies.
+        geo_unit: Optional sub-national division (ISO 3166-2 code, e.g. "CN-HE"); None means
+            the subsidy applies country-wide.
         start_year: First year the subsidy is active (inclusive).
         end_year: Last year the subsidy is active (inclusive).
         technology_name: Technology the subsidy applies to, or "all" for all technologies.
@@ -6635,7 +7498,8 @@ class Subsidy:
             - energy carriers: USD per carrier unit (absolute) or decimal fraction (relative)
             - opex/capex: USD/t steel (absolute) or decimal fraction (relative)
             - cost of debt: percentage points (absolute only)
-        subsidy_name: Auto-generated unique identifier string.
+        subsidy_name: Auto-generated unique identifier string (geo-keyed, so a country row
+            and a province row for the same iso3/tech/item stay distinct).
     """
 
     def __init__(
@@ -6648,9 +7512,11 @@ class Subsidy:
         cost_item: str,
         subsidy_type: str,
         subsidy_amount: float,
+        geo_unit: str | None = None,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
+        self.geo_unit = geo_unit
         self.start_year = start_year
         self.end_year = end_year
         self.technology_name = technology_name
@@ -6658,8 +7524,13 @@ class Subsidy:
         self.subsidy_type = subsidy_type
         self.subsidy_amount = subsidy_amount
         self.subsidy_name = (
-            f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}_{self.subsidy_type}"
+            f"{self.geo_key}_{self.scenario_name}_{self.technology_name}_{self.cost_item}_{self.subsidy_type}"
         )
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key (mirrors ``Location.geo_key``)."""
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def __repr__(self) -> str:
         return f"Subsidy: <{self.subsidy_name}>"
@@ -6669,6 +7540,7 @@ class Subsidy:
             (
                 self.scenario_name,
                 self.iso3,
+                self.geo_unit,
                 self.start_year,
                 self.end_year,
                 self.technology_name,
@@ -6684,6 +7556,7 @@ class Subsidy:
         return (
             self.scenario_name == other.scenario_name
             and self.iso3 == other.iso3
+            and self.geo_unit == other.geo_unit
             and self.start_year == other.start_year
             and self.end_year == other.end_year
             and self.technology_name == other.technology_name
@@ -6756,31 +7629,38 @@ class Capex:
     learning_rate: float
 
 
+# Non-technology financing categories in the "Cost of capital" sheet
+RENEWABLES_KEY = "Renewables"
+HYDROGEN_KEY = "Hydrogen"
+
+
+@dataclass(frozen=True)
+class TechFinancingRates:
+    """Financing rates for one (country, technology) pair, as fractions (0.05 = 5%)."""
+
+    cost_of_debt: float
+    cost_of_equity: float
+    cost_of_capital: float
+
+
 class CostOfCapital:
     """
-    Class to handle the cost of capital for different regions.
-    It allows for dynamic updates based on regional cost of capital values.
+    Per-country financing rates, differentiated by technology.
+
+    `techs` maps a technology name (verbatim from the master Excel, matching
+    Technology.name) to its rates; the special keys RENEWABLES_KEY and
+    HYDROGEN_KEY carry the non-steelmaking categories.
     """
 
     def __init__(
         self,
         country: str,
         iso3: str,
-        debt_res: float,
-        equity_res: float,
-        wacc_res: float,
-        debt_other: float,
-        equity_other: float,
-        wacc_other: float,
+        techs: dict[str, TechFinancingRates],
     ) -> None:
         self.country = country
         self.iso3 = iso3
-        self.debt_res = debt_res
-        self.equity_res = equity_res
-        self.wacc_res = wacc_res
-        self.debt_other = debt_other
-        self.equity_other = equity_other
-        self.wacc_other = wacc_other
+        self.techs = techs
 
     def __repr__(self) -> str:
         return f"Cost of Capital: <{self.iso3}>"
@@ -6863,6 +7743,11 @@ class CountryMappingService:
     def iso3_to_region(self) -> dict[str, str]:
         """Return a mapping from ISO3 codes to regions (region_for_outputs)."""
         return {mapping.iso3: mapping.region_for_outputs for mapping in self._mappings.values()}
+
+    @property
+    def mappings(self) -> list[CountryMapping]:
+        """All country mappings, in sheet order."""
+        return list(self._mappings.values())
 
 
 class VirginIronDemand:
@@ -7035,17 +7920,11 @@ class Environment:
 
         # Initialize costs - will be populated during simulation setup
         self.name_to_capex: dict[str, dict[str, dict[str, float]]] = {}  # capex_dict
-        self.res_cost_of_debt: dict[str, float] = {}
-        self.res_cost_of_equity: dict[str, float] = {}
-        self.res_wacc: dict[str, float] = {}
-        self.industrial_cost_of_debt: dict[str, float] = {}
-        self.industrial_cost_of_equity: dict[str, float] = {}
-        self.industrial_wacc: dict[str, float] = {}
+        # iso3 -> technology name -> rate (fraction); includes RENEWABLES_KEY/HYDROGEN_KEY entries
+        self.cost_of_debt_by_tech: dict[str, dict[str, float]] = {}
+        self.cost_of_equity_by_tech: dict[str, dict[str, float]] = {}
         self.railway_costs: list[RailwayCost] = []
         self.dynamic_feedstock_cost: dict[str, float] = {}
-        # self.cost_of_capital = self.initiate_industrial_asset_cost_of_capital(
-        #     cost_of_x_csv=cost_of_x_csv, default_coc=default_coc
-        # )
 
         # Initialize CarbonCostService for centralized carbon cost calculations
         self.carbon_cost_service = CarbonCostService(self.config.chosen_emissions_boundary_for_carbon_costs)
@@ -7059,7 +7938,7 @@ class Environment:
         self.co2_storage_firm: dict[str, float] = {}  # iso3 -> tCO2/yr (operating + construction CCS)
         self.co2_storage_reserved: dict[str, float] = {}  # iso3 -> tCO2/yr (announced CCS, discounted)
         self.capacity_snapshot_by_product: dict[str, float] = {}
-        self._diag_bof_baseline_2049: dict[str, dict[str, float]] | None = None
+        self._diag_bof_baseline_2059: dict[str, dict[str, float]] | None = None
         self._diag_bof_sample_count: int = 0
 
         # Initialize demand, BOMs, and utilization - will be populated during simulation setup
@@ -7080,8 +7959,21 @@ class Environment:
         self.carbon_costs: dict[str, dict[Year, float]] = {}
         # Initialize technology emission factors as empty list
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
-        # Initialize input costs as empty dict
-        self.input_costs: dict[str | None, dict[Year, dict[str, float]]] = {}
+        # Initialize input costs as empty dict, keyed by geo_key (iso3 or iso3:code)
+        self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
+        # Precomputed capped-LCOH series (year -> geo_key -> USD/kg), filled at bootstrap
+        self.capped_hydrogen_costs_by_year: dict[Year, dict[str, float]] = {}
+        # Baseload LCOE the hydrogen price blends with the grid (year -> geo_key -> USD/kWh), filled at bootstrap
+        self.baseload_lcoe_by_geo_key: dict[Year, dict[str, float]] = {}
+        # The inputs behind each hydrogen price (year -> geo_key -> HydrogenPriceInputs)
+        self.hydrogen_price_inputs_by_year: dict[Year, dict[str, HydrogenPriceInputs]] = {}
+        # Every year's baseload LCOE grid (year, lat, lon; USD/MWh) new sites lock, loaded at bootstrap
+        self.baseload_lcoe_grid: xr.DataArray | None = None
+        # New sites' effective hydrogen ceiling (year -> TIAM-UCL region -> USD/kg), from the first geospatial step
+        self.site_hydrogen_ceilings: dict[Year, dict[str, float]] = {}
+        # The region whose ceiling each country's sites read (ISO3 -> TIAM-UCL region)
+        self.site_hydrogen_region_by_iso3: dict[str, str] = {}
+        self.clear_reductant_score_cache()
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -7108,8 +8000,10 @@ class Environment:
         self.fallback_material_costs: list[FallbackMaterialCost] = []
         # Initialize default metallic charge mapping as empty dict
         self.default_metallic_charge_per_technology: dict[str, str] = {}
+        # Plant names and input data sources of the master's Furnace units sheet, for the capacity world map
+        self.plant_names: dict[str, str] = {}
+        self.input_sources: list[str] = []
         self.transport_kpis: list[TransportKPI] = []  # Alias for transport_emissions for compatibility
-        self.allocation_and_transportation_costs: dict | None = None  # For storing allocation costs
         self.trade_allocations: Any = None  # For storing trade allocations from LP solution
         # Plot paths
         self.plot_paths: Optional[PlotPaths] = None
@@ -7173,10 +8067,111 @@ class Environment:
     ) -> None:
         """
         Initialize the technology emission factors for the environment.
+
         Args:
             technology_emission_factors (list[TechnologyEmissionFactors]): A list of TechnologyEmissionFactors objects to be added to the environment.
+
+        Notes:
+            When dynamic feedstocks are already loaded, coverage is validated: every
+            (technology, reductant, metallic charge) business-case key needs an EF row in
+            the configured boundary and in every boundary present in the table. The
+            reductant score does a hard EF lookup, so a gap would crash mid-run — or
+            silently price carbon as zero in the legacy lenient paths — fail at load
+            time instead.
         """
         self.technology_emission_factors = technology_emission_factors
+        self.clear_reductant_score_cache()
+
+        required_keys = {
+            (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
+            for feedstocks in self.dynamic_feedstocks.values()
+            for dbc in feedstocks
+        }
+        if not required_keys:
+            return
+        if not technology_emission_factors:
+            raise ValueError(
+                "No technology emission factors loaded but dynamic business cases exist — "
+                "carbon-aware reductant scoring would fail on every lookup. Check the "
+                "'Technology emission factors' sheet / technology_emission_factors.json."
+            )
+        boundaries = {factor.boundary for factor in technology_emission_factors}
+        chosen_boundary = self.config.chosen_emissions_boundary_for_carbon_costs
+        if chosen_boundary not in boundaries:
+            raise ValueError(
+                f"Configured emissions boundary '{chosen_boundary}' has no rows in the "
+                f"technology emission factors (available: {sorted(boundaries)})."
+            )
+        for boundary in sorted(boundaries):
+            ef_keys = {
+                (factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge)
+                for factor in technology_emission_factors
+                if factor.boundary == boundary
+            }
+            missing = required_keys - ef_keys
+            if missing:
+                sample = ", ".join(str(key) for key in sorted(missing)[:5])
+                raise ValueError(
+                    f"Technology emission factors incomplete for boundary '{boundary}': "
+                    f"{len(missing)} business-case key(s) missing (e.g. {sample})."
+                )
+
+    def validate_reductant_material_invariance(self) -> None:
+        """
+        Warn when a technology's material side differs across reductants.
+
+        The reductant score (annual re-pick and investment NPVs) carries no material
+        term: materials and utilisation are assumed reductant-invariant, which holds
+        in all current masters. Two kinds of authoring drift would silently break
+        that factorisation: a metallic charge present for only a subset of a
+        technology's reductants, and required quantities / non-energy secondary
+        feedstocks that differ per reductant.
+
+        Returns:
+            None. Logs one warning per affected (technology, metallic charge).
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.validate_reductant_material_invariance")
+        checked: set[str] = set()
+        for tech_name, feedstocks in self.dynamic_feedstocks.items():
+            canonical = tech_name.lower()
+            if canonical in checked:
+                continue
+            checked.add(canonical)
+            profiles: dict[str, dict[str, tuple]] = {}
+            reductants: set[str] = set()
+            for dbc in feedstocks:
+                non_energy_secondary = tuple(
+                    sorted(
+                        (normalize_name(name), volume)
+                        for name, volume in (dbc.secondary_feedstock or {}).items()
+                        if normalize_name(name) not in ENERGY_FEEDSTOCK_KEYS
+                    )
+                )
+                profiles.setdefault(dbc.metallic_charge, {})[dbc.reductant] = (
+                    dbc.required_quantity_per_ton_of_product,
+                    non_energy_secondary,
+                )
+                reductants.add(dbc.reductant)
+            for metallic_charge, by_reductant in profiles.items():
+                if set(by_reductant) != reductants:
+                    logger.warning(
+                        "[REDUCTANT DATA] %s: metallic charge '%s' is authored only for reductant(s) %s "
+                        "(missing: %s) — the reductant score assumes identical charge coverage across "
+                        "reductants. Check the master's Bill of Materials authoring.",
+                        tech_name,
+                        metallic_charge,
+                        ", ".join(sorted(by_reductant)),
+                        ", ".join(sorted(reductants - set(by_reductant))),
+                    )
+                if len(set(by_reductant.values())) > 1:
+                    logger.warning(
+                        "[REDUCTANT DATA] %s: material requirements for charge '%s' differ across "
+                        "reductants (%s) — the reductant score carries no material term, so this "
+                        "difference is ignored. Check the master's Bill of Materials authoring.",
+                        tech_name,
+                        metallic_charge,
+                        ", ".join(sorted(by_reductant)),
+                    )
 
     def initiate_fopex(self, fopex_list: list[FOPEX]) -> None:
         """
@@ -7287,11 +8282,11 @@ class Environment:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         for subsidy in subsidies:
             if subsidy.cost_item.lower() == "opex":
-                if subsidy.iso3 not in opex_subsidies:
-                    opex_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
-                    opex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                if subsidy.geo_key not in opex_subsidies:
+                    opex_subsidies[subsidy.geo_key] = {}
+                if subsidy.technology_name not in opex_subsidies[subsidy.geo_key]:
+                    opex_subsidies[subsidy.geo_key][subsidy.technology_name] = []
+                opex_subsidies[subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.opex_subsidies = opex_subsidies
 
     def initiate_capex_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -7304,11 +8299,11 @@ class Environment:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         for subsidy in subsidies:
             if subsidy.cost_item.lower() == "capex":
-                if subsidy.iso3 not in capex_subsidies:
-                    capex_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
-                    capex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                if subsidy.geo_key not in capex_subsidies:
+                    capex_subsidies[subsidy.geo_key] = {}
+                if subsidy.technology_name not in capex_subsidies[subsidy.geo_key]:
+                    capex_subsidies[subsidy.geo_key][subsidy.technology_name] = []
+                capex_subsidies[subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.capex_subsidies = capex_subsidies
 
     def initiate_debt_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -7321,20 +8316,20 @@ class Environment:
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         for subsidy in subsidies:
             if subsidy.cost_item.lower() == "cost of debt":
-                if subsidy.iso3 not in debt_subsidies:
-                    debt_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
-                    debt_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                if subsidy.geo_key not in debt_subsidies:
+                    debt_subsidies[subsidy.geo_key] = {}
+                if subsidy.technology_name not in debt_subsidies[subsidy.geo_key]:
+                    debt_subsidies[subsidy.geo_key][subsidy.technology_name] = []
+                debt_subsidies[subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
 
     def initiate_energy_subsidies(self, subsidies: list[Subsidy]) -> None:
         """
         Initialise energy carrier subsidies for the environment.
 
-        Groups subsidies by carrier name (cost_item), then by iso3, then by technology.
-        Financial subsidies (opex, capex, cost of debt) are excluded — they are handled
-        by their own initiate methods.
+        Groups subsidies by carrier name (cost_item), then by geo_key (country or
+        ``iso3:province``), then by technology. Financial subsidies (opex, capex, cost of
+        debt) are excluded — they are handled by their own initiate methods.
 
         Args:
             subsidies: List of Subsidy objects to filter and group.
@@ -7347,12 +8342,13 @@ class Environment:
                 continue
             if carrier not in energy_subsidies:
                 energy_subsidies[carrier] = {}
-            if subsidy.iso3 not in energy_subsidies[carrier]:
-                energy_subsidies[carrier][subsidy.iso3] = {}
-            if subsidy.technology_name not in energy_subsidies[carrier][subsidy.iso3]:
-                energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name] = []
-            energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name].append(subsidy)
+            if subsidy.geo_key not in energy_subsidies[carrier]:
+                energy_subsidies[carrier][subsidy.geo_key] = {}
+            if subsidy.technology_name not in energy_subsidies[carrier][subsidy.geo_key]:
+                energy_subsidies[carrier][subsidy.geo_key][subsidy.technology_name] = []
+            energy_subsidies[carrier][subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.energy_subsidies = energy_subsidies
+        self.clear_reductant_score_cache()
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """
@@ -7362,6 +8358,7 @@ class Environment:
             feedstocks (list[PrimaryFeedstock]): A list of PrimaryFeedstock objects to be added to the environment.
         """
         self.dynamic_feedstocks = {}
+        self.clear_reductant_score_cache()
         for feedstock in feedstocks:
             # Store with both original case and lowercase for compatibility
             tech_name = feedstock.technology
@@ -7443,6 +8440,7 @@ class Environment:
             carbon_costs (list[CarbonCostSeries]): A list of CarbonCostSeries objects to be added to the environment.
         """
         self.carbon_costs = {cc.iso3: cc.carbon_cost for cc in carbon_costs}
+        self.clear_reductant_score_cache()
 
     def initiate_grid_emissivity(self, emissivities: list[RegionEmissivity]) -> None:
         """
@@ -7452,49 +8450,55 @@ class Environment:
             emissivities (list[RegionEmissivity]): A list of RegionEmissivity objects to be added to the environment.
 
         Side Effects:
-            Updates the `grid_emissivities` dictionary to map ISO3 codes to their respective emiss
+            Updates the `grid_emissivities` dictionary to map geo_keys (bare ISO3 or
+            sub-national ``iso3:code``) to their respective emissivities.
+
+        Raises:
+            ValueError: If emissivities are supplied but none match the chosen scenario
+                (a scenario-name typo would otherwise zero all grid emissions silently).
         """
         self.grid_emissivities = {
-            ge.iso3: ge.grid_emissivity
+            ge.geo_key: ge.grid_emissivity
             for ge in emissivities
             if ge.scenario == self.config.chosen_grid_emissions_scenario
         }
+        if emissivities and not self.grid_emissivities:
+            raise ValueError(
+                f"No grid emissivities match scenario {self.config.chosen_grid_emissions_scenario!r}; "
+                f"available: {sorted({ge.scenario for ge in emissivities})}"
+            )
 
     def propagate_grid_emissivity_to_furnace_groups(self, plants: list[Plant]) -> None:
         """
-        Propagate the grid emissivities to all plants and furnace groups based on their location ISO3 code.
+        Propagate the grid emissivities to all plants and furnace groups, resolving each
+        plant's location finest-available first (sub-national geo_key, then country ISO3).
 
         Args:
             plants (list[Plant]): List of Plant objects to update with grid emissivities.
 
         Side Effects:
             Updates the `grid_emissivity` attribute of each FurnaceGroup object for the current year.
+
+        Raises:
+            ValueError: If a plant's location resolves to no grid emissivity entry, or the
+                entry has no Electricity value for the current year.
         """
         logger = logging.getLogger(f"{__name__}.Environment.propagate_grid_emissivity_to_furnace_groups")
-        # If grid_emissivities hasn't been initialized, skip propagation
-        if not hasattr(self, "grid_emissivities") or self.grid_emissivities is None:
+        # If grid_emissivities hasn't been initialized or no data was supplied, skip propagation
+        if not getattr(self, "grid_emissivities", None):
             logger.warning("Grid emissivities not initialized, skipping propagation to furnace groups")
             return
 
         for plant in plants:
-            emissivity_dict = self.grid_emissivities.get(plant.location.iso3)
-            if emissivity_dict is not None:
-                # Extract the grid emissivity for the current year
-                year_data = emissivity_dict.get(self.year)
-                if year_data is not None and "Electricity" in year_data:
-                    emissivity_value = year_data["Electricity"]
-                    for furnace_group in plant.furnace_groups:
-                        furnace_group.grid_emissivity = emissivity_value
-                else:
-                    logger.warning(
-                        f"Grid emissivity not found for ISO3 code {plant.location.iso3} and year {self.year}, setting to 0"
-                    )
-                    for furnace_group in plant.furnace_groups:
-                        furnace_group.grid_emissivity = 0.0
-            else:
-                logger.warning(f"Grid emissivity not found for ISO3 code {plant.location.iso3}, setting to 0")
-                for furnace_group in plant.furnace_groups:
-                    furnace_group.grid_emissivity = 0.0
+            emissivity_dict = plant.location.resolve(self.grid_emissivities, what="grid emissivity")
+            if emissivity_dict is None:
+                raise ValueError(f"Grid emissivity not found for {plant.location.geo_key}")
+            year_data = emissivity_dict.get(self.year)
+            if year_data is None or "Electricity" not in year_data:
+                raise ValueError(f"Grid emissivity not found for {plant.location.geo_key} in year {self.year}")
+            emissivity_value = year_data["Electricity"]
+            for furnace_group in plant.furnace_groups:
+                furnace_group.grid_emissivity = emissivity_value
 
     def initiate_gas_coke_emissivity(self, emissivities: list[RegionEmissivity]) -> None:
         """
@@ -7504,10 +8508,13 @@ class Environment:
             emissivities (list[RegionEmissivity]): A list of RegionEmissivity objects to be added to the environment.
 
         Side Effects:
-            Updates the `fossil_emissivity` dictionary to map ISO3 codes to their respective emiss
+            Updates the `fossil_emissivity` dictionary to map geo_keys (bare ISO3 or
+            sub-national ``iso3:code``) to their respective emissivities.
         """
+        # TODO FOR BACKLOG: fossil_emissivity is never consumed — scaffolding for a future
+        # coke/gas emissions feature; see the data bugs noted in read_regional_emissivities.
         self.fossil_emissivity = {
-            ge.iso3: {"Coke": ge.coke_emissivity, "Natural gas": ge.gas_emissivity}
+            ge.geo_key: {"Coke": ge.coke_emissivity, "Natural gas": ge.gas_emissivity}
             for ge in emissivities
             if ge.scenario == self.config.chosen_grid_emissions_scenario
         }
@@ -7520,10 +8527,10 @@ class Environment:
             input_costs (list[InputCosts]): A list of InputCosts objects to be added to the environment.
         """
         for ic in input_costs_list:
-            if ic.iso3 not in self.input_costs:
-                self.input_costs[ic.iso3] = {}
-            # Assuming InputCosts has a method or property to get the cost
-            self.input_costs[ic.iso3][ic.year] = ic.costs
+            if ic.geo_key not in self.input_costs:
+                self.input_costs[ic.geo_key] = {}
+            self.input_costs[ic.geo_key][ic.year] = ic.costs
+        self.clear_reductant_score_cache()
 
     def set_capex_and_debt_in_furnace_groups(self, world_plants_list: list[Plant]) -> None:
         """
@@ -7561,9 +8568,9 @@ class Environment:
 
             for furnace_group in plant.furnace_groups:
                 # Set the cost of debt in the furnace groups
-                cost_of_debt = self.industrial_cost_of_debt.get(plant_iso3)
+                cost_of_debt = self.cost_of_debt_by_tech.get(plant_iso3, {}).get(furnace_group.technology.name)
                 if cost_of_debt is None:
-                    raise ValueError(f"Industrial cost of debt cannot be set for ISO3 code {plant_iso3}")
+                    raise ValueError(f"Cost of debt cannot be set for {plant_iso3}/{furnace_group.technology.name}")
 
                 cost_of_debt_no_subsidy = cost_of_debt  # Store original cost of debt before subsidy
                 cost_of_debt = calculate_debt_with_subsidies(
@@ -7719,28 +8726,28 @@ class Environment:
         total_switched = sum(switched_volumes, Volumes(0))
         return Volumes(total_added + total_switched)
 
-    def initiate_industrial_asset_cost_of_capital(self, cost_of_capital_list: list[CostOfCapital]) -> None:
+    def initiate_cost_of_capital(self, cost_of_capital_list: list[CostOfCapital]) -> None:
         """
-        Initialize the cost of capital for the environment.
+        Initialise the per-country, per-technology financing-rate dicts.
 
         Args:
-            cost_of_capital_list (list[CostOfCapital]): A list of CostOfCapital objects to be added to the environment.
+            cost_of_capital_list (list[CostOfCapital]): One entry per country with per-tech rates.
         Returns:
             None
         Side Effects:
-            Updates the `cost_of_capital` dictionary to map ISO3 codes to their respective cost
+            Populates `cost_of_debt_by_tech` and `cost_of_equity_by_tech` (iso3 -> tech -> rate).
         """
-
-        self.industrial_cost_of_debt = {c.iso3: c.debt_other for c in cost_of_capital_list}  # FIXME tomorrow @Marcus
-        self.industrial_cost_of_equity = {c.iso3: c.equity_other for c in cost_of_capital_list}
-        self.industrial_wacc = {
-            c.iso3: c.wacc_other for c in cost_of_capital_list
-        }  # Weighted Average Cost of Capital for industrial assets
-        self.res_cost_of_debt = {c.iso3: c.debt_res for c in cost_of_capital_list}
-        self.res_cost_of_equity = {
-            c.iso3: c.equity_res for c in cost_of_capital_list
-        }  # Cost of equity for residential assets
-        self.res_wacc = {c.iso3: c.wacc_res for c in cost_of_capital_list}  # Weighted Average Cost
+        self.cost_of_debt_by_tech = {
+            c.iso3: {tech: rates.cost_of_debt for tech, rates in c.techs.items()} for c in cost_of_capital_list
+        }
+        self.cost_of_equity_by_tech = {
+            c.iso3: {tech: rates.cost_of_equity for tech, rates in c.techs.items()} for c in cost_of_capital_list
+        }
+        tech_counts = {len(techs) for techs in self.cost_of_debt_by_tech.values()}
+        logging.getLogger(f"{__name__}.initiate_cost_of_capital").info(
+            f"Initialised cost of capital for {len(self.cost_of_debt_by_tech)} countries "
+            f"with {sorted(tech_counts)} techs each"
+        )
 
     def set_input_cost_in_furnace_groups(self, world_plants: list[Plant]) -> None:
         """
@@ -7749,8 +8756,9 @@ class Environment:
         This method is called twice in the simulation lifecycle:
         1. **At Bootstrap** (before simulation years start): Initializes all furnace groups with input costs
            from the Excel "Input costs" tab. At this point, furnace groups have empty energy_costs dictionaries.
-        2. **At Each Year Start** (during simulation loop): Updates input costs for the current year, while
-           preserving previously calculated hydrogen costs that account for interregional trade.
+        2. **At Each Year End** (``finalise_iteration`` step 6c, after the year advances): Sets the new year's
+           input costs before the year-start hydrogen refresh, keeping existing plants' stored hydrogen prices
+           and pricing a new site's electricity and hydrogen from its stack.
 
         Process:
             1. Retrieve country-specific input costs (electricity, hydrogen, coke, pci, natural_gas, coal, bio_pci)
@@ -7758,8 +8766,12 @@ class Environment:
             2. Handle special cases based on plant type:
 
                **New GEO Plants (parent_gem_id starts with "indi"):**
-               - These plants have their own power infrastructure (renewable energy park)
-               - Preserve electricity and hydrogen costs from their own power generation if previously set
+               - These plants own their power system and electrolyser (``FurnaceGroup.captive_energy``)
+               - Past construction start, each furnace group's electricity and hydrogen without subsidy come
+                 from its stack and the year's grid price at the plant's geo key
+               - A considered or announced opportunity keeps its stored electricity and hydrogen without subsidy,
+                 which the next re-valuation replaces; any other furnace group without a stack raises
+               - Each furnace group starts from its own copy of the input costs
 
                **Existing Plants (all others):**
                - Use grid electricity costs from Excel input costs
@@ -7768,15 +8780,21 @@ class Environment:
 
         Hydrogen Cost Flow:
             - Bootstrap: Uses hydrogen from Excel input costs
-            - Year Start: calculate_capped_hydrogen_costs_per_country() runs, then update_furnace_hydrogen_costs()
-              sets fg.energy_costs["hydrogen"] with capped prices
-            - This method: Preserves those capped prices instead of overwriting with Excel's static values
+            - Year Start: the year's capped prices are read from the series precomputed at bootstrap
+              (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
+              fg.energy_costs["hydrogen"] with them for existing plants; new sites keep the price this
+              method set
+            - This method, at the year end: keeps existing plants' stored hydrogen instead of Excel's static
+              values, until the year-start refresh replaces it, and prices a new site's from its stack
 
         Args:
             world_plants (list[Plant]): All plants in the simulation to update.
 
         Side Effects:
             - Updates fg.energy_costs dictionary via set_energy_costs() for each furnace group
+
+        Raises:
+            ValueError: If a new site's furnace group past construction start holds no stack.
 
         Notes:
             - Plants with missing ISO3 codes in input_costs (e.g., Kosovo/XKX) are skipped with a warning
@@ -7786,14 +8804,16 @@ class Environment:
         logger = logging.getLogger(f"{__name__}.Environment.set_input_cost_in_furnace_groups")
         logged_countries: set[str] = set()
         for plant in world_plants:
-            if plant.location.iso3 not in self.input_costs:
+            # Resolve finest-available: the plant's sub-national geo_key if authored, else its country iso3
+            year_costs = plant.location.resolve(self.input_costs, what="input costs")
+            if year_costs is None:
                 logger.warning(
-                    f"ISO3 code {plant.location.iso3} not found in input_costs for plant {plant.plant_id}, skipping energy cost update"
+                    f"No input_costs found for {plant.location.geo_key} for plant {plant.plant_id}, skipping energy cost update"
                 )
                 continue
 
-            # Get input costs from Excel for this country and year
-            input_costs = self.input_costs[plant.location.iso3][self.year].copy()
+            # Get input costs from Excel for this geo_key and year
+            input_costs = year_costs[self.year].copy()
 
             # Log once per country to avoid flooding
             if plant.location.iso3 not in logged_countries:
@@ -7805,27 +8825,25 @@ class Environment:
                 )
                 logged_countries.add(plant.location.iso3)
 
-            # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
+            # New GEO plants: each furnace group prices its own electricity and hydrogen, without subsidy
             if plant.parent_gem_id.lower().startswith("indi"):
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
-                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-                    if "electricity" in no_sub:
-                        input_costs["electricity"] = no_sub["electricity"]
-                    if "hydrogen" in no_sub:
-                        input_costs["hydrogen"] = no_sub["hydrogen"]
-                    if fg.energy_costs_no_subsidy and "electricity" in no_sub:
-                        sub_elec = fg.energy_costs.get("electricity", 0)
-                        if sub_elec != no_sub["electricity"]:
-                            logger.debug(
-                                "[INPUT COSTS] indi %s FG:%s elec no_sub=$%.6f (was sub=$%.6f)",
-                                plant.location.iso3,
-                                fg.furnace_group_id,
-                                no_sub["electricity"],
-                                sub_elec,
+                    fg_costs = input_costs.copy()
+                    if fg.status in ("considered", "announced"):
+                        # The year's re-valuation writes an opportunity's prices from the year's rasters
+                        self._keep_stored_site_prices(fg, fg_costs)
+                    else:
+                        if fg.captive_energy is None:
+                            raise ValueError(
+                                f"New-site furnace group {fg.furnace_group_id} of plant {plant.plant_id} holds no "
+                                "captive energy stack: every build, switch, renovation and expansion locks one"
                             )
-                    fg.set_energy_costs(**input_costs)
+                        grid = self.grid_electricity_for_year(plant.location, self.year)
+                        fg_costs["electricity"] = fg.captive_energy.electricity(grid)
+                        fg_costs["hydrogen"] = fg.captive_energy.hydrogen(grid)
+                    fg.set_energy_costs(**fg_costs)
 
             # Existing plants: Preserve calculated hydrogen costs if set (only not at bootstrap)
             else:
@@ -7836,29 +8854,66 @@ class Environment:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)
 
-    def calculate_capped_hydrogen_costs_per_country(self) -> dict[str, float]:
+    @staticmethod
+    def _keep_stored_site_prices(fg: FurnaceGroup, fg_costs: dict[str, float]) -> None:
+        """
+        Carry a new site's stored electricity and hydrogen without subsidy into its next input costs.
+
+        Args:
+            fg: A new site's furnace group.
+            fg_costs: The furnace group's own copy of the year's input costs, changed in place.
+
+        Returns:
+            None.
+
+        Raises:
+            KeyError: If the furnace group holds no electricity or hydrogen price without subsidy.
+
+        Notes:
+            The prices without subsidy are carried, not the subsidised ones, so subsidies never compound.
+        """
+        fg_costs["electricity"] = fg.energy_costs_no_subsidy["electricity"]
+        fg_costs["hydrogen"] = fg.energy_costs_no_subsidy["hydrogen"]
+
+    def calculate_capped_hydrogen_costs_per_country(self, year: Year | None = None) -> dict[str, float]:
         """
         Calculate country-level hydrogen prices with regional ceilings and trade adjustments.
 
         Steps:
-            1. Extract electricity prices for all countries in the current simulation year and calculate Levelized Cost of Hydrogen
-            (LCOH) for each country using electricity prices, CAPEX, and OPEX.
+            1. Price electrolysis power per geo key at the power mix, (1 - c) x grid + c x baseload LCOE, and
+            calculate the Levelised Cost of Hydrogen (LCOH) from it with the electrolyser's CAPEX and OPEX.
             2. Determine regional hydrogen price ceilings based on percentile thresholds
             3. Apply price caps considering regional ceilings, interregional trade options, and pipeline transport costs. Pipeline
             transport costs are added when importing hydrogen from trading partners.
+
+        Args:
+            year: Year to price; defaults to the current simulation year. Every input is
+                exogenous, so any covered year can be computed at any time.
 
         Returns:
             capped_hydrogen_prices (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
 
         Side Effects:
-            Logs info messages about calculation progress.
+            Logs info messages about calculation progress. Records the inputs behind every price in
+            self.hydrogen_price_inputs_by_year[year].
+
+        Raises:
+            ValueError: If a prerequisite is missing, a geo key has no electricity price, or the power mix has a
+                baseload share and the baseload LCOE series lacks the year or a geo key.
 
         Notes:
-            - Requires self.config with geo_config settings for hydrogen ceiling percentile and trade parameters
+            - Requires self.config with geo_config settings for power mix, hydrogen ceiling percentile and trade
             - Requires self.country_mappings for regional groupings
             - Requires self.hydrogen_efficiency and self.hydrogen_capex_opex data for LCOH calculation
+            - Requires self.baseload_lcoe_by_geo_key whenever the power mix has a baseload share; the baseload share
+              is priced at the LCOE even where the grid is cheaper
+            - A region's ceiling is the ceiling percentile of its countries' LCOH, which a province inherits. At the
+              100th percentile it is raised to the highest LCOH of all the region's geo keys, provinces included, so
+              no price is capped by its own region; a partner region's ceiling under intraregional trade counts its
+              provinces too
         """
         logger = logging.getLogger(f"{__name__}.Environment.calculate_capped_hydrogen_costs_per_country")
+        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
         from steelo.domain.calculate_costs import (
             calculate_lcoh_from_electricity_country_level,
             calculate_regional_hydrogen_ceiling_country_level,
@@ -7875,37 +8930,68 @@ class Environment:
         if not hasattr(self.config, "geo_config"):
             raise ValueError("GeoConfig is required for hydrogen price calculation")
         geo_config = self.config.geo_config
+        target_year = self.year if year is None else year
 
-        # Step 1: Extract electricity prices and calculate LCOH for each country
-        electricity_by_country = {}
-        for iso3, year_costs in self.input_costs.items():
-            if iso3 is None:  # Skip None keys
+        # Step 1: electrolysis power per geo_key (country rows + any authored sub-national rows) at the power mix,
+        # then the LCOH from it
+        coverage = get_baseload_coverage(geo_config.included_power_mix)
+        if coverage > 0 and not self.baseload_lcoe_by_geo_key:
+            raise ValueError(
+                f"Power mix '{geo_config.included_power_mix}' prices hydrogen off the baseload LCOE; "
+                "call initiate_baseload_lcoe_by_geo_key first"
+            )
+        electricity_by_geo_key: dict[str, float] = {}
+        grid_by_geo_key: dict[str, float] = {}
+        lcoe_by_geo_key: dict[str, float | None] = {}
+        for geo_key, year_costs in self.input_costs.items():
+            if geo_key is None:
                 continue
-            if self.year in year_costs:
-                if "electricity" not in year_costs[self.year]:
-                    raise ValueError(f"Electricity price not found for country {iso3} in year {self.year}")
-                electricity_by_country[iso3] = year_costs[self.year]["electricity"]
-        lcoh_by_country = calculate_lcoh_from_electricity_country_level(
-            electricity_by_country=electricity_by_country,
+            if target_year in year_costs:
+                if "electricity" not in year_costs[target_year]:
+                    raise ValueError(f"Electricity price not found for {geo_key} in year {target_year}")
+                grid_price = year_costs[target_year]["electricity"]
+                grid_by_geo_key[geo_key] = grid_price
+                if coverage > 0:
+                    if (
+                        target_year not in self.baseload_lcoe_by_geo_key
+                        or geo_key not in self.baseload_lcoe_by_geo_key[target_year]
+                    ):
+                        raise ValueError(f"No baseload LCOE for {geo_key} in year {target_year}")
+                    lcoe = self.baseload_lcoe_by_geo_key[target_year][geo_key]
+                    lcoe_by_geo_key[geo_key] = lcoe
+                    electricity_by_geo_key[geo_key] = (1 - coverage) * grid_price + coverage * lcoe
+                else:
+                    lcoe_by_geo_key[geo_key] = None
+                    electricity_by_geo_key[geo_key] = grid_price
+        lcoh_by_geo_key = calculate_lcoh_from_electricity_country_level(
+            electricity_by_country=electricity_by_geo_key,
             hydrogen_efficiency=self.hydrogen_efficiency,
             hydrogen_capex_opex=self.hydrogen_capex_opex,
-            year=self.year,
+            year=target_year,
         )
 
-        # Step 2: Calculate regional hydrogen ceilings
+        # Step 2: ceilings from country-level LCOH; a province inherits its country's region and ceiling. At the
+        # 100th percentile, which promises no cap, the ceiling also counts the region's provinces, so none is capped
+        lcoh_by_country = {k: v for k, v in lcoh_by_geo_key.items() if ":" not in k}
         regional_ceilings, country_to_region = calculate_regional_hydrogen_ceiling_country_level(
             lcoh_by_country=lcoh_by_country,
             country_mappings=self.country_mappings,
             hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
         )
+        if geo_config.hydrogen_ceiling_percentile >= 100:
+            for geo_key, lcoh in lcoh_by_geo_key.items():
+                iso3 = geo_key.split(":", 1)[0]
+                if iso3 in country_to_region:  # an unmapped country stops the run in the cap below
+                    region = country_to_region[iso3]
+                    regional_ceilings[region] = max(regional_ceilings[region], lcoh)
 
         # Step 3: Apply hydrogen price caps
         # Filter out None values from intraregional_trade_matrix
         intraregional_trade_matrix_clean = {
             k: v for k, v in geo_config.intraregional_trade_matrix.items() if v is not None
         }
-        capped_hydrogen_prices = apply_hydrogen_price_cap_country_level(
-            lcoh_by_country=lcoh_by_country,
+        capped_hydrogen_prices, ceilings = apply_hydrogen_price_cap_country_level(
+            lcoh_by_country=lcoh_by_geo_key,
             regional_ceilings=regional_ceilings,
             country_to_region=country_to_region,
             intraregional_trade_allowed=geo_config.intraregional_trade_allowed,
@@ -7913,8 +8999,650 @@ class Environment:
             long_dist_pipeline_transport_cost=geo_config.long_dist_pipeline_transport_cost,
         )
 
+        price_inputs = {
+            geo_key: HydrogenPriceInputs(
+                coverage=coverage,
+                grid=grid_by_geo_key[geo_key],
+                lcoe=lcoe_by_geo_key[geo_key],
+                electricity=electricity_by_geo_key[geo_key],
+                lcoh=lcoh_by_geo_key[geo_key],
+                ceiling=ceilings[geo_key],
+                capped_lcoh=capped,
+            )
+            for geo_key, capped in capped_hydrogen_prices.items()
+        }
+        self.hydrogen_price_inputs_by_year[target_year] = price_inputs
+
         logger.info(f"Calculated capped hydrogen prices for {len(capped_hydrogen_prices)} countries")
+        energy_trace.country_hydrogen(
+            target_year,
+            geo_config.included_power_mix,
+            self.input_costs,
+            self.baseload_lcoe_by_geo_key,
+            self.hydrogen_efficiency,
+            self.hydrogen_capex_opex,
+            price_inputs,
+            lcoh_by_geo_key,
+            regional_ceilings,
+            country_to_region,
+            capped_hydrogen_prices,
+        )
         return capped_hydrogen_prices
+
+    def hydrogen_price_years(self) -> range:
+        """
+        The years the hydrogen price series covers.
+
+        Returns:
+            config.start_year through the last year present in input_costs.
+
+        Raises:
+            ValueError: If there is no config, the input costs are empty, or they end before the start year.
+
+        Notes:
+            An empty range would leave existing plants without a hydrogen price in any year, so it stops the
+            run here, naming both years, rather than later.
+        """
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to precompute hydrogen prices")
+        data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
+        if not data_years:
+            raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
+        start_year, last_year = int(self.config.start_year), int(max(data_years))
+        if last_year < start_year:
+            raise ValueError(
+                f"The input costs end in {last_year}, before the start year {start_year}; "
+                "hydrogen prices cannot be precomputed"
+            )
+        return range(start_year, last_year + 1)
+
+    def initiate_baseload_lcoe_by_geo_key(self, series: dict[Year, dict[str, float]]) -> None:
+        """
+        Store the baseload LCOE series the hydrogen price blends with the grid.
+
+        Args:
+            series: Year to geo key to baseload LCOE (USD/kWh), as
+                ``hydrogen_lcoe.baseload_lcoe_by_geo_key_series`` returns it.
+
+        Returns:
+            None.
+        """
+        self.baseload_lcoe_by_geo_key = series
+
+    def initiate_baseload_lcoe_grid(self, grid: xr.DataArray) -> None:
+        """
+        Store every year's baseload LCOE grid, from which new sites lock their power cost.
+
+        Args:
+            grid: The LCOE (year, lat, lon) in USD/MWh, as ``boa_lcoe.load_lcoe_grid`` returns it.
+
+        Returns:
+            None.
+        """
+        self.baseload_lcoe_grid = grid
+
+    def site_hydrogen_ceiling_years(self) -> range:
+        """
+        The lock years for which new sites' hydrogen ceilings are precomputed.
+
+        Returns:
+            The current year through the last year the electrolyser's electricity use, its cost for every geo key
+            and the input costs of every geo key all cover, and no further than
+            ``end_year + max(consideration_time, 2)``, the last year a lock can reach.
+
+        Raises:
+            ValueError: If there is no config, or an input is empty.
+
+        Notes:
+            Called in the first geospatial step, so the current year is the first year a site is priced. The LCOE
+            file does not limit the range: past its last year the yearly raster, the precompute and every lock
+            hold that year's LCOE.
+        """
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to precompute site hydrogen ceilings")
+        if not self.hydrogen_efficiency or not self.hydrogen_capex_opex or not self.input_costs:
+            raise ValueError("Hydrogen and input costs must be initiated before precomputing site hydrogen ceilings")
+        last_years = [
+            max(self.hydrogen_efficiency),
+            min(max(by_year) for by_year in self.hydrogen_capex_opex.values()),
+            min(max(by_year) for by_year in self.input_costs.values()),
+            self.config.end_year + max(self.config.consideration_time, 2),
+        ]
+        return range(int(self.year), int(min(last_years)) + 1)
+
+    def initiate_site_hydrogen_ceilings(
+        self, ceilings: dict[Year, dict[str, float]], region_by_iso3: dict[str, str]
+    ) -> None:
+        """
+        Store new sites' effective hydrogen ceilings for every lock year.
+
+        Args:
+            ceilings: Year to TIAM-UCL region to effective ceiling (USD/kg), as
+                ``geospatial_layers.site_hydrogen_ceilings`` returns it.
+            region_by_iso3: ISO3 to TIAM-UCL region, the mapping the ceilings were computed with.
+
+        Returns:
+            None.
+        """
+        self.site_hydrogen_ceilings = ceilings
+        self.site_hydrogen_region_by_iso3 = region_by_iso3
+
+    def site_hydrogen_ceilings_for_year(self, year: Year) -> dict[str, float]:
+        """
+        New sites' effective hydrogen ceiling per region for a year.
+
+        Args:
+            year: A lock year or a simulation year.
+
+        Returns:
+            TIAM-UCL region to ceiling (USD/kg); a year past the last stored year takes that year's.
+
+        Raises:
+            ValueError: If the ceilings were not precomputed.
+            KeyError: If the year is inside the stored range but absent from it.
+        """
+        if not self.site_hydrogen_ceilings:
+            raise ValueError("Site hydrogen ceilings not precomputed; the first geospatial step stores them")
+        return self.site_hydrogen_ceilings[min(year, max(self.site_hydrogen_ceilings))]
+
+    def captive_energy_at(self, location: "Location", year: Year) -> CaptiveEnergy:
+        """
+        The power system and electrolyser stack a new site at a location locks in a year.
+
+        Args:
+            location: The site; ``lat`` and ``lon`` are a cell of the LCOE grid.
+            year: The lock year: the expected construction start, or the start of a later investment.
+
+        Returns:
+            The stack: the cell's LCOE for a system built in ``year``, the electrolyser's use and cost of
+            ``year``, and the region's ceiling of ``year`` as a contract when the site's own hydrogen price in
+            ``year`` is above it.
+
+        Raises:
+            ValueError: If the cell's LCOE in ``year`` is not finite, or no electrolyser cost row covers the
+                site's geo key or country.
+            KeyError: If the site's cell is not on the LCOE grid, or its country has no ceiling region.
+
+        Notes:
+            The grid price and the electrolyser cost resolve at the site's geo key, else its country, as every
+            other carrier and subsidy of the site. The electrolyser's use and cost and the ceiling hold their
+            last data year past it; the grid price holds the last input-cost year.
+        """
+        from steelo.adapters.geospatial import boa_lcoe
+        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+        assert self.config is not None
+        coverage = get_baseload_coverage(self.config.geo_config.included_power_mix)
+        lcoe = 0.0
+        if coverage > 0:
+            assert self.baseload_lcoe_grid is not None, "the baseload LCOE grid is loaded at bootstrap"
+            lcoe_per_mwh = boa_lcoe.lcoe_at_cell(self.baseload_lcoe_grid, location.lat, location.lon, year)
+            if not math.isfinite(lcoe_per_mwh):
+                raise ValueError(
+                    f"No finite baseload LCOE at ({location.lat}, {location.lon}) for {year}: "
+                    f"{location.geo_key} cannot lock its power cost"
+                )
+            lcoe = lcoe_per_mwh * PERMWh_TO_PERkWh
+        capex_opex_key = location.geo_key if location.geo_key in self.hydrogen_capex_opex else location.iso3
+        if capex_opex_key not in self.hydrogen_capex_opex:
+            raise ValueError(f"No electrolyser cost row for {location.geo_key} or {location.iso3}")
+        capex_opex = self.hydrogen_capex_opex[capex_opex_key]
+        stack = CaptiveEnergy(
+            lock_year=year,
+            coverage=coverage,
+            lcoe=lcoe,
+            electrolyser_use=self.hydrogen_efficiency[min(year, max(self.hydrogen_efficiency))],
+            electrolyser_cost=capex_opex[min(year, max(capex_opex))],
+            hydrogen_contract=None,
+        )
+        ceiling = self.site_hydrogen_ceilings_for_year(year)[self.site_hydrogen_region_by_iso3[location.iso3]]
+        own_hydrogen = stack.hydrogen(self.grid_electricity_for_year(location, year))
+        if own_hydrogen > ceiling * T_TO_KG:
+            return dataclasses.replace(stack, hydrogen_contract=ceiling)
+        return stack
+
+    def grid_electricity_for_year(self, location: "Location", year: Year) -> float:
+        """
+        The grid price at a location for a year, before any subsidy.
+
+        Args:
+            location: Plant or site location.
+            year: The year to price; clamped to the last input-cost year.
+
+        Returns:
+            The input costs' electricity price at the location's geo key, else its country (USD/kWh).
+        """
+        key = location.geo_key if location.geo_key in self.input_costs else location.iso3
+        year_costs = self.input_costs[key]
+        return abs(year_costs[min(year, max(year_costs))]["electricity"])
+
+    def initiate_capped_hydrogen_costs_by_year(self) -> None:
+        """
+        Precompute the capped-LCOH series for the full data horizon.
+
+        Every input to the capped hydrogen price is exogenous (Excel trajectories, the
+        baseload LCOE series, static geo config), so the whole series is knowable at
+        bootstrap. Covers config.start_year through the last year present in input_costs.
+
+        Returns:
+            None. Fills self.capped_hydrogen_costs_by_year and self.hydrogen_price_inputs_by_year.
+
+        Notes:
+            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex, country_mappings
+            and, for a power mix with a baseload share, baseload_lcoe_by_geo_key to be
+            initiated first; raises if input costs are empty. Logs one INFO line naming the
+            power mix and how electrolysis power is priced.
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.initiate_capped_hydrogen_costs_by_year")
+        from steelo.adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+        self.capped_hydrogen_costs_by_year = {
+            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y)) for y in self.hydrogen_price_years()
+        }
+        self.clear_reductant_score_cache()
+        assert self.config is not None  # hydrogen_price_years raised otherwise
+        geo_config = self.config.geo_config
+        coverage = get_baseload_coverage(geo_config.included_power_mix)
+        if coverage > 0:
+            logger.info(
+                "[H2 PRICE] Existing plants' hydrogen priced at '%s': coverage %g at each geo key's LCOE "
+                "percentile %g, the rest at the grid price",
+                geo_config.included_power_mix,
+                coverage,
+                geo_config.hydrogen_lcoe_percentile,
+            )
+        else:
+            logger.info(
+                "[H2 PRICE] Existing plants' hydrogen priced at grid electricity ('%s')", geo_config.included_power_mix
+            )
+
+    def export_lcoh_existing_plants(self, path: Path) -> None:
+        """
+        Write existing plants' hydrogen price and its inputs per country and geo unit, for the simulated years.
+
+        Args:
+            path: Output CSV, ``<output_dir>/data/LCOH/lcoh_existing_plants.csv``.
+
+        Returns:
+            None. One row per priced geo key per year; power prices in USD/MWh, hydrogen in USD/kg.
+
+        Notes:
+            Reads ``hydrogen_price_inputs_by_year``, which the precompute fills to the last input-cost year;
+            the file keeps only the simulated years, so it stops at that year when the run ends later. A geo
+            unit's CAPEX/OPEX is its own row where the master has one, else its country's. Numbers are written
+            with four decimals, like the cell-based files. Logs one INFO line naming the file and the first and
+            last year written.
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.export_lcoh_existing_plants")
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to export existing plants' hydrogen prices")
+        geo_config = self.config.geo_config
+        start_year, end_year = int(self.config.start_year), int(self.config.end_year)
+        years = sorted(y for y in self.hydrogen_price_inputs_by_year if start_year <= int(y) <= end_year)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "level",
+                    "country",
+                    "subregion",
+                    "year",
+                    "baseload_coverage_pct",
+                    "grid_share_pct",
+                    "hydrogen_ceiling_pct",
+                    "intraregional_trade_allowed",
+                    "hydrogen_lcoe_percentile",
+                    "grid_usd_per_mwh",
+                    "pure_lcoe_usd_per_mwh",
+                    "grid_mix_usd_per_mwh",
+                    "electrolyser_kwh_per_kg",
+                    "capex_opex_usd_per_kg",
+                    "uncapped_usd_per_kg",
+                    "ceiling_usd_per_kg",
+                    "capped_usd_per_kg",
+                ]
+            )
+            for year in years:
+                for geo_key, row in sorted(self.hydrogen_price_inputs_by_year[year].items()):
+                    iso3, _, code = geo_key.partition(":")
+                    lcoe = row["lcoe"]
+                    capex_opex = self.hydrogen_capex_opex[geo_key if geo_key in self.hydrogen_capex_opex else iso3]
+                    writer.writerow(
+                        [
+                            "geo_unit" if code else "country",
+                            iso3,
+                            code,
+                            int(year),
+                            *(f"{value:.4f}" for value in (row["coverage"] * 100, 100 - row["coverage"] * 100)),
+                            f"{geo_config.hydrogen_ceiling_percentile:.4f}",
+                            geo_config.intraregional_trade_allowed,
+                            f"{geo_config.hydrogen_lcoe_percentile:.4f}",
+                            f"{row['grid'] * PERkWh_TO_PERMWh:.4f}",
+                            "" if lcoe is None else f"{lcoe * PERkWh_TO_PERMWh:.4f}",
+                            *(
+                                f"{value:.4f}"
+                                for value in (
+                                    row["electricity"] * PERkWh_TO_PERMWh,
+                                    self.hydrogen_efficiency[year] * MWH_TO_KWH,
+                                    capex_opex[year],
+                                    row["lcoh"],
+                                    row["ceiling"],
+                                    row["capped_lcoh"],
+                                )
+                            ),
+                        ]
+                    )
+        logger.info(f"Wrote existing plants' hydrogen prices, {int(years[0])} to {int(years[-1])}, to {path}")
+
+    def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
+        """
+        Look up the precomputed capped LCOH dict (geo_key -> USD/kg) for a year.
+
+        Args:
+            year: Any simulation or forecast year.
+
+        Returns:
+            The precomputed dict for that year; beyond the data horizon the last
+            covered year's prices apply (trajectories end in 2050, NPVs look past it).
+
+        Notes:
+            Raises if the series was not precomputed; years inside the covered range
+            but absent from it raise KeyError rather than silently degrading.
+        """
+        if not self.capped_hydrogen_costs_by_year:
+            raise ValueError("Capped hydrogen costs not precomputed; call initiate_capped_hydrogen_costs_by_year first")
+        last_year = max(self.capped_hydrogen_costs_by_year)
+        if year > last_year:
+            return self.capped_hydrogen_costs_by_year[last_year]
+        return self.capped_hydrogen_costs_by_year[year]
+
+    def carbon_price_for_year(self, iso3: str, year: Year) -> float:
+        """
+        Country carbon price for a year, clamped to the last covered year.
+
+        Args:
+            iso3: Country code.
+            year: Any simulation or forecast year.
+
+        Returns:
+            The exogenous carbon price; 0.0 for countries without a carbon-price
+            series (no policy). Years beyond the series reuse its last value; years
+            missing inside the covered range raise ValueError rather than pricing
+            carbon as zero.
+        """
+        return carbon_price_from_series(self.carbon_costs.get(iso3), year)
+
+    def _unsubsidised_energy_costs_for_year(self, location: "Location", year: Year) -> dict[str, float]:
+        """
+        Exogenous per-carrier prices at a location for a year, before any subsidy.
+
+        Args:
+            location: Plant/site location (geo_key resolution, finest available).
+            year: The year to price; clamped to the input-cost data horizon.
+
+        Returns:
+            Normalised carrier -> price (sign handling as in set_energy_costs),
+            hydrogen from the precomputed capped-LCOH series.
+        """
+        year_costs = location.resolve(self.input_costs, what="input costs")
+        if year_costs is None:
+            raise ValueError(f"No input costs found for {location.geo_key}")
+        clamped_year = min(year, max(year_costs))
+        base: dict[str, float] = {}
+        for raw_key, price in year_costs[clamped_year].items():
+            normalized_key = normalize_name(raw_key)
+            base[normalized_key] = price if normalized_key.startswith("co2") else abs(price)
+        capped_lcoh = location.resolve(self.capped_hydrogen_costs_for_year(year), what="hydrogen price")
+        if capped_lcoh is None:
+            raise ValueError(f"No hydrogen price for {location.geo_key}")
+        base["hydrogen"] = capped_lcoh * T_TO_KG
+        return base
+
+    def site_energy_costs_for_year(
+        self,
+        location: "Location",
+        year: Year,
+        captive: CaptiveEnergy | None = None,
+    ) -> dict[str, float]:
+        """
+        Exogenous per-carrier prices at a location for a year, before any subsidy, with a new site's own prices.
+
+        Args:
+            location: Plant/site location (geo_key resolution, finest available).
+            year: The year to price.
+            captive: A new site's locked stack. Electricity and hydrogen of ``year``
+                come from it and the year's grid price at the location; None prices
+                every carrier from the input costs and the capped hydrogen series.
+
+        Returns:
+            Normalised carrier -> price for that year.
+        """
+        base = self._unsubsidised_energy_costs_for_year(location, year)
+        if captive is not None:
+            grid = base["electricity"]
+            base["electricity"] = captive.electricity(grid)
+            base["hydrogen"] = captive.hydrogen(grid)
+        return base
+
+    def candidate_energy_costs_for_year(
+        self,
+        location: "Location",
+        technology_name: str,
+        year: Year,
+        captive: CaptiveEnergy | None = None,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """
+        Candidate energy prices (input and output side) at a location for any year.
+
+        Mirrors the year-start price refresh generalised to a future year: the
+        exogenous input-cost trajectory at ``year`` (clamped to its last data year,
+        sign handling as in set_energy_costs), hydrogen from the precomputed
+        capped-LCOH series, and energy-carrier subsidies scoped to the candidate
+        technology filtered for ``year`` (the A2 treatment, per year).
+
+        Args:
+            location: Plant/site location (geo_key resolution, finest available).
+            technology_name: Candidate technology whose energy subsidies apply.
+            year: The year to price.
+            captive: A new site's own prices, see site_energy_costs_for_year; year-t
+                subsidies apply after them.
+
+        Returns:
+            (input_costs, output_costs) per normalised carrier for that year.
+
+        Notes:
+            Years missing inside the input-cost trajectory raise (no silent gaps).
+        """
+        base = self.site_energy_costs_for_year(location, year, captive)
+
+        active_subsidies: dict[str, list[Subsidy]] = {}
+        for carrier, subsidies_by_geo in self.energy_subsidies.items():
+            subsidies = collect_subsidies_for_geo(subsidies_by_geo, location.geo_key).get(technology_name, [])
+            active = filter_subsidies_for_year(subsidies, year)
+            if active:
+                active_subsidies[carrier] = active
+        if not active_subsidies:
+            return base, base.copy()
+        input_costs, output_costs, _ = get_subsidised_energy_costs(base, active_subsidies)
+        return input_costs, output_costs
+
+    def reductant_score_series(
+        self,
+        location: "Location",
+        technology_name: str,
+        output_shares: dict[str, float],
+        start_year: Year,
+        end_year: Year,
+        captive: CaptiveEnergy | None = None,
+    ) -> "ReductantScoreSeries":
+        """
+        Year-wise reductant-optimised score series for a candidate technology.
+
+        For each year in [start_year, end_year) the per-(charge, reductant) score
+        (energy VOPEX + carbon x direct GHG + secondary-output adjustment) is
+        evaluated at that year's exogenous prices; the reductant is picked with the
+        same rule the annual re-pick uses (per-charge argmin, mode across charges),
+        and the year's value is the output-share-weighted score of that pick. The
+        NPV built on this series therefore forecasts exactly what the committed
+        asset will do under the annual re-pick.
+
+        Args:
+            location: Plant/site location.
+            technology_name: Candidate technology.
+            output_shares: Metallic charge -> share of product (from the candidate
+                BOM build; reductant-invariant).
+            start_year: First operating year (inclusive).
+            end_year: Last operating year (exclusive).
+            captive: A new site's own prices, see site_energy_costs_for_year.
+
+        Returns:
+            ReductantScoreSeries with one score and one pick per operating year.
+
+        Notes:
+            Missing EF rows raise (hard lookup); bootstrap validation guarantees
+            coverage for real data.
+        """
+        dynamic_business_case = self.dynamic_feedstocks.get(technology_name) or self.dynamic_feedstocks.get(
+            technology_name.lower()
+        )
+        if not dynamic_business_case:
+            raise ValueError(f"No dynamic business case for technology '{technology_name}'")
+        if self.config is None:
+            raise ValueError("SimulationConfig is required for reductant score series")
+        self._validate_reductant_score_cache()
+        cache = self._reductant_score_cache
+        # The year's pick and scores depend on the site only through its geo key and its stack,
+        # and not on output_shares (those only weight the picked scores).
+        site_key = (location.geo_key, technology_name, captive)
+        scores: list[float] = []
+        picks: list[str] = []
+        for year in range(int(start_year), int(end_year)):
+            year_key = (*site_key, year)
+            entry = cache.get(year_key)
+            if entry is None:
+                entry = self._reductant_pick_and_scores_for_year(
+                    location,
+                    technology_name,
+                    dynamic_business_case,
+                    Year(year),
+                    captive,
+                )
+                if len(cache) >= self._REDUCTANT_CACHE_MAX_ENTRIES:
+                    cache.clear()
+                cache[year_key] = entry
+            pick, score_by_input = entry
+            if pick is None:
+                scores.append(0.0)
+                picks.append("")
+                continue
+            value = sum(
+                share * score_by_input[charge][pick]
+                for charge, share in output_shares.items()
+                if pick in score_by_input.get(charge, {})
+            )
+            scores.append(value)
+            picks.append(str(pick))
+        return ReductantScoreSeries(scores=scores, picks=picks)
+
+    _REDUCTANT_CACHE_MAX_ENTRIES = 200_000
+    _reductant_cache_token: tuple | None = None
+    _direct_ghg_lookup: dict[tuple[str, str, str], float]
+    _compiled_reductant_cases: dict[str, tuple[list["PrimaryFeedstock"], list[CompiledBusinessCase]]]
+
+    def _validate_reductant_score_cache(self) -> None:
+        """Drop the reductant-score memo when an input it was computed from has been replaced.
+
+        The memo covers exogenous data that is set once at start-up (input costs, hydrogen costs,
+        subsidies, carbon costs, business cases, emission factors) and two config values. It is
+        keyed on the identity of those containers, so replacing one invalidates the memo.
+        Mutating one in place does not; call ``clear_reductant_score_cache`` after doing that.
+        """
+        assert self.config is not None
+        token = (
+            id(self.input_costs),
+            id(self.capped_hydrogen_costs_by_year),
+            id(self.energy_subsidies),
+            id(self.carbon_costs),
+            id(self.dynamic_feedstocks),
+            id(self.technology_emission_factors),
+            self.config.chosen_emissions_boundary_for_carbon_costs,
+            self.config.disposal_cost_outputs,
+        )
+        if token != self._reductant_cache_token:
+            self.clear_reductant_score_cache()
+            self._direct_ghg_lookup = build_direct_ghg_lookup(
+                self.technology_emission_factors,
+                self.config.chosen_emissions_boundary_for_carbon_costs,
+            )
+            self._reductant_cache_token = token
+
+    def clear_reductant_score_cache(self) -> None:
+        """Forget memoised reductant scores; needed only after mutating exogenous inputs in place."""
+        self._reductant_score_cache: dict[tuple, tuple[str | None, dict[str, dict[str, float]]]] = {}
+        self._reductant_cache_token = None
+        self._direct_ghg_lookup = {}
+        self._compiled_reductant_cases = {}
+
+    def _compiled_business_cases(
+        self, technology_name: str, dynamic_business_case: list["PrimaryFeedstock"]
+    ) -> list[CompiledBusinessCase]:
+        """The technology's business cases in the form the scorer needs, built once per list.
+
+        A replaced list, or one that changed length, is compiled again. Editing a business case in
+        place needs ``clear_reductant_score_cache`` like any other exogenous input.
+        """
+        entry = self._compiled_reductant_cases.get(technology_name)
+        if entry is not None and entry[0] is dynamic_business_case and len(entry[1]) == len(dynamic_business_case):
+            return entry[1]
+        compiled = compile_reductant_business_cases(dynamic_business_case)
+        self._compiled_reductant_cases[technology_name] = (dynamic_business_case, compiled)
+        return compiled
+
+    def _reductant_pick_and_scores_for_year(
+        self,
+        location: "Location",
+        technology_name: str,
+        dynamic_business_case: list["PrimaryFeedstock"],
+        year: Year,
+        captive: CaptiveEnergy | None,
+    ) -> tuple[str | None, dict[str, dict[str, float]]]:
+        """Reductant pick and per-(charge, reductant) scores of a candidate technology in one year.
+
+        The pick is the mode over charges of each charge's cheapest reductant, as in the annual re-pick.
+
+        Args:
+            location: Plant/site location.
+            technology_name: Candidate technology.
+            dynamic_business_case: The technology's business cases.
+            year: The year to score.
+            captive: A new site's own prices, see site_energy_costs_for_year.
+
+        Returns:
+            (pick, score_by_input); the pick is None when no charge has a scored reductant.
+        """
+        assert self.config is not None
+        input_costs, output_costs = self.candidate_energy_costs_for_year(
+            location,
+            technology_name,
+            year,
+            captive=captive,
+        )
+        carbon_price = self.carbon_price_for_year(location.iso3, year)
+        year_scores = score_compiled_reductant_business_cases(
+            self._compiled_business_cases(technology_name, dynamic_business_case),
+            input_costs,
+            output_costs,
+            carbon_price,
+            self._direct_ghg_lookup,
+            self.config.disposal_cost_outputs,
+        )
+        mins = [min(costs, key=lambda k: costs[k]) for costs in year_scores.score_by_input.values() if costs]
+        counts = Counter(mins)
+        if not counts:
+            return None, year_scores.score_by_input
+        pick, _ = counts.most_common(1)[0]
+        return pick, year_scores.score_by_input
 
     def get_eu_countries(self) -> list[str]:
         logger = logging.getLogger(f"{__name__}.Environment.get_eu_countries")
@@ -7942,22 +9670,37 @@ class Environment:
 
         Side Effects:
             - Updates fg.chosen_reductant for each furnace group via generate_energy_vopex_by_reductant()
+              (closed and discarded furnace groups keep their previous chosen_reductant)
             - Updates self.most_common_reductant_by_tech with aggregated reductant data
         """
 
         for p in world_plants:
+            carbon_price = self.carbon_price_for_year(p.location.iso3, self.year)
             for fg in p.furnace_groups:
                 fg.technology.dynamic_business_case = self.dynamic_feedstocks.get(
                     fg.technology.name, self.dynamic_feedstocks.get(fg.technology.name.lower(), [])
                 )
                 # print(fg.technology.dynamic_business_case[-1].emissions)
                 fg.technology.set_product(self.technology_to_product)
-                fg.generate_energy_vopex_by_reductant()
+                # Closed/discarded FGs keep their frozen reductant choice; the dynamic
+                # business case and breakdown keys are still attached for other readers.
+                if fg.status.lower() not in ("closed", "discarded"):
+                    fg.generate_energy_vopex_by_reductant(
+                        carbon_price=carbon_price,
+                        technology_emission_factors=self.technology_emission_factors,
+                        chosen_emissions_boundary=self.config.chosen_emissions_boundary_for_carbon_costs,
+                    )
                 fg.cost_breakdown_keys = self.cost_breakdown_keys
                 fg.carbon_breakdown_keys = self.carbon_breakdown_keys
 
         # Update environment-level most common reductant tracking after all furnace groups are updated
         self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
+        logger = logging.getLogger(f"{__name__}.Environment.set_primary_feedstocks_in_furnace_groups")
+        logger.debug(
+            "[REDUCTANT FLEET] year=%s most_common_reductant_by_tech=%s",
+            self.year,
+            self.most_common_reductant_by_tech,
+        )
 
     def _generate_cost_dict(
         self,
@@ -7998,7 +9741,7 @@ class Environment:
                     continue
                 if fg.lifetime.start <= self.year + lag:
                     if not fg.bill_of_materials:
-                        bom, util_rate, reductant = self.get_bom_from_avg_boms(
+                        bom, util_rate, reductant, _output_shares = self.get_bom_from_avg_boms(
                             fg.energy_costs,
                             tech=fg.technology.name,
                             capacity=1000,
@@ -8453,8 +10196,9 @@ class Environment:
         """
         Get the most common reductant for each technology across all plants in the simulation.
 
-        Aggregates reductant data from all furnace groups across all plants in the simulation
-        to determine the most frequently used reductant for each technology type.
+        Aggregates reductant data from active-status furnace groups across all plants in the
+        simulation to determine the most frequently used reductant for each technology type.
+        Closed and discarded furnace groups do not vote.
 
         Args:
             world_plants (list[Plant]): All plants in the simulation to aggregate reductant data from.
@@ -8475,7 +10219,7 @@ class Environment:
         # Collect all furnace groups from all plants
         all_furnace_groups = [fg for plant in world_plants for fg in plant.furnace_groups]
 
-        return get_most_common_reductant_by_technology(all_furnace_groups)
+        return get_most_common_reductant_by_technology(all_furnace_groups, self.config.active_statuses)
 
     def update_steel_capex_reduction_ratio(self) -> None:
         """
@@ -8789,7 +10533,8 @@ class Environment:
             - Sets self.avg_boms with the computed average BOMs.
             - Sets self.avg_utilization with average utilization rates per technology.
             - Adds hardcoded fallback BOMs for technologies in
-              get_available_fallback_technologies() that have no data.
+              get_available_fallback_technologies() that have no data, marked
+              cost_basis="per_output" (fallback costs are authored USD/t of product).
 
         Raises:
             ValueError: If no average BOMs can be generated (no active furnaces found).
@@ -8890,18 +10635,18 @@ class Environment:
             bof_stats = stats.get("BOF")
             if bof_stats:
                 diag.write_json(["avg_boms", f"{year_int}.json"], {"BOF": bof_stats})
-                if year_int == 2049:
-                    self._diag_bof_baseline_2049 = copy.deepcopy(bof_stats)
-                elif year_int == 2050 and self._diag_bof_baseline_2049:
-                    base_cost = self._diag_bof_baseline_2049.get("hot_metal", {}).get("unit_cost")
+                if year_int == 2059:
+                    self._diag_bof_baseline_2059 = copy.deepcopy(bof_stats)
+                elif year_int == 2060 and self._diag_bof_baseline_2059:
+                    base_cost = self._diag_bof_baseline_2059.get("hot_metal", {}).get("unit_cost")
                     new_cost = bof_stats.get("hot_metal", {}).get("unit_cost")
                     if base_cost and new_cost:
                         delta = new_cost - base_cost
                         pct = (delta / base_cost * 100) if base_cost else None
                         logger.warning(
                             "[DIAGNOSTICS][AVG_BOM] BOF hot_metal unit_cost jump year %s -> %s: %.2f USD/t (%+.1f%%)",
-                            2049,
-                            2050,
+                            2059,
+                            2060,
                             delta,
                             pct if pct is not None else 0.0,
                         )
@@ -8944,18 +10689,21 @@ class Environment:
                 # Check if the technology has a default metallic charge defined
                 if tech in self.default_metallic_charge_per_technology:
                     metallic_charge = self.default_metallic_charge_per_technology[tech]
+                    # Fallback costs are authored USD/t of product; mark the basis for get_bom_from_avg_boms.
                     if iso3 is None:
                         # Use average across all regions
                         avg_cost = self.get_average_fallback_material_cost(technology=tech)
                         if avg_cost is not None:
                             bom[metallic_charge]["unit_cost"] = avg_cost
                             bom[metallic_charge]["input_share_pct"] = 1.0
+                            bom[metallic_charge]["cost_basis"] = "per_output"
                     else:
                         # Use region-specific cost (Note: get_available_fallback_technologies doesn't take iso3/tech params)
                         specific_cost = self.get_fallback_material_cost(iso3, tech)
                         if specific_cost is not None:
                             bom[metallic_charge]["unit_cost"] = specific_cost
                             bom[metallic_charge]["input_share_pct"] = 1.0
+                            bom[metallic_charge]["cost_basis"] = "per_output"
                 else:
                     logger.warning(f"Technology {tech} not found in default_metallic_charge_per_technology mapping")
                 self.avg_boms[tech] = bom
@@ -9046,7 +10794,7 @@ class Environment:
 
     def get_bom_from_avg_boms(
         self, energy_costs: dict[str, float], tech: str, capacity: float, most_common_reductant: str | None = None
-    ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]:
+    ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]]:
         """Construct a complete bill of materials for a furnace from technology averages.
 
         Generates a detailed BOM by combining: (1) average material mix from avg_boms,
@@ -9058,7 +10806,7 @@ class Environment:
             1. Calculate total energy costs for each (material, reductant) combination
             2. Identify the most cost-effective reductant
             3. Map materials to process efficiencies for the chosen reductant
-            4. Scale material demands by: avg_share × capacity × process_efficiency
+            4. Scale material demands by: output_share × capacity × process_efficiency
             5. Calculate energy demands and costs using the chosen reductant's energy profile
 
         Args:
@@ -9071,7 +10819,9 @@ class Environment:
                 accepts all feedstocks and extracts a reductant from available data.
 
         Returns:
-            Tuple of (bom_dict, utilization_rate, chosen_reductant) where:
+            Tuple of (bom_dict, utilization_rate, chosen_reductant, output_shares) where
+            output_shares maps normalised metallic charge -> share of product (reductant-
+            invariant; weights the year-wise reductant score series), and:
                 - bom_dict: BOM structure with materials and energy:
                     {
                         "materials": {
@@ -9105,11 +10855,14 @@ class Environment:
             - Assumes avg_boms already populated (call generate_average_boms() first).
             - Material demand shares from avg_boms should sum to 1.0 per technology.
             - Process efficiencies are tons_input/ton_output (>1 for losses, <1 for enrichment).
+            - Fleet unit costs are per tonne of input; entries marked
+              cost_basis="per_output" are charged on output volume instead.
         """
         logger = logging.getLogger(f"{__name__}.get_bom_from_avg_boms")
 
         feedstocks_for_tech = self.dynamic_feedstocks.get(tech, self.dynamic_feedstocks.get(tech.lower(), []))
         bom_dict: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
+        output_shares: dict[str, float] = {}
 
         # Step 3a: Resolve reductant
         can_reconstruct_energy = bool(feedstocks_for_tech)
@@ -9277,6 +11030,7 @@ class Environment:
                 "input_share_pct": float(input_share_pct),
                 "eff": eff,
                 "unit_cost": float(unit_cost),
+                "cost_basis": share_data.get("cost_basis", "per_input"),
             }
             logger.debug(
                 "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s pf=%s eff=%.4f input_share=%.4f",
@@ -9340,14 +11094,18 @@ class Environment:
             for norm_mc, data in surviving.items():
                 feedstock = data["feedstock_key"]
                 eff = data["eff"]
-                input_share_pct_val = data["input_share_pct"]
                 unit_cost_val = data["unit_cost"]
                 matched_pf = data["pf"]
                 o_share = output_shares[norm_mc]
 
-                # Materials
-                material_demand = input_share_pct_val * capacity * eff
-                material_cost = unit_cost_val * material_demand
+                # Materials — input_share_pct is a share of fleet *input* tonnes, which
+                # already embed eff; scale by output share so eff is applied exactly once
+                material_demand = o_share * capacity * eff
+                if data["cost_basis"] == "per_output":
+                    # Authored USD/t of product (USD/t HM) — charge on output volume.
+                    material_cost = unit_cost_val * o_share * capacity
+                else:
+                    material_cost = unit_cost_val * material_demand
 
                 bom_dict["materials"][feedstock] = {
                     "demand": material_demand,
@@ -9356,19 +11114,19 @@ class Environment:
                     "unit_cost": material_cost / capacity,
                     "unit_material_cost": material_cost / capacity,
                     "product_volume": capacity,
-                    "demand_share_pct": input_share_pct_val * eff,
+                    "demand_share_pct": o_share * eff,
                 }
                 logger.debug(
-                    "[AVG_BOM_DIAG] material: tech=%s mc=%s input_share=%.4f eff=%.4f "
+                    "[AVG_BOM_DIAG] material: tech=%s mc=%s o_share=%.4f eff=%.4f "
                     "demand=%.2f unit_cost_input=%.2f unit_cost_output=%.2f demand_share=%.4f",
                     tech,
                     feedstock,
-                    input_share_pct_val,
+                    o_share,
                     eff,
                     material_demand,
                     unit_cost_val,
                     material_cost / capacity,
-                    input_share_pct_val * eff,
+                    o_share * eff,
                 )
 
                 # Energy — accumulate from PrimaryFeedstock
@@ -9454,7 +11212,7 @@ class Environment:
             most_common_reductant = ""
             logger.debug("[BOM] Reductant was still None at return, using empty string")
 
-        return bom_dict, utilization, most_common_reductant
+        return bom_dict, utilization, most_common_reductant, output_shares
 
     def calculate_average_commodity_price_per_region(
         self, world_plants: list[Plant], world_suppliers: list[Supplier], year: Year
@@ -9713,14 +11471,141 @@ class Environment:
         for pl in world_plants:
             if pl.location.iso3 not in self.carbon_costs:
                 continue
-            year_key = Year(self.year)
-            if year_key not in self.carbon_costs[pl.location.iso3]:
-                continue
+            carbon_price = self.carbon_price_for_year(pl.location.iso3, Year(self.year))
             for fg in pl.furnace_groups:
                 fg.set_carbon_costs_for_emissions(
-                    carbon_price=self.carbon_costs[pl.location.iso3][year_key],
+                    carbon_price=carbon_price,
                     chosen_emissions_boundary_for_carbon_costs=self.config.chosen_emissions_boundary_for_carbon_costs,
                 )
+
+    def update_trade_carbon_costs_of_furnace_groups(self, world_plants: list[Plant]) -> None:
+        """
+        Set each furnace group's scale-free direct emission intensity and this year's trade carbon cost.
+
+        Args:
+            world_plants: Plants whose furnace groups are refreshed.
+
+        Notes:
+            The price is the plant's carbon cost series at the current year, the same source as
+            ``Plant.update_furnace_group_carbon_costs`` (so the PRI to USA fallback carries over); a
+            plant without a series has no carbon policy and prices at 0.0. Furnace groups without
+            bill-of-materials shares fall back to the fleet-average input shares of their technology,
+            else equal shares; in the first year every furnace group takes a fallback. Only furnace
+            groups in an active status are refreshed, since only they enter the trade LP; the others
+            keep their last values until they are active again.
+        """
+        logger = logging.getLogger(f"{__name__}.update_trade_carbon_costs_of_furnace_groups")
+        ef_by_key = build_direct_ghg_lookup(
+            self.technology_emission_factors, self.config.chosen_emissions_boundary_for_carbon_costs
+        )
+        # Hardcoded fallback average BOMs without a cost carry no input share; they are skipped
+        fallback_shares_by_tech = {
+            tech: {
+                normalize_name(charge): data["input_share_pct"]
+                for charge, data in shares.items()
+                if "input_share_pct" in data
+            }
+            for tech, shares in self.avg_boms.items()
+        }
+        source_counts = {"bom": 0, "avg_bom": 0, "equal": 0}
+        year = Year(self.year)
+        for plant in world_plants:
+            price = carbon_price_from_series(plant.carbon_cost_series, year)
+            for fg in plant.furnace_groups:
+                if fg.status.lower() not in self.config.active_statuses:
+                    continue
+                intensity, source = fg._direct_emission_intensity_with_source(
+                    ef_by_key, fallback_shares_by_tech.get(fg.technology.name)
+                )
+                fg.trade_emission_intensity = intensity
+                fg.trade_carbon_cost_per_unit = intensity * price
+                source_counts[source] += 1
+                if source != "bom":
+                    logger.debug(
+                        "fg=%s tech=%s reductant=%s iso3=%s intensity=%.4f price=%.2f cost=%.2f source=%s",
+                        fg.furnace_group_id,
+                        fg.technology.name,
+                        fg.chosen_reductant,
+                        plant.location.iso3,
+                        intensity,
+                        price,
+                        fg.trade_carbon_cost_per_unit,
+                        source,
+                    )
+        logger.info(
+            "Trade carbon costs refreshed for %d furnace groups in %s: %d from BOM shares, "
+            "%d from fleet-average shares, %d from equal shares",
+            sum(source_counts.values()),
+            year,
+            source_counts["bom"],
+            source_counts["avg_bom"],
+            source_counts["equal"],
+        )
+
+    def fill_missing_upstream_embedded_carbon(self, world_plants: list[Plant]) -> None:
+        """
+        Give active furnace groups without last year's upstream carbon the average of their peers.
+
+        Args:
+            world_plants: Plants whose active furnace groups are filled.
+
+        Notes:
+            A furnace group observed last year is one whose ``upstream_carbon_year`` is the previous
+            year. Every other active furnace group (idle, new, or back from mothballing) would
+            otherwise enter the carbon border charge with no upstream emissions, so a steel furnace
+            would be charged on its own small stage alone. It takes the capacity-weighted mean of the
+            observed furnace groups of its technology in its country, else of its technology
+            worldwide, else keeps 0.0. Both fields come from the same peers so intensity and carbon
+            paid stay consistent. ``upstream_carbon_year`` is left unchanged, so filled values never
+            count as observations. In the first year nothing is observed and every value stays 0.0.
+        """
+        logger = logging.getLogger(f"{__name__}.fill_missing_upstream_embedded_carbon")
+        observed_year = int(self.year) - 1
+        active = [
+            (plant.location.iso3, fg)
+            for plant in world_plants
+            for fg in plant.furnace_groups
+            if fg.status.lower() in self.config.active_statuses
+        ]
+        # (emissions x capacity, carbon paid x capacity, capacity) per peer group
+        country_sums: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        global_sums: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        missing = []
+        for iso3, fg in active:
+            if fg.upstream_carbon_year != observed_year:
+                missing.append((iso3, fg))
+                continue
+            capacity = float(fg.capacity)
+            for sums in (country_sums[(iso3, fg.technology.name)], global_sums[fg.technology.name]):
+                sums[0] += fg.upstream_emission_intensity * capacity
+                sums[1] += fg.upstream_carbon_cost_paid * capacity
+                sums[2] += capacity
+
+        filled = {"country": 0, "global": 0, "none": 0}
+        for iso3, fg in missing:
+            for scope, peers in (
+                ("country", country_sums.get((iso3, fg.technology.name))),
+                ("global", global_sums.get(fg.technology.name)),
+            ):
+                if peers is not None and peers[2] > 0:
+                    fg.upstream_emission_intensity = peers[0] / peers[2]
+                    fg.upstream_carbon_cost_paid = peers[1] / peers[2]
+                    filled[scope] += 1
+                    break
+            else:
+                fg.upstream_emission_intensity = 0.0
+                fg.upstream_carbon_cost_paid = 0.0
+                filled["none"] += 1
+        logger.info(
+            "Upstream embedded carbon in %s: %d active furnace groups observed in %d, %d filled from "
+            "country-technology peers, %d from technology peers worldwide, %d left at 0.0",
+            self.year,
+            len(active) - len(missing),
+            observed_year,
+            filled["country"],
+            filled["global"],
+            filled["none"],
+        )
 
     def pass_carbon_cost_series_to_plants(self, world_plants: list[Plant]) -> None:
         """
@@ -10014,8 +11899,8 @@ class Environment:
         allowed_by_year: dict[Year, list[str]] = {}
 
         # Generate for FULL simulation range (not from current year!)
-        # Note: add extra [+ consideration_time + 2] to be able to consider new plants until the end of the simulation
-        # 1st +1 beacuse of fixed 1y announcement time and 2nd +1 because range is exclusive at the end
+        # Runs to end_year + consideration_time + 1 (the range's end is exclusive), which covers the latest
+        # opportunity target year, end_year + max(consideration_time, 2), for a consideration_time of 1 or more
         for year in range(self.config.start_year, self.config.end_year + self.config.consideration_time + 2):
             allowed_techs = []
 
@@ -10201,13 +12086,21 @@ class CommodityAllocations:
             - Resets all furnace group transport_emissions to 0.0.
             - Sets fg.transport_emissions for each destination furnace group to the sum of
               transport emissions from all incoming allocations.
+            - Logs one warning listing the cross-border routes that have no record for this commodity.
 
         Notes:
-            - Uses nested lookup function to find emission factors by (from_iso3, to_iso3, commodity).
-            - Returns 0.0 emission factor if no matching TransportKPI found.
+            - Builds a (from_iso3, to_iso3, commodity) to factor dictionary once per call.
+            - Domestic routes and closely allocated products (hot metal, DRI, liquid iron) contribute 0.0:
+              the transport data has no domestic routes, and these products travel a few kilometres at most.
+            - A cross-border route without a record for this commodity contributes 0.0 and is named in the warning.
             - Only updates destinations that are (Plant, FurnaceGroup) tuples.
             - Accumulates emissions across multiple sources to same destination.
         """
+        logger = logging.getLogger(f"{__name__}.CommodityAllocations.update_transport_emissions")
+        emission_factors = {
+            (te.reporter_iso, te.partner_iso, te.commodity): te.ghg_factor for te in transport_emissions
+        }
+
         # First, set all to 0:
         for source in self.allocations:
             for destination in self.allocations[source]:
@@ -10215,14 +12108,11 @@ class CommodityAllocations:
                     plant, fg = destination
                     fg.transport_emissions = 0.0
 
-        # Create a lookup function for transport emissions
-        def get_transport_emission_factor(from_iso3: str, to_iso3: str, commodity: str) -> float:
-            for te in transport_emissions:
-                if te.reporter_iso == from_iso3 and te.partner_iso == to_iso3 and te.commodity == commodity:
-                    return te.ghg_factor
-            return 0.0
+        if self.commodity in CLOSELY_ALLOCATED_PRODUCTS:
+            return
 
         # now update the transport emissions:
+        unrecorded_routes: set[tuple[str, str]] = set()
         for source in self.allocations:
             for destination in self.allocations[source]:
                 from_iso3 = None
@@ -10240,9 +12130,18 @@ class CommodityAllocations:
                     to_plant, to_fg = destination
                     to_iso3 = to_plant.location.iso3
 
-                    if from_iso3 and to_iso3:
-                        emission_factor = get_transport_emission_factor(from_iso3, to_iso3, self.commodity)
-                        to_fg.transport_emissions += emission_factor * self.allocations[source][destination]
+                    if from_iso3 and to_iso3 and from_iso3 != to_iso3:
+                        emission_factor = emission_factors.get((from_iso3, to_iso3, self.commodity))
+                        if emission_factor is None:
+                            unrecorded_routes.add((from_iso3, to_iso3))
+                        else:
+                            to_fg.transport_emissions += emission_factor * self.allocations[source][destination]
+
+        if unrecorded_routes:
+            logger.warning(
+                f"No {self.commodity} transport emission record for {len(unrecorded_routes)} cross-border routes; "
+                f"counted as zero: " + ", ".join(f"{a}->{b}" for a, b in sorted(unrecorded_routes))
+            )
 
     def create_cost_curve(self, environment: Environment):
         total_demand = self.calculate_total_volumes()

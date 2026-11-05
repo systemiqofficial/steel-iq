@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import ModelRun, ResultImages, DataPackage, DataPreparation, SimulationPlot, MasterExcelFile
+from .models import ModelRun, DataPackage, DataPreparation, SimulationPlot, MasterExcelFile
 from .forms import DataPreparationForm
 
 
@@ -11,12 +11,6 @@ class ModelRunAdmin(admin.ModelAdmin):
     list_filter = ("state",)
     readonly_fields = ("created_at",)
     search_fields = ("id", "state")
-
-
-@admin.register(ResultImages)
-class ResultImagesAdmin(admin.ModelAdmin):
-    list_display = ("modelrun", "lcoe_map", "lcoh_map")
-    readonly_fields = ("modelrun",)
 
 
 @admin.register(DataPackage)

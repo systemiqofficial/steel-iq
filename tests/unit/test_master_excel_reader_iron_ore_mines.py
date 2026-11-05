@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from steelo.adapters.dataprocessing import excel_reader
 from steelo.adapters.dataprocessing.excel_reader import read_mines_as_suppliers
 
 
@@ -423,3 +424,71 @@ class TestIronOrePremiumsSupport:
         assert australia_supplier.mine_cost_by_year.get(Year(2025)) == 50
         assert australia_supplier.mine_price_by_year.get(Year(2025)) == 65  # Uses actual price value
         assert australia_supplier.production_cost_by_year.get(Year(2025)) == 50
+
+
+def _write_mines_sheet(tmp_path, regions: list[str]):
+    """Write a minimal Iron ore mines workbook with one mine per region and return its path."""
+    count = len(regions)
+    data = pd.DataFrame(
+        {
+            "Region": regions,
+            "Products": ["IO_mid"] * count,
+            "capacity Mtpa 2025": [10] * count,
+            "costs $/t 2025": [50] * count,
+            "price $/t 2025": [60] * count,
+            "lat": [10.0 + i for i in range(count)],
+            "lon": [20.0 + i for i in range(count)],
+        },
+    )
+    excel_path = tmp_path / "test_mines.xlsx"
+    data.to_excel(excel_path, sheet_name="Iron ore mines", index=False)
+    return excel_path
+
+
+def test_every_master_mine_country_resolves_to_its_iso3(tmp_path):
+    """Each mine country of the master's Iron ore mines sheet gets its own ISO3, never an empty one."""
+    expected = {
+        "Australia": "AUS",
+        "Bosnia & Herzegovina": "BIH",
+        "Brazil": "BRA",
+        "Canada": "CAN",
+        "Chile": "CHL",
+        "China": "CHN",
+        "Guinea": "GIN",
+        "India": "IND",
+        "Iran": "IRN",
+        "Kazakhstan": "KAZ",
+        "Liberia": "LBR",
+        "Mauritania": "MRT",
+        "Mexico": "MEX",
+        "Norway": "NOR",
+        "Peru": "PER",
+        "Russia": "RUS",
+        "Sierra Leone": "SLE",
+        "South Africa": "ZAF",
+        "Sweden": "SWE",
+        "USA": "USA",
+        "Ukraine": "UKR",
+        "Venezuela": "VEN",
+    }
+    excel_path = _write_mines_sheet(tmp_path, list(expected))
+
+    suppliers = excel_reader.read_mines_as_suppliers(
+        mine_data_excel_path=str(excel_path),
+        mine_data_sheet_name="Iron ore mines",
+        location_csv="",
+    )
+
+    assert {s.location.region: s.location.iso3 for s in suppliers} == expected
+
+
+def test_mine_region_without_iso3_mapping_raises(tmp_path):
+    """A mine region missing from the ISO3 map fails the read instead of yielding an empty ISO3."""
+    excel_path = _write_mines_sheet(tmp_path, ["Australia", "Atlantis"])
+
+    with pytest.raises(ValueError, match="Atlantis"):
+        excel_reader.read_mines_as_suppliers(
+            mine_data_excel_path=str(excel_path),
+            mine_data_sheet_name="Iron ore mines",
+            location_csv="",
+        )

@@ -35,8 +35,9 @@ def mock_message_bus(mock_environment):
 def mock_data_collector():
     """Create a mock data collector with sample data."""
     collector = MagicMock(spec=DataCollector)
-    collector.status_counts = {"2025": {"announced": 5, "construction": 3}}
-    collector.new_plant_locations = [{"lat": 50.0, "lon": 10.0}]
+    collector.status_counts = {"steel": {2025: {"EAF": {"announced": 5, "construction": 3}}}}
+    collector.new_plant_locations = {"steel": {2025: [{"lat": 50.0, "lon": 10.0}]}}
+    collector.greenfield_plants = {"fg_1": {"furnace_group_id": "fg_1", "status_years": {"announced": 2025}}}
     return collector
 
 
@@ -63,26 +64,27 @@ def temp_output_file():
 
 
 @patch("steelo.simulation.generate_post_run_cap_prod_plots")
-@patch("steelo.simulation.plot_map_of_new_plants_operating")
-@patch("steelo.simulation.plot_bar_chart_of_new_plants_by_status")
 def test_simulation_calls_plotting_functions_with_consistent_plot_paths(
-    mock_bar_chart, mock_map_plot, mock_post_run_plots, mock_message_bus, mock_data_collector, temp_output_file
+    mock_post_run_plots, mock_message_bus, mock_data_collector, temp_output_file
 ):
-    """Test that simulation calls all plotting functions with the same plot_paths parameter."""
+    """Test that simulation routes plots through one plotter and one plot_paths instance."""
     # Simulate the plotting section of the run method
     plot_paths = mock_message_bus.env.plot_paths
+    plotter = MagicMock()
 
     # These are the actual calls from simulation.py
-    mock_bar_chart(mock_data_collector.status_counts, plot_paths=plot_paths)
-    mock_map_plot(mock_data_collector.new_plant_locations, plot_paths=plot_paths)
     mock_post_run_plots(file_path=temp_output_file, plot_paths=plot_paths)
+    plotter.plot_greenfield_plants_by_status(status_counts=mock_data_collector.status_counts)
+    plotter.plot_greenfield_plants_map(new_plant_locations=mock_data_collector.new_plant_locations)
+    plotter.export_greenfield_plants_csv(mock_data_collector.greenfield_plants)
 
-    # Verify all functions were called with the same plot_paths
-    mock_bar_chart.assert_called_once_with(mock_data_collector.status_counts, plot_paths=plot_paths)
-    mock_map_plot.assert_called_once_with(mock_data_collector.new_plant_locations, plot_paths=plot_paths)
+    # Verify the functions were called with the expected data
     mock_post_run_plots.assert_called_once_with(file_path=temp_output_file, plot_paths=plot_paths)
+    plotter.plot_greenfield_plants_by_status.assert_called_once_with(status_counts=mock_data_collector.status_counts)
+    plotter.plot_greenfield_plants_map.assert_called_once_with(
+        new_plant_locations=mock_data_collector.new_plant_locations
+    )
+    plotter.export_greenfield_plants_csv.assert_called_once_with(mock_data_collector.greenfield_plants)
 
-    # Ensure all calls used the same plot_paths instance
-    assert mock_bar_chart.call_args.kwargs["plot_paths"] is plot_paths
-    assert mock_map_plot.call_args.kwargs["plot_paths"] is plot_paths
+    # Ensure the post-run plots used the same plot_paths instance
     assert mock_post_run_plots.call_args.kwargs["plot_paths"] is plot_paths

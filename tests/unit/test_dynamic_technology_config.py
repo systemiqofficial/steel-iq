@@ -18,10 +18,10 @@ class TestTechnologySettings:
 
     def test_technology_settings_creation(self):
         """Test creating a TechnologySettings instance."""
-        ts = TechnologySettings(allowed=True, from_year=2025, to_year=2050)
+        ts = TechnologySettings(allowed=True, from_year=2025, to_year=2060)
         assert ts.allowed is True
         assert ts.from_year == 2025
-        assert ts.to_year == 2050
+        assert ts.to_year == 2060
 
     def test_technology_settings_to_dict(self):
         """Test converting TechnologySettings to dict."""
@@ -31,8 +31,8 @@ class TestTechnologySettings:
 
     def test_technology_settings_repr(self):
         """Test string representation of TechnologySettings."""
-        ts1 = TechnologySettings(allowed=True, from_year=2025, to_year=2050)
-        assert str(ts1) == "Tech(✓ 2025-2050)"
+        ts1 = TechnologySettings(allowed=True, from_year=2025, to_year=2060)
+        assert str(ts1) == "Tech(✓ 2025-2060)"
 
         ts2 = TechnologySettings(allowed=False, from_year=2030, to_year=None)
         assert str(ts2) == "Tech(✗ 2030)"
@@ -44,13 +44,13 @@ class TestValidation:
     def test_empty_config_rejected(self):
         """Empty technology_settings should be rejected."""
         with pytest.raises(SimulationConfigError, match="empty"):
-            validate_technology_settings({}, {"BF"}, year_min=2025, year_max=2050)
+            validate_technology_settings({}, {"BF"}, year_min=2025, year_max=2060)
 
     def test_unknown_tech_rejected(self):
         """Unknown technologies in config should be rejected."""
         with pytest.raises(SimulationConfigError, match="Unknown"):
             validate_technology_settings(
-                {"UNKNOWN": TechnologySettings(True, 2025)}, {"BF"}, year_min=2025, year_max=2050
+                {"UNKNOWN": TechnologySettings(True, 2025)}, {"BF"}, year_min=2025, year_max=2060
             )
 
     def test_missing_tech_rejected(self):
@@ -60,7 +60,7 @@ class TestValidation:
                 {"BF": TechnologySettings(True, 2025)},
                 {"BF", "BOF"},  # BOF missing
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
     def test_invalid_year_range(self):
@@ -70,29 +70,29 @@ class TestValidation:
                 {"BF": TechnologySettings(True, 2030, 2025)},  # to_year < from_year
                 {"BF"},
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
     def test_years_outside_scenario(self):
         """Individual technologies can START before or END after scenario, but must cover all scenario years."""
         # Technology starts before scenario and covers entire scenario period - should pass
         validate_technology_settings(
-            {"BF": TechnologySettings(True, 2020, None)},  # Starts 2020, covers 2025-2050+
+            {"BF": TechnologySettings(True, 2020, None)},  # Starts 2020, covers 2025-2060+
             {"BF"},
             year_min=2025,  # Scenario starts 2025
-            year_max=2050,
+            year_max=2060,
         )
 
         # Technology starts before and ends after scenario - should pass
         validate_technology_settings(
-            {"BF": TechnologySettings(True, 2020, 2060)},  # 2020-2060 covers 2025-2050
+            {"BF": TechnologySettings(True, 2020, 2070)},  # 2020-2070 covers 2025-2060
             {"BF"},
             year_min=2025,
-            year_max=2050,
+            year_max=2060,
         )
 
         # Multiple technologies can combine to provide full coverage
-        # BF covers 2025-2030, EAF covers 2030-2050 (overlapping at 2030)
+        # BF covers 2025-2030, EAF covers 2030-2060 (overlapping at 2030)
         validate_technology_settings(
             {
                 "BF": TechnologySettings(True, 2025, 2030),
@@ -100,7 +100,7 @@ class TestValidation:
             },
             {"BF", "EAF"},
             year_min=2025,
-            year_max=2050,
+            year_max=2060,
         )
 
     def test_all_technologies_outside_scenario_rejected(self):
@@ -111,28 +111,28 @@ class TestValidation:
                 {"BF": TechnologySettings(True, 2010, 2020)},  # Ends before scenario
                 {"BF"},
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
         # All technologies completely after scenario - should fail
         with pytest.raises(SimulationConfigError, match="No technologies are available"):
             validate_technology_settings(
-                {"BF": TechnologySettings(True, 2060, None)},  # Starts after scenario
+                {"BF": TechnologySettings(True, 2070, None)},  # Starts after scenario
                 {"BF"},
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
         # All technologies disabled - should fail
         with pytest.raises(SimulationConfigError, match="No technologies are available"):
             validate_technology_settings(
                 {
-                    "BF": TechnologySettings(False, 2025, 2050),  # Disabled
+                    "BF": TechnologySettings(False, 2025, 2060),  # Disabled
                     "BOF": TechnologySettings(False, 2025, None),  # Disabled
                 },
                 {"BF", "BOF"},
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
     def test_technology_gap_in_scenario_rejected(self):
@@ -149,7 +149,7 @@ class TestValidation:
                 },
                 {"BF", "EAF"},
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
         # Single year gap
@@ -161,7 +161,7 @@ class TestValidation:
                 },
                 {"BF", "EAF"},
                 year_min=2025,
-                year_max=2050,
+                year_max=2060,
             )
 
     def test_valid_config_accepted(self):
@@ -169,12 +169,12 @@ class TestValidation:
         # Should not raise
         validate_technology_settings(
             {
-                "BF": TechnologySettings(True, 2025, 2050),
+                "BF": TechnologySettings(True, 2025, 2060),
                 "BOF": TechnologySettings(False, 2030, None),
             },
             {"BF", "BOF"},
             year_min=2025,
-            year_max=2050,
+            year_max=2060,
         )
 
 
@@ -219,24 +219,24 @@ class TestParsing:
     def test_parse_int_strict(self):
         """Test strict integer parsing."""
         # Valid values
-        assert parse_int_strict("2025", required=True, lo=2020, hi=2050) == 2025
-        assert parse_int_strict("2030.0", required=True, lo=2020, hi=2050) == 2030
+        assert parse_int_strict("2025", required=True, lo=2020, hi=2060) == 2025
+        assert parse_int_strict("2030.0", required=True, lo=2020, hi=2060) == 2030
 
         # Optional empty value
-        assert parse_int_strict("", required=False, lo=2020, hi=2050) is None
-        assert parse_int_strict(None, required=False, lo=2020, hi=2050) is None
+        assert parse_int_strict("", required=False, lo=2020, hi=2060) is None
+        assert parse_int_strict(None, required=False, lo=2020, hi=2060) is None
 
         # Out of range
         with pytest.raises(ValueError, match="out of range"):
-            parse_int_strict("2100", required=True, lo=2020, hi=2050)
+            parse_int_strict("2100", required=True, lo=2020, hi=2060)
 
         # Invalid integer
         with pytest.raises(ValueError, match="invalid integer"):
-            parse_int_strict("abc", required=True, lo=2020, hi=2050)
+            parse_int_strict("abc", required=True, lo=2020, hi=2060)
 
         # Required without value
         with pytest.raises(ValueError, match="integer required"):
-            parse_int_strict("", required=True, lo=2020, hi=2050)
+            parse_int_strict("", required=True, lo=2020, hi=2060)
 
 
 class TestTechnologyRepository:
@@ -345,7 +345,7 @@ class TestDomainLogic:
     def test_technology_allowed(self):
         """Test technology allowed logic."""
         config = {
-            "BF": TechnologySettings(True, 2025, 2050),
+            "BF": TechnologySettings(True, 2025, 2060),
             "DRIH2": TechnologySettings(True, 2030, None),
             "MOE": TechnologySettings(False, 2025, None),
         }
@@ -353,8 +353,8 @@ class TestDomainLogic:
         # BF allowed in 2030
         assert is_technology_allowed(config, "BF", 2030) is True
 
-        # BF not allowed in 2055 (past to_year)
-        assert is_technology_allowed(config, "BF", 2055) is False
+        # BF not allowed in 2065 (past to_year)
+        assert is_technology_allowed(config, "BF", 2065) is False
 
         # DRI-H2 not allowed in 2025 (before from_year)
         assert is_technology_allowed(config, "DRI-H2", 2025) is False
@@ -381,7 +381,7 @@ class TestIntegration:
         from steelo.domain import Year
 
         tech_map = {
-            "BF": TechnologySettings(True, 2025, 2050),
+            "BF": TechnologySettings(True, 2025, 2060),
             "BOF": TechnologySettings(True, 2025, None),
         }
 
@@ -389,7 +389,7 @@ class TestIntegration:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = SimulationConfig(
                 start_year=Year(2025),
-                end_year=Year(2050),
+                end_year=Year(2060),
                 master_excel_path=Path(tmpdir) / "path.xlsx",
                 output_dir=Path(tmpdir) / "output",
                 technology_settings=tech_map,
@@ -409,7 +409,7 @@ class TestIntegration:
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             SimulationConfig(
                 start_year=Year(2025),
-                end_year=Year(2050),
+                end_year=Year(2060),
                 master_excel_path=Path("/fake/path.xlsx"),
                 output_dir=Path("/fake/output"),
                 bf_allowed=True,  # Legacy field!

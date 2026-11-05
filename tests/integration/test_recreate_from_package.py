@@ -125,6 +125,7 @@ def test_master_excel_path(tmp_path):
         "Plant ID": ["P100000000001"],
         "Plant name (English)": ["Test Steel Plant 1"],
         "Country": ["USA"],
+        "ISO3": ["USA"],
         "Coordinates": ["40.123,-82.456"],
         "Capacity operating status": ["operating"],
         "Start date": ["2009"],

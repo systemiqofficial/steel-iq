@@ -194,6 +194,7 @@ class TestMasterExcelReaderWithNormalizedBusinessCases:
                 "Plant ID": ["P100000120620"],
                 "Coordinates": ["48.123, 11.456"],
                 "Country": ["Germany"],
+                "ISO3": ["DEU"],
                 "Main production equipment": ["BF; BOF"],
                 "Nominal crude steel capacity (ttpa)": [7800],
                 "Nominal BOF steel capacity (ttpa)": [7800],

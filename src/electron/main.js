@@ -470,7 +470,7 @@ function getPythonEnv(djangoBundlePath, pythonPathEnv) {
   // Get app version for database isolation
   // Using require (created via createRequire) for JSON file
   const packageJson = require('./package.json');
-  const appVersion = packageJson.version || '2.0.0';
+  const appVersion = packageJson.version || '3.0.0';
 
   const env = {
     ...process.env,
@@ -519,6 +519,10 @@ function getPythonEnv(djangoBundlePath, pythonPathEnv) {
     const appDataPath = process.env.APPDATA || path.join(process.env.USERPROFILE, 'AppData', 'Roaming');
     env.STEELO_HOME = path.join(appDataPath, 'SteelModel', `v${appVersion}`);
     console.log('Setting version-specific STEELO_HOME for Windows:', env.STEELO_HOME);
+    // Keep the package download cache version-independent so a new app version
+    // reuses already-downloaded data packages (~170 MB) instead of refetching them.
+    env.STEELO_DATA_CACHE = path.join(process.env.USERPROFILE, '.steelo', 'data_cache');
+    console.log('Setting shared STEELO_DATA_CACHE for Windows:', env.STEELO_DATA_CACHE);
   }
   
   // Add DYLD_LIBRARY_PATH for macOS to find HDF5/NetCDF dylibs
@@ -976,7 +980,7 @@ function startTaskWorker(djangoBundlePath) {
 function setupApplicationMenu() {
   // Using require (created via createRequire) for JSON file
   const packageJson = require('./package.json');
-  const appVersion = packageJson.version || '1.2.0';
+  const appVersion = packageJson.version || '3.0.0';
 
   const template = [
     // macOS app menu (only on macOS)

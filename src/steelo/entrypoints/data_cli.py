@@ -380,6 +380,19 @@ def steelo_data_recreate():
         action="store_true",
         help="Force re-download of packages",
     )
+    parser.add_argument(
+        "--use-furnace-units-sheet",
+        action="store_true",
+        default=True,
+        dest="use_furnace_units_sheet",
+        help="Use new furnace units sheet reader instead of iron/steel plants reader (default: True)",
+    )
+    parser.add_argument(
+        "--use-plants-sheet",
+        action="store_false",
+        dest="use_furnace_units_sheet",
+        help="Use old 'Iron and steel plants' sheet reader (disables furnace units sheet)",
+    )
 
     try:
         args = parser.parse_args()
@@ -396,6 +409,7 @@ def steelo_data_recreate():
                 args.package,
                 output_dir,
                 force_download=args.force_download,
+                use_furnace_units_sheet=args.use_furnace_units_sheet,
             )
 
             console.print("\n[green]✓ Recreation complete![/green]")
@@ -405,7 +419,7 @@ def steelo_data_recreate():
         else:
             # Recreate from all required packages
             console.print("Recreating data from all required packages...")
-            results = recreator.recreate_all_packages(output_dir)
+            results = recreator.recreate_all_packages(output_dir, use_furnace_units_sheet=args.use_furnace_units_sheet)
 
             console.print("\n[green]✓ Recreation complete![/green]")
             for package_name, paths in results.items():
@@ -476,6 +490,19 @@ def steelo_data_prepare():
         "--force-refresh",
         action="store_true",
         help="Force re-preparation even if cached (bypasses cache)",
+    )
+    parser.add_argument(
+        "--use-furnace-units-sheet",
+        action="store_true",
+        default=True,
+        dest="use_furnace_units_sheet",
+        help="Use 'Furnace units' sheet from master Excel (default: True)",
+    )
+    parser.add_argument(
+        "--use-plants-sheet",
+        action="store_false",
+        dest="use_furnace_units_sheet",
+        help="Use old 'Iron and steel plants' sheet from master Excel",
     )
 
     try:
@@ -570,6 +597,7 @@ def steelo_data_prepare():
             verbose=args.verbose,
             geo_version=geo_version,
             force_refresh=args.force_refresh,
+            use_furnace_units_sheet=args.use_furnace_units_sheet,
         )
 
         # Format and display results

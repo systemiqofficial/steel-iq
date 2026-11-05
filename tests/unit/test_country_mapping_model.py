@@ -6,7 +6,11 @@ import pytest
 import pandas as pd
 
 from steelo.domain.models import CountryMapping
-from steelo.adapters.dataprocessing.excel_reader import read_country_mappings
+from steelo.adapters.dataprocessing.excel_reader import (
+    find_iso3s_of_trade_bloc,
+    read_carbon_border_mechanisms,
+    read_country_mappings,
+)
 from steelo.adapters.repositories.json_repository import CountryMappingInDb
 
 
@@ -28,12 +32,14 @@ def excel_with_country_mappings(tmp_path):
         "eu_or_non_eu": ["EU", "Non-EU", "Non-EU", "Non-EU"],
         "tiam-ucl_region": ["WEU", "USA", "CHI", "BRA"],
         "EU": [True, False, False, False],
-        "EFTA/EUCU": [False, False, False, False],
+        "EFTA/EUCU": [True, False, False, False],
         "OECD": [True, True, False, False],
         "NAFTA": [False, True, False, False],
         "Mercosur": [False, False, False, True],
         "ASEAN": [False, False, False, False],
         "RCEP": [False, False, True, False],
+        "OECD but not EU": [False, True, False, False],
+        "China": [False, False, True, False],
     }
     df = pd.DataFrame(data)
 
@@ -194,6 +200,49 @@ def test_read_country_mappings_success(excel_with_country_mappings):
     assert brazil.gem_country is None
     assert brazil.ws_region is None
 
+    # Dynamic bloc columns are normalised to attribute names, EUCU spelling kept
+    assert germany.EFTA_EUCU is True
+    assert mappings[1].OECD_but_not_EU is True
+    assert mappings[2].China is True
+    assert not hasattr(germany, "EFTA_EUCJ")
+
+
+def test_find_iso3s_of_trade_bloc_accepts_sheet_spellings(excel_with_country_mappings):
+    """Bloc lookups resolve sheet-style names, including the legacy EUCJ spelling."""
+    mappings = read_country_mappings(excel_with_country_mappings)
+
+    assert find_iso3s_of_trade_bloc(mappings, "EFTA/EUCU") == ["DEU"]
+    assert find_iso3s_of_trade_bloc(mappings, "EFTA/EUCJ") == ["DEU"]
+    assert find_iso3s_of_trade_bloc(mappings, "OECD but not EU") == ["USA"]
+    with pytest.raises(ValueError, match="not found in country mappings"):
+        find_iso3s_of_trade_bloc(mappings, "NO_SUCH_BLOC")
+
+
+def test_carbon_border_mechanism_columns_resolve_members(excel_with_country_mappings, tmp_path):
+    """CBAM sheet columns map to the same attribute names the reader stores, via JSON round-trip."""
+    cbam_path = tmp_path / "cbam.xlsx"
+    cbam_df = pd.DataFrame(
+        {
+            "Description": ["CBAM active?", "Year CBAM begins", "Year CBAM ends"],
+            "EFTA/EUCU": [1, 2026, None],
+            "China": [1, 2030, None],
+        }
+    )
+    with pd.ExcelWriter(cbam_path, engine="openpyxl") as writer:
+        cbam_df.to_excel(writer, sheet_name="CBAM", index=False)
+
+    mechanisms = read_carbon_border_mechanisms(cbam_path)
+    assert [m.applying_region_column for m in mechanisms] == ["EFTA_EUCU", "China"]
+
+    # Membership must survive the CountryMappingInDb JSON round-trip
+    mappings = read_country_mappings(excel_with_country_mappings)
+    round_tripped = {
+        m.iso3: CountryMappingInDb(**CountryMappingInDb.from_domain(m).model_dump(by_alias=True)).to_domain()
+        for m in mappings
+    }
+    assert mechanisms[0].get_applying_region_countries(round_tripped) == {"DEU"}
+    assert mechanisms[1].get_applying_region_countries(round_tripped) == {"CHN"}
+
 
 def test_read_country_mappings_missing_sheet(tmp_path):
     """Test handling of missing sheet."""
@@ -238,6 +287,8 @@ def test_country_mapping_in_db_conversion():
         tiam_ucl_region="WEU",
         EU=True,
         OECD=True,
+        EFTA_EUCU=True,
+        OECD_but_not_EU=False,
     )
 
     # Convert to DB model
@@ -265,6 +316,14 @@ def test_country_mapping_in_db_conversion():
     assert domain_obj2.tiam_ucl_region == "WEU"
     assert isinstance(domain_obj2, CountryMapping)
 
+    # Bloc booleans, including dynamic ones, survive the round-trip and the JSON dump
+    assert domain_obj2.EU is True
+    assert domain_obj2.EFTA_EUCU is True
+    assert domain_obj2.OECD_but_not_EU is False
+    dumped = db_obj.model_dump(by_alias=True)
+    assert dumped["EFTA_EUCU"] is True
+    assert dumped["OECD_but_not_EU"] is False
+
 
 def test_country_mapping_in_db_sorting():
     """Test sorting of CountryMappingInDb objects."""
@@ -281,7 +340,7 @@ def test_country_mapping_in_db_sorting():
         eu_region="EU",
         tiam_ucl_region="WEU",
         EU=True,
-        EFTA_EUCJ=False,
+        EFTA_EUCU=False,
         OECD=True,
         NAFTA=False,
         Mercosur=False,
@@ -302,7 +361,7 @@ def test_country_mapping_in_db_sorting():
         eu_region="Non-EU",
         tiam_ucl_region="USA",
         EU=False,
-        EFTA_EUCJ=False,
+        EFTA_EUCU=False,
         OECD=True,
         NAFTA=True,
         Mercosur=False,

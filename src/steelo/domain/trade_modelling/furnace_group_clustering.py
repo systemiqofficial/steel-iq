@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import logging
 import networkx as nx
 
-from steelo.domain.models import Location, Plant, FurnaceGroup, PrimaryFeedstock, Volumes
+from steelo.domain.models import Location, Plant, FurnaceGroup, PrimaryFeedstock, Volumes, can_supply_hot_metal
 from steelo.domain.constants import T_TO_KT
 from steelo.utilities.utils import normalize_name
 from steelo.utilities.data_processing import normalize_product_name
@@ -231,10 +231,38 @@ def _get_hot_metal_min_share_for_fg(
     return best_share if best_share and best_share > 0 else None
 
 
+def _reachable_hot_metal_producers(
+    plant: "Plant",
+    hot_metal_producers: list[tuple["FurnaceGroup", "Plant"]],
+    config: "SimulationConfig",
+) -> list[tuple["FurnaceGroup", "Plant"]]:
+    """Active hot-metal producers that can feed a BOF at ``plant``.
+
+    A producer qualifies when it sits within ``hot_metal_radius`` and the LP lets hot metal
+    flow from it (``can_supply_hot_metal``): under ``iso3`` scope it must be in the plant's
+    country, under ``plant_group`` scope in the plant's ultimate plant group, because the LP
+    blocks hot flows between clusters with different location keys; under ``plant`` scope
+    any owner and country qualify.
+
+    Args:
+        plant: Plant holding the BOF.
+        hot_metal_producers: All active hot-metal-producing FGs with their plants.
+        config: Simulation configuration (``hot_metal_radius``, ``geographical_clustering_scope``).
+
+    Returns:
+        The qualifying (furnace group, plant) pairs.
+    """
+    clustering_scope = getattr(config, "geographical_clustering_scope", "iso3")
+    return [
+        (producer_fg, producer_plant)
+        for producer_fg, producer_plant in hot_metal_producers
+        if can_supply_hot_metal(producer_plant, plant, config.hot_metal_radius, clustering_scope)
+    ]
+
+
 def _compute_effective_bof_capacity(
     fg: "FurnaceGroup",
-    plant: "Plant",
-    hot_metal_producers_by_iso3: dict[str, list[tuple["FurnaceGroup", "Plant"]]],
+    reachable_producers: list[tuple["FurnaceGroup", "Plant"]],
     aggregated_constraints: list | None,
     config: "SimulationConfig",
 ) -> float:
@@ -246,8 +274,8 @@ def _compute_effective_bof_capacity(
 
     Args:
         fg: The furnace group.
-        plant: Plant that contains the FG (used for location/distance calculations).
-        hot_metal_producers_by_iso3: Active BF/ESF/SR groups indexed by ISO3.
+        reachable_producers: Hot-metal producers that can feed this FG's plant
+            (from ``_reachable_hot_metal_producers``).
         aggregated_constraints: Aggregated metallic-charge constraints (may be None).
         config: Simulation configuration.
 
@@ -263,15 +291,7 @@ def _compute_effective_bof_capacity(
     if min_share is None or min_share <= 0:
         return physical_cap
 
-    # Sum BF/ESF/SR capacity within hot_metal_radius of this BOF FG (same ISO3 only,
-    # matching the per-country clustering constraint)
-    iso3 = plant.location.iso3
-    producers = hot_metal_producers_by_iso3.get(iso3, [])
-    reachable_hm_cap = sum(
-        float(bf_fg.capacity)
-        for bf_fg, bf_plant in producers
-        if plant.distance_to(bf_plant.location) <= config.hot_metal_radius
-    )
+    reachable_hm_cap = sum(float(bf_fg.capacity) for bf_fg, _ in reachable_producers)
 
     if reachable_hm_cap <= 0:
         # No reachable hot metal — this FG should have been filtered out in step 1b,
@@ -417,12 +437,17 @@ class MetaFurnaceGroup:
         chosen_reductant: Reductant choice of all constituent furnace groups
         location: Capacity-weighted center of gravity of all constituent FGs
         total_capacity: Sum of capacities of all constituent furnace groups
-        weighted_avg_carbon_cost: Capacity-weighted average carbon cost per unit
+        weighted_avg_carbon_cost: Capacity-weighted average trade carbon cost per unit (utilisation-independent)
         dynamic_business_case: List of primary feedstock options (should be identical across cluster)
         capacity_shares: Mapping from fg_id to its share of total cluster capacity (0-1)
         constituent_locations: Original locations of constituent FGs (for disaggregation)
         weighted_avg_energy_costs: Capacity-weighted average energy costs by metallic charge input
             (e.g., {"hot_metal": 25.5, "pig_iron": 30.2} in USD per tonne of output)
+        weighted_avg_emission_intensity: Capacity-weighted own-stage direct tCO2 per tonne of product
+        weighted_avg_upstream_emission_intensity: Capacity-weighted tCO2 per tonne embedded in last
+            year's inputs
+        weighted_avg_upstream_carbon_cost_paid: Capacity-weighted USD per tonne already paid on last
+            year's inputs
 
     Example:
         >>> # Three BF furnaces in China using coke, with total capacity 10,000 t
@@ -457,9 +482,12 @@ class MetaFurnaceGroup:
     capacity_shares: dict[str, float] = field(default_factory=dict)
     constituent_locations: dict[str, Location] = field(default_factory=dict)
     weighted_avg_energy_costs: dict[str, float] = field(default_factory=dict)
-    # Set when the cluster was keyed by plant_group (hot-metal-affected tech with
-    # cluster_hot_metal_techs_by_plant_group on). Used by the LP to restrict hot
-    # commodity flows to within a plant_group. None for iso3-keyed clusters.
+    weighted_avg_emission_intensity: float = 0.0
+    weighted_avg_upstream_emission_intensity: float = 0.0
+    weighted_avg_upstream_carbon_cost_paid: float = 0.0
+    # Set when the cluster was keyed by plant_group or plant (hot-metal-affected tech with
+    # geographical_clustering_scope = "plant_group" or "plant"). Used by the LP to restrict hot
+    # commodity flows to within a plant_group/plant. None for iso3-keyed clusters.
     plant_group_id: str | None = None
 
     def __str__(self) -> str:
@@ -468,6 +496,28 @@ class MetaFurnaceGroup:
             f"n_constituents={len(self.constituent_fg_ids)}, "
             f"capacity={float(self.total_capacity) * T_TO_KT:.1f} kt)"
         )
+
+
+def _capacity_weighted_mean(
+    cluster_fgs: list[tuple[FurnaceGroup, Plant]],
+    effective_caps: dict[str, float],
+    total_eff_cap: float,
+    attr: str,
+) -> float:
+    """Effective-capacity-weighted mean of a furnace-group attribute across a cluster.
+
+    Args:
+        cluster_fgs: The cluster's (furnace group, plant) pairs.
+        effective_caps: Effective capacity per furnace group id.
+        total_eff_cap: Sum of the effective capacities.
+        attr: Name of the numeric furnace-group attribute to average.
+
+    Returns:
+        The weighted mean, or the simple mean when the cluster has no effective capacity.
+    """
+    if total_eff_cap > 0:
+        return sum(getattr(fg, attr) * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs) / total_eff_cap
+    return sum(getattr(fg, attr) for fg, _ in cluster_fgs) / len(cluster_fgs)
 
 
 def calculate_center_of_gravity(furnace_groups_with_plants: list[tuple[FurnaceGroup, Plant]]) -> Location:
@@ -581,43 +631,38 @@ def cluster_furnace_groups(
     logger.info("[CLUSTERING] Starting furnace group clustering...")
 
     # Step 1: Collect all active furnace groups with their plants.
-    # Drop BOFs that have no active, in-country BF/ESF/SR within hot_metal_radius.
+    # Drop BOFs that have no active hot-metal producer the LP lets them draw from: one within
+    # hot_metal_radius, and (under iso3 scope only) in the same country.
     #
-    # The domain-model flag fg.has_hot_metal_access (set by PlantGroup.update_hot_metal_access)
-    # is too permissive: PlantGroups can span countries, so a BOF near a border may get access
-    # from a BF in a neighbouring country. Clustering is per-ISO3, so that cross-border BF ends
-    # up in a different cluster and the BOF has no in-cluster source. Similarly, an inactive BF
-    # at the same plant gives the flag but isn't in any cluster.
-    #
-    # We therefore build a location index of active hot-metal producers first, then check each
-    # BOF against it using same-ISO3 + within-radius.
+    # The domain-model flag fg.has_hot_metal_access (set by update_hot_metal_access) is computed
+    # once per year before the LP runs; the check is redone here so clustering stays self-contained.
 
-    # 1a. Index active hot-metal producers by country
-    hot_metal_producers_by_iso3: dict[str, list[tuple[FurnaceGroup, Plant]]] = {}
-    for plant in plants:
-        for fg in plant.furnace_groups:
-            if fg.status.lower() in config.active_statuses and fg.technology.name.lower() in ("bf", "esf", "sr"):
-                iso3 = plant.location.iso3
-                hot_metal_producers_by_iso3.setdefault(iso3, []).append((fg, plant))
+    # 1a. Collect active hot-metal producers
+    hot_metal_producers: list[tuple[FurnaceGroup, Plant]] = [
+        (fg, plant)
+        for plant in plants
+        for fg in plant.furnace_groups
+        if fg.status.lower() in config.active_statuses and fg.produces_hot_metal
+    ]
 
-    # 1b. Collect active FGs, filtering BOFs without an in-country producer within radius
+    # 1b. Collect active FGs, filtering BOFs without a reachable producer
     active_fgs: list[tuple[FurnaceGroup, Plant]] = []
+    reachable_producers_by_plant: dict[str, list[tuple[FurnaceGroup, Plant]]] = {}
     filtered_bofs_no_hot_metal = 0
     for plant in plants:
         for fg in plant.furnace_groups:
             if fg.status.lower() in config.active_statuses:
                 if fg.technology.name.lower() == "bof":
-                    iso3 = plant.location.iso3
-                    producers = hot_metal_producers_by_iso3.get(iso3, [])
-                    has_in_country_access = any(
-                        plant.distance_to(p.location) <= config.hot_metal_radius for _, p in producers
-                    )
-                    if not has_in_country_access:
+                    if plant.plant_id not in reachable_producers_by_plant:
+                        reachable_producers_by_plant[plant.plant_id] = _reachable_hot_metal_producers(
+                            plant, hot_metal_producers, config
+                        )
+                    if not reachable_producers_by_plant[plant.plant_id]:
                         filtered_bofs_no_hot_metal += 1
                         logger.debug(
                             f"[CLUSTERING] Filtering BOF FG {fg.furnace_group_id} "
-                            f"(plant {plant.plant_id}, {iso3}): no active BF/ESF/SR "
-                            f"in same country within {config.hot_metal_radius:.0f} km"
+                            f"(plant {plant.plant_id}, {plant.location.iso3}): no reachable active "
+                            f"hot-metal producer within {config.hot_metal_radius:.0f} km"
                         )
                         continue
                 active_fgs.append((fg, plant))
@@ -625,7 +670,7 @@ def cluster_furnace_groups(
     if filtered_bofs_no_hot_metal > 0:
         logger.warning(
             f"[CLUSTERING] Filtered out {filtered_bofs_no_hot_metal} BOF furnace group(s) "
-            f"without in-country hot-metal access within {config.hot_metal_radius:.0f} km"
+            f"without reachable hot-metal access within {config.hot_metal_radius:.0f} km"
         )
 
     logger.info(f"[CLUSTERING] Found {len(active_fgs)} active furnace groups to cluster")
@@ -634,19 +679,25 @@ def cluster_furnace_groups(
     clusters: dict[ClusterKey, list[tuple[FurnaceGroup, Plant]]] = {}
     n_plant_group_keyed = 0
     n_iso3_keyed = 0
+
+    # Determine geographical clustering scope based on config (once for all FGs)
+    clustering_scope = getattr(config, "geographical_clustering_scope", "iso3")
+
     for fg, plant in active_fgs:
         # Extract clustering attributes
         technology_name = fg.technology.name
         feedstock_signature = _create_feedstock_signature(fg)
 
-        # When the plant-group flag is on, hot-metal-affected techs cluster by plant_group
-        # so cold/hot commodity substitution stays local. Otherwise all techs cluster by iso3.
-        use_plant_group = getattr(config, "cluster_hot_metal_techs_by_plant_group", False) and (
-            _is_affected_by_hot_metal_radius(fg, config)
-        )
-        if use_plant_group:
-            location_key = plant.ultimate_plant_group
-            n_plant_group_keyed += 1
+        # For hot-metal-affected techs, use the configured scope; otherwise default to iso3
+        is_hot_metal_affected = _is_affected_by_hot_metal_radius(fg, config)
+
+        if is_hot_metal_affected and clustering_scope in ("plant_group", "plant"):
+            if clustering_scope == "plant_group":
+                location_key = plant.ultimate_plant_group
+                n_plant_group_keyed += 1
+            else:  # clustering_scope == "plant"
+                location_key = plant.plant_id
+                n_plant_group_keyed += 1
         else:
             location_key = plant.location.iso3
             n_iso3_keyed += 1
@@ -663,7 +714,7 @@ def cluster_furnace_groups(
 
     logger.info(
         f"[CLUSTERING] Created {len(clusters)} unique clusters "
-        f"({n_plant_group_keyed} FGs keyed by plant_group, {n_iso3_keyed} by iso3)"
+        f"({n_plant_group_keyed} FGs keyed by {clustering_scope}, {n_iso3_keyed} by iso3)"
     )
 
     # Filter out FGs without effective_primary_feedstocks from each cluster
@@ -719,7 +770,7 @@ def cluster_furnace_groups(
         # reachable hot-metal supply so the LP doesn't over-allocate production.
         effective_caps: dict[str, float] = {
             fg.furnace_group_id: _compute_effective_bof_capacity(
-                fg, plant, hot_metal_producers_by_iso3, aggregated_constraints, config
+                fg, reachable_producers_by_plant.get(plant.plant_id, []), aggregated_constraints, config
             )
             for fg, plant in cluster_fgs
         }
@@ -752,15 +803,19 @@ def cluster_furnace_groups(
             # Equal shares if all effective capacities are zero
             capacity_shares = {fg.furnace_group_id: 1.0 / len(cluster_fgs) for fg, _ in cluster_fgs}
 
-        # Calculate weighted average carbon cost (weighted by effective capacity)
-        if total_eff_cap > 0:
-            weighted_avg_carbon_cost = (
-                sum(fg.carbon_cost_per_unit * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs)
-                / total_eff_cap
-            )
-        else:
-            # Simple average if all have zero effective capacity
-            weighted_avg_carbon_cost = sum(fg.carbon_cost_per_unit for fg, _ in cluster_fgs) / len(cluster_fgs)
+        # The LP prices clusters on the utilisation-independent trade carbon cost, not the realised one
+        weighted_avg_carbon_cost = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "trade_carbon_cost_per_unit"
+        )
+        weighted_avg_emission_intensity = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "trade_emission_intensity"
+        )
+        weighted_avg_upstream_emission_intensity = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "upstream_emission_intensity"
+        )
+        weighted_avg_upstream_carbon_cost_paid = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "upstream_carbon_cost_paid"
+        )
 
         # Store constituent locations for disaggregation
         constituent_locations = {fg.furnace_group_id: plant.location for fg, plant in cluster_fgs}
@@ -848,6 +903,9 @@ def cluster_furnace_groups(
             capacity_shares=capacity_shares,
             constituent_locations=constituent_locations,
             weighted_avg_energy_costs=weighted_avg_energy_costs,
+            weighted_avg_emission_intensity=weighted_avg_emission_intensity,
+            weighted_avg_upstream_emission_intensity=weighted_avg_upstream_emission_intensity,
+            weighted_avg_upstream_carbon_cost_paid=weighted_avg_upstream_carbon_cost_paid,
             plant_group_id=plant_group_id,
         )
 
@@ -3090,6 +3148,9 @@ def disaggregate_allocations(
             location=meta_fg.constituent_locations[fg_id],
             production_cost=meta_fg.weighted_avg_carbon_cost,
             soft_minimum_capacity=None,
+            emission_intensity=meta_fg.weighted_avg_emission_intensity,
+            upstream_emission_intensity=meta_fg.weighted_avg_upstream_emission_intensity,
+            upstream_carbon_cost_paid=meta_fg.weighted_avg_upstream_carbon_cost_paid,
         )
 
     # PASS 1: Group allocations by type for batching
@@ -3892,8 +3953,16 @@ def disaggregate_allocations(
     if clustered_allocations.allocation_costs is not None:
         for (c_from, c_to, c_comm), c_cost in clustered_allocations.allocation_costs.items():
             cluster_costs_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_cost
+    # Carbon border charges are per-tonne like the LP costs, so every member flow of a charged
+    # cluster pair carries the cluster's charge unchanged.
+    cluster_charges_by_name: dict[tuple[str, str, str], float] = {}
+    if clustered_allocations.carbon_border_charges is not None:
+        for (c_from, c_to, c_comm), c_charge in clustered_allocations.carbon_border_charges.items():
+            cluster_charges_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_charge
 
     disaggregated_costs: dict = {}
+    disaggregated_charges: dict = {}
+    matched_charge_keys: set[tuple[str, str, str]] = set()
     matched_count = 0
     unmatched_examples: list[tuple] = []
     for from_pc, to_pc, comm in disaggregated_allocs:
@@ -3911,20 +3980,34 @@ def disaggregate_allocations(
         if not found and len(unmatched_examples) < 10:
             unmatched_examples.append((from_pc.name, to_pc.name, comm.name, from_key, to_key))
         disaggregated_costs[(from_pc, to_pc, comm)] = matched
+        for comm_name in _commodity_equivalent_names(comm):
+            charge_key = (from_key, to_key, comm_name)
+            if charge_key in cluster_charges_by_name:
+                disaggregated_charges[(from_pc, to_pc, comm)] = cluster_charges_by_name[charge_key]
+                matched_charge_keys.add(charge_key)
+                break
     logger.info(
         f"[DISAGGREGATION] Cost lookup: matched {matched_count}/{len(disaggregated_allocs)} flows "
-        f"(cluster cost map size: {len(cluster_costs_by_name)})"
+        f"(cluster cost map size: {len(cluster_costs_by_name)}); carbon border charges: "
+        f"{len(matched_charge_keys)}/{len(cluster_charges_by_name)} charged cluster arcs mapped onto "
+        f"{len(disaggregated_charges)} flows"
     )
     for ex in unmatched_examples:
         logger.info(
             f"[DISAGGREGATION] Unmatched: from_pc={ex[0]}, to_pc={ex[1]}, comm={ex[2]}, "
             f"resolved cluster keys: from={ex[3]}, to={ex[4]}"
         )
+    for charge_key in sorted(set(cluster_charges_by_name) - matched_charge_keys)[:10]:
+        logger.debug(f"[DISAGGREGATION] Charged cluster arc {charge_key} matched no disaggregated flow")
 
-    # Create new Allocations object
+    # Create new Allocations object. Tariff taxes are keyed by (from_iso3, to_iso3, commodity),
+    # not by process center, so they carry over unchanged and TM_PAM_connector can still
+    # propagate them into plant BOM material costs.
     result = Allocations(
         allocations=disaggregated_allocs,
         allocation_costs=disaggregated_costs if disaggregated_costs else None,
+        tariff_taxes=clustered_allocations.tariff_taxes,
+        carbon_border_charges=disaggregated_charges if disaggregated_charges else None,
     )
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")

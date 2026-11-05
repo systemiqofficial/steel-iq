@@ -102,3 +102,14 @@ Developers can use local data files or download from S3.
 - [CLI Commands](cli_commands.md)
 - [Python API](python_api.md)
 - [Data Packages](data_packages.md)
+
+
+```{toctree}
+:hidden:
+
+adding_excel_data_howto
+data_packages
+cli_commands
+python_api
+django_data_management
+```

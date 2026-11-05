@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 import xarray as xr
+from steelo.adapters.geospatial import geospatial_calculations
 from steelo.adapters.geospatial.geospatial_calculations import (
     get_baseload_coverage,
     calculate_lcoh_from_power_price,
@@ -10,6 +11,7 @@ from steelo.adapters.geospatial.geospatial_calculations import (
     calculate_distance_to_demand_and_feedstock,
 )
 from steelo.domain.constants import Year, MWH_TO_KWH, Volumes
+from steelo.simulation import GeoConfig
 from steelo.domain.models import (
     CountryMapping,
     CountryMappingService,
@@ -58,6 +60,7 @@ class TestGetBaseloadCoverage:
         assert invalid_mix in error_message
         assert "Grid only" in error_message
         assert "85% baseload + 15% grid" in error_message
+        assert "90% baseload + 10% grid" in error_message
         assert "95% baseload + 5% grid" in error_message
         assert "Not included" in error_message
 
@@ -73,6 +76,7 @@ class TestGetBaseloadCoverage:
             ("Grid only", 0.0),
             ("Not included", 0.0),
             ("85% baseload + 15% grid", 0.85),
+            ("90% baseload + 10% grid", 0.90),
             ("95% baseload + 5% grid", 0.95),
         ]
 
@@ -86,6 +90,7 @@ class TestGetBaseloadCoverage:
             ("Grid only", 0.0),
             ("Not included", 0.0),
             ("85% baseload + 15% grid", 0.85),
+            ("90% baseload + 10% grid", 0.90),
             ("95% baseload + 5% grid", 0.95),
         ],
     )
@@ -1219,3 +1224,31 @@ class TestCalculateDistanceToDemandAndFeedstock:
         assert bbox["miny"] == -90
         assert bbox["maxx"] == 180
         assert bbox["maxy"] == 90
+
+
+@pytest.mark.parametrize(("coverage", "percentile"), [(0.85, 15), (0.9, 10), (0.95, 5), (0.0, 100)])
+def test_coverage_to_percentile_rounds_the_grid_share(coverage, percentile):
+    """The grid's share rounds, so 0.9 coverage reads p10 rather than the truncated p9."""
+    assert geospatial_calculations.coverage_to_percentile(coverage) == percentile
+
+
+def test_hydrogen_price_cap_leaves_a_cell_without_an_lcoh_unpriced():
+    """
+    In one region, a cell with an LCOH below the ceiling keeps its LCOH and a cell without an LCOH stays unpriced
+    instead of taking the ceiling; both keep the region's ceiling as their effective ceiling.
+    """
+    ds = xr.Dataset(
+        {
+            "lcoh": (("lat", "lon"), np.array([[2.0, np.nan]])),
+            "tiam_ucl_region": (("lat", "lon"), np.array([["A", "A"]], dtype=object)),
+        },
+        coords={"lat": [0.0], "lon": [0.0, 0.25]},
+    )
+    config = GeoConfig(intraregional_trade_allowed=False, intraregional_trade_matrix={"A": None})
+
+    result = geospatial_calculations.apply_hydrogen_price_cap(
+        ds, geospatial_calculations.effective_hydrogen_ceilings({"A": 4.0}, config)
+    )
+
+    np.testing.assert_array_equal(result["capped_lcoh"].values, [[2.0, np.nan]])
+    np.testing.assert_array_equal(result["hydrogen_ceiling"].values, [[4.0, 4.0]])

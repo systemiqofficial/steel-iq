@@ -2,10 +2,21 @@ import pytest
 
 
 from steelo.simulation_types import get_default_technology_settings
+from steelo.domain.calculate_costs import ReductantScoreSeries
 
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, Year, TimeFrame, Volumes, Subsidy
 from steelo.domain.models import PlantGroup, CountryMapping, CountryMappingService
+
+
+def _no_stack(location, year):
+    """An existing plant builds no stack, so its expansion must never ask for one."""
+    raise AssertionError("an existing plant's expansion asked for a captive energy stack")
+
+
+def _stub_score_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=[""] * n)
 
 
 @pytest.fixture
@@ -82,8 +93,8 @@ def setup_environment(bus, country_mappings_for_test, tmp_path):
     # Initialize other required data
     bus.env.dynamic_feedstocks = {"EAF": [], "BOF": [], "DRI": [], "BF": []}
     bus.env.allowed_furnace_transitions = {"EAF": ["EAF", "BF", "BOF", "DRI"]}
-    bus.env.industrial_cost_of_equity = {"USA": 0.08}
-    bus.env.industrial_cost_of_debt = {"USA": 0.04}
+    bus.env.cost_of_equity_by_tech = {"USA": {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    bus.env.cost_of_debt_by_tech = {"USA": {tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
     bus.env.global_risk_free_rate = 0.02
     bus.env.year = Year(2025)
     bus.env.fopex_by_country = {"USA": {"eaf": 50.0, "bof": 60.0, "dri": 70.0, "bf": 65.0}}
@@ -123,6 +134,7 @@ def test_evaluate_expansion_without_subsidies(
             },
             0.8,
             "scrap",
+            {"scrap": 1.0},
         )
 
     # Mock with side_effect to handle all tech types
@@ -140,9 +152,11 @@ def test_evaluate_expansion_without_subsidies(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -155,6 +169,7 @@ def test_evaluate_expansion_without_subsidies(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies={},  # Empty dict instead of None
         opex_subsidies={},  # Empty dict for consistency
         debt_subsidies={},  # Empty dict for consistency
@@ -166,7 +181,7 @@ def test_evaluate_expansion_without_subsidies(
     assert plant_id in options
 
     # Get the NPV, best tech, and capex
-    npv, best_tech, capex = options[plant_id]
+    npv, best_tech, capex, _reductant, _build_capacity = options[plant_id]
     assert npv is not None
     assert best_tech in ["EAF", "BOF", "DRI", "BF"]
     assert capex == bus.env.name_to_capex["greenfield"]["Americas"][best_tech]
@@ -192,6 +207,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
             },
             0.8,
             "scrap",
+            {"scrap": 1.0},
         )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -222,9 +238,11 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -237,6 +255,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies=capex_subsidies,
     )
 
@@ -245,7 +264,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
     # Debug: Check what options contains
     assert options, f"No expansion options returned. Plant id: {plant_id}"
     assert plant_id in options, f"Plant {plant_id} not in options. Available keys: {list(options.keys())}"
-    npv, best_tech, capex_with_subsidy = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
 
     # If EAF is chosen, verify subsidy was applied
     if best_tech == "EAF":
@@ -276,6 +295,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
             },
             0.8,
             "scrap",
+            {"scrap": 1.0},
         )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -306,9 +326,11 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -321,12 +343,13 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies=capex_subsidies,
     )
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex_with_subsidy = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
 
     # If DRI is chosen, verify subsidy was applied
     if best_tech == "DRI":
@@ -359,6 +382,7 @@ def test_evaluate_expansion_with_combined_subsidies(
                 },
                 0.9,  # Higher utilization
                 "hot metal",
+                {"hot metal": 1.0},
             )
         else:
             return (
@@ -368,6 +392,7 @@ def test_evaluate_expansion_with_combined_subsidies(
                 },
                 0.8,
                 "scrap",
+                {"scrap": 1.0},
             )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -409,9 +434,11 @@ def test_evaluate_expansion_with_combined_subsidies(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -424,12 +451,13 @@ def test_evaluate_expansion_with_combined_subsidies(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies=capex_subsidies,
     )
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex_with_subsidy = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
 
     # Verify BOF was chosen given the favorable BOM
     if best_tech == "BOF":
@@ -439,6 +467,84 @@ def test_evaluate_expansion_with_combined_subsidies(
         total_subsidy = 50.0 + (original_capex * 0.1)
         expected_capex = max(0, original_capex - total_subsidy)
         assert abs(capex_with_subsidy - expected_capex) < 0.01
+
+
+def test_prefilter_affordability_uses_subsidised_capex(
+    setup_environment, plant_with_location, mocker, country_mappings_for_test
+):
+    """A technology affordable only thanks to its capex subsidy survives the pre-filter.
+
+    Regression for the unsubsidised pre-filter: with balance between the subsidised
+    and unsubsidised equity requirement, the option was dropped before NPV ranking —
+    exactly the policy-supported techs the subsidy is meant to enable.
+    """
+    bus = setup_environment
+    bus.uow.plants.add(plant_with_location)
+
+    pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    # Unsubsidised equity: 400 × 1000 × 0.4 = 160,000; with the 50% subsidy: 80,000
+    pg.balance = 100_000.0
+    bus.uow.plant_groups.add(pg)
+
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
+        return (
+            {
+                "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
+                "energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}},
+            },
+            0.8,
+            "scrap",
+            {"scrap": 1.0},
+        )
+
+    mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
+
+    eaf_subsidy = Subsidy(
+        scenario_name="test_scenario",
+        technology_name="EAF",
+        iso3="USA",
+        cost_item="capex",
+        subsidy_type="relative",
+        subsidy_amount=0.5,
+        start_year=Year(2020),
+        end_year=Year(2030),
+    )
+
+    price = {"steel": [600.0] * 22, "iron": [400.0] * 22}
+    allowed_techs = {Year(year): ["EAF"] for year in range(2020, 2031)}
+
+    options = pg.evaluate_expansion_options(
+        price_series=price,
+        capacity=Volumes(1000),
+        region_capex=bus.env.name_to_capex["greenfield"],
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
+        get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
+        dynamic_feedstocks=bus.env.dynamic_feedstocks,
+        fopex_for_iso3=bus.env.fopex_by_country,
+        iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
+        chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
+        tech_to_product=bus.env.technology_to_product,
+        plant_lifetime=bus.env.config.plant_lifetime,
+        construction_time=2,
+        technology_emission_factors=bus.env.technology_emission_factors,
+        global_risk_free_rate=bus.env.global_risk_free_rate,
+        equity_share=0.4,
+        current_year=bus.env.year,
+        allowed_techs=allowed_techs,
+        active_statuses=["operating"],
+        capex_subsidies={"USA": {"EAF": [eaf_subsidy]}},
+        opex_subsidies={},
+        debt_subsidies={},
+    )
+
+    plant_id = plant_with_location.plant_id
+    assert plant_id in options, "Subsidised EAF should survive the affordability pre-filter"
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
+    assert best_tech == "EAF"
+    assert capex_with_subsidy == 200.0
 
 
 def test_evaluate_expansion_with_restricted_allowed_techs(
@@ -463,6 +569,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
                 },
                 0.98,  # Very high utilization
                 "iron_ore",
+                {"iron_ore": 1.0},
             )
         else:
             # Make EAF and BOF less attractive - high costs
@@ -473,6 +580,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
                 },
                 0.5,  # Lower utilization
                 "scrap",
+                {"scrap": 1.0},
             )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -490,9 +598,11 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -505,6 +615,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         equity_share=0.4,
         current_year=bus.env.year,
         allowed_techs=allowed_techs_restricted,  # Only EAF and BOF allowed
+        active_statuses=["operating"],
         capex_subsidies={},
         opex_subsidies={},
         debt_subsidies={},
@@ -512,7 +623,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex = options[plant_id]
+    npv, best_tech, capex, _reductant, _build_capacity = options[plant_id]
 
     # Verify that only allowed technologies were considered
     assert best_tech in ["EAF", "BOF"], f"Technology {best_tech} was chosen but is not in allowed_techs"
@@ -526,9 +637,11 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        captive_energy_at=_no_stack,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -541,12 +654,13 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         equity_share=0.4,
         current_year=bus.env.year,
         allowed_techs=allowed_techs_all,  # All technologies allowed
+        active_statuses=["operating"],
         capex_subsidies={},
         opex_subsidies={},
         debt_subsidies={},
     )
 
-    npv_all, best_tech_all, capex_all = options_all[plant_id]
+    npv_all, best_tech_all, capex_all, _reductant_all, _build_capacity_all = options_all[plant_id]
 
     # When all techs are allowed, the more economical DRI or BF should be chosen
     assert best_tech_all in ["DRI", "BF"], (

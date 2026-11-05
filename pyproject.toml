@@ -1,6 +1,6 @@
 [project]
 name = "steel-model"
-version = "2.0.0"
+version = "3.0.0"
 description = "Steel decarbonisation model"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -19,7 +19,6 @@ dependencies = [
     "pycountry",
     "scipy",
     "pydantic",
-    "mocker",
     "matplotlib",
     "sentry-sdk",
     "osmnx",
@@ -27,6 +26,7 @@ dependencies = [
     "dash",
     "dash-leaflet",
     "dash-extensions",
+    "plotly",
     "pyomo",
     "seaborn",
     "fiona",
@@ -34,8 +34,7 @@ dependencies = [
     "geopy",
     "ipython",
     "reverse-geocoder",
-    "highspy>=1.9.0",
-    "numba>=0.61.2",
+    "highspy[extras]>=1.15.1",
     # Django Frontend
     "django",
     "django-environ",
@@ -49,15 +48,21 @@ dependencies = [
     "tqdm",
     "dask[array,distributed]>=2025.5.0",
 ]
+
+[project.optional-dependencies]
+# Only needed when SimulationConfig.optimization_solver="gurobi" (or --optimization-solver
+# gurobi on the CLI). Install with `uv sync --extra gurobi`.
+gurobi = ["gurobipy>=13.0.2"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
-packages = ["src/steelo", "src/network_optimisation", "src/steeloweb", "src/baseload_optimisation_atlas"]
+packages = ["src/steelo", "src/network_optimisation", "src/steeloweb"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/steelo", "src/network_optimisation", "src/steeloweb", "src/baseload_optimisation_atlas"]
+packages = ["src/steelo", "src/network_optimisation", "src/steeloweb"]
 
 [dependency-groups]
 dev = [
@@ -76,7 +81,6 @@ dev = [
     "h5netcdf>=1.3.0",
     "h5py>=3.10.0",
     "certifi>=2024.0.0",
-    "atlite>=0.4.0",
     # Django Frontend
     "pytest-django",
     "django-debug-toolbar",
@@ -85,33 +89,32 @@ dev = [
     "myst-parser>=2.0",
     "furo>=2024.0",
     "sphinx-autobuild>=2024.0",
+    "sphinx-reredirects>=1.1",
 ]
 
 [tool.ruff]
 line-length = 120
 
 [project.scripts]
-show_plants_on_map = "steelo.entrypoints.cli:show_plants_on_map"
-show_cost_of_x_on_map = "steelo.entrypoints.cli:show_cost_of_x_on_map"
 run_simulation = "steelo.entrypoints.cli:run_full_simulation"
-run_boa = "baseload_optimisation_atlas.boa_run_simulation:main"
 llm-content = "steelo.entrypoints.developer_tools:llm_content"
 steelo-data-download = "steelo.entrypoints.data_cli:steelo_data_download"
 steelo-data-list = "steelo.entrypoints.data_cli:steelo_data_list"
 steelo-data-verify = "steelo.entrypoints.data_cli:steelo_data_verify"
 steelo-data-validate = "steelo.entrypoints.data_cli:steelo_data_validate"
-test-plotting = "steelo.entrypoints.test_plotting_quick:main"
 steelo-data-convert = "steelo.entrypoints.data_cli:steelo_data_convert"
 steelo-data-recreate = "steelo.entrypoints.data_cli:steelo_data_recreate"
 steelo-data-extract-geo = "steelo.entrypoints.data_cli:steelo_data_extract_geo"
 steelo-data-prepare = "steelo.entrypoints.data_cli:steelo_data_prepare"
+steelo-boa-run = "steelo.entrypoints.boa_cli:steelo_boa_run"
 steelo-cache = "steelo.entrypoints.cache_cli:steelo_cache"
 download-binaries = "steelo.entrypoints.download_binaries:main"
 download-latest = "steelo.entrypoints.download_latest_binaries:main"
 list-binaries = "steelo.entrypoints.list_binaries:main"
 validate-master-input = "steelo.entrypoints.validate_master_input:main"
+generate-geo-options = "steelo.entrypoints.generate_geo_options:main"
 count-lines-of-code = "steelo.entrypoints.cli:count_lines_of_code"
-run_baseload_power_simulation = "steelo.entrypoints.geo:run_baseload_power_simulation"
+steelo-viewer = "steelo.viewer.server:main"
 
 [tool.pytest.ini_options]
 addopts = "-ra"

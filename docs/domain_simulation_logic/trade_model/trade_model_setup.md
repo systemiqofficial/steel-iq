@@ -96,6 +96,8 @@ The model represents the global steel value chain as a network:
 
 Trade-LP setup, the average-commodity-price calculation in `Environment.calculate_average_commodity_price_per_region()`, and downstream callers all read the value for the current simulation year. The same per-year structure applies to non-mine suppliers (scrap, etc.) — they simply populate a flat constant across years if their underlying input has no annual variation. Suppliers whose `production_cost_by_year` does not contain the current year are silently skipped from the average-price calculation.
 
+**Scrap production costs.** Scrap suppliers start the run at `SimulationConfig.initial_scrap_production_cost` (default `INITIAL_SCRAP_PRODUCTION_COST`, 333 USD/t): data preparation writes the constant into every scrap scenario's `suppliers.json` for every horizon year, and `bootstrap_simulation` re-applies the configured value at run time, so a cached preparation cannot pin a stale placeholder. From the second simulation year onward, `finalise_iteration` (step 4 in `handlers.py`) reprices the current year from BOF hot-metal costs — 0.95 × the average-BOM unit cost when available, else 0.90 × the country's fallback material cost, else the same configured default — meaning only the first year trades scrap at the placeholder.
+
 ---
 
 ### 3. Constraint Functions
@@ -108,44 +110,31 @@ Trade-LP setup, the average-commodity-price calculation in `Environment.calculat
 2. **Absolute taxes**: Fixed cost per ton ($/ton)
 3. **Percentage taxes**: Cost based on commodity price (% of market price)
 
-**Features:**
-- Wildcard support for country groups (e.g., "any country to EU")
-- Handles iron product families (hot metal, pig iron, DRI → "iron")
-- Accumulates multiple taxes on same route
-
-**`From ISO3` / `To ISO3` syntax in the `Tariffs` master-input sheet.** Each entry resolves to a list of ISO3 codes via `_resolve_iso3_or_bloc_entry()`:
-
-| Entry | Resolves to |
-|-------|-------------|
-| `<ISO3>` (e.g. `CHN`) | The single country |
-| `<bloc>` (e.g. `EU`) | All countries flagged for that bloc on the `Country mapping` sheet |
-| `NOT <bloc>` (e.g. `NOT EU`) | All countries *not* flagged for that bloc |
-| `NOT <ISO3>` (e.g. `NOT DEU`) | All known countries except that one |
-| `*` | Kept as a literal wildcard for downstream matching |
-
-Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASEAN`, `RCEP`. Membership comes from boolean columns on each `CountryMapping` record (the legacy `Trade bloc definitions` sheet with one column per region marked `X` is no longer read). For `NOT <X>`, the resolver first looks up `<X>` as a bloc and falls back to treating it as an ISO3 code; an unknown `<X>` raises `ValueError` rather than silently producing the universe. Adding a new bloc requires (a) adding a boolean column to the `Country mapping` sheet, (b) adding the field to the `CountryMapping` model, and (c) appending the bloc name to `supported_blocs` in `read_tariffs()` / `find_iso3s_of_trade_bloc()`.
+See [Tariffs, Quotas and Carbon Border Adjustments](trade_policy.md#tariffs-and-quotas) for the `Tariffs` sheet, the country and bloc syntax, and how overlapping rows combine.
 
 ---
 
 #### `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`
 **Purpose:** Enforces physical locality constraints on commodity transport at the LP stage.
 
-**Three modes, selected by config:**
+**Four modes, selected by config** (the default is mode 4, clustering by plant):
 
-1. **Clustering disabled (legacy):** Distance-based fixing against `hot_metal_radius` — hot commodities zeroed beyond the radius, cold commodities zeroed inside it.
-2. **Clustering enabled, iso3 keying:** Hot commodities are fixed to zero across iso3 boundaries; cold commodities remain free. Per-FG radius enforcement is deferred to disaggregation.
-3. **Clustering enabled, plant-group keying** (`cluster_hot_metal_techs_by_plant_group=True`): hot commodities are additionally zeroed between meta-furnace-groups with different `plant_group_id`. Same-plant-group pairs, and pairs involving non-meta-FG process centres (suppliers / demand), fall through to the iso3 rule.
+1. **Clustering disabled** (`enable_furnace_group_clustering=False`, CLI `--no-clustering`): Distance-based fixing against `hot_metal_radius` — hot commodities zeroed beyond the radius, cold commodities zeroed inside it.
+2. **Clustering enabled, iso3 keying** (`geographical_clustering_scope="iso3"`): Hot commodities are fixed to zero across iso3 boundaries and where either side has no country; cold commodities remain free. Per-FG radius enforcement is deferred to disaggregation.
+3. **Clustering enabled, plant-group keying** (`geographical_clustering_scope="plant_group"`): Hot commodities are zeroed between meta-furnace-groups with different cluster location keys (the plant group for hot-metal-affected technologies, the iso3 for others), and on edges where either side has no key, such as suppliers and demand centres. No country check; per-FG radius enforcement is deferred to disaggregation.
+4. **Clustering enabled, plant-level keying** (`geographical_clustering_scope="plant"`, the default): Hot commodities are zeroed on edges longer than `hot_metal_radius` (haversine distance) and where either side has no location. No owner or country check, so a BOF can draw hot metal from a BF at a neighbouring plant.
 
-**Applied before solving** and reduces model size. Emits a `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-plant-group, Z missing-iso3 ...` summary per year.
+**Applied before solving** and reduces model size. Emits one summary per year that counts the blocked flows by reason, for example `[LP HOT-METAL] Fixed to zero (clustering_scope=plant, radius=5 km): {'beyond-radius': 1234}`. The reasons are `beyond-radius` / `missing-location` (plant), `cross-plant-group` / `missing-cluster-key` (plant_group) and `cross-country` / `missing-iso3` (iso3); the line reads `none` when nothing was blocked.
 
 ---
 
 #### Secondary Feedstock & Aggregated Constraints
-**Purpose:** Limits scrap availability and enforces technology-specific feedstock ratios.
+**Purpose:** Limits constrained secondary feedstocks and enforces technology-specific feedstock ratios.
 
 **Secondary feedstock constraints:**
-- Regional limits on scrap, recycled materials
-- Example: "Europe can only source 50M tons scrap/year"
+- Annual limits on `bio_pci` per TIAM-UCL region and on `co2_stored` (CO2 storage) per country, from the [`Biomass availability`](../../user_guide/master_input_reference.md#biomass-availability) and [`CO2 storage`](../../user_guide/master_input_reference.md#co2-storage) sheets respectively
+- Example: "furnace groups in Western Europe can use at most X t of bio-PCI in 2030"
+- Each constrained commodity comes from a synthetic zero-cost supplier connected to every production process; the limit caps its flows into the region. Scrap is not limited this way: its availability comes from scrap suppliers.
 
 **Aggregated constraints:**
 - Technology-level min/max ratios
@@ -156,7 +145,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ### 4. `solve_steel_trade_lp_and_return_commodity_allocations()` - Solve & Extract Results
 
 **What it does:**
-1. Solves the LP optimization problem using Pyomo/HiGHS solver
+1. Solves the LP optimization problem using Pyomo, via HiGHS (default) or Gurobi
 2. Extracts optimal allocation values from solver variables
 3. Maps LP results back to domain objects (plants, suppliers, demand centers)
 4. Filters out negligible allocations (< 0.0001 tons)
@@ -189,16 +178,11 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ---
 
 #### `adapt_allocation_costs_for_carbon_border_mechanisms()`
-**Purpose:** Applies carbon border adjustment mechanisms (CBAM) to trade costs.
+**Purpose:** Charges imports into carbon-border regions on the embedded direct emissions of the product, at the destination's carbon price, net of carbon already paid upstream.
 
-**What it models:**
-- Export rebates when high-carbon-price region exports to low-carbon-price region
-- Import adjustments when low-carbon-price region exports to high-carbon-price region
-- Prevents double-counting when countries belong to multiple policy regions
+**What it models:** For every legal arc from a production centre into a country covered by an active mechanism, the allocation cost rises by `max(0, E × P_d − C)`: the product's embedded direct emissions at the destination's carbon price, net of carbon already paid. Non-zero adjustments are recorded on `Allocations.carbon_border_charges`.
 
-**Generalized design:** Works with any carbon border mechanism (EU CBAM, OECD, etc.), not just EU-specific.
-
-**Note:** Called separately from main setup, typically in allocation workflow.
+See [Tariffs, Quotas and Carbon Border Adjustments](trade_policy.md#carbon-border-adjustments) for the inputs, the rules and export rebates.
 
 ---
 
@@ -208,21 +192,43 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 
 **Model behavior:**
 - `lp_epsilon`: Solver tolerance (1e-3) - how close to constraints is acceptable
+- `optimization_solver`: LP solver backend, `"highs"` (default, no license needed) or `"gurobi"`
+  (requires `gurobipy` importable and able to obtain a license at solve time - install with
+  `uv sync --extra gurobi`). Also settable via `run_simulation --optimization-solver gurobi`.
+  **Gurobi is commercial software that this project does not license. You need your own Gurobi
+  license and must use it as its license agreement allows** (for example, an academic license
+  is not valid for commercial use). HiGHS and Gurobi don't share a tuning-option
+  vocabulary, so `TradeLPModel.solver_options` defaults differ per backend (see
+  `_default_solver_options()` in `trade_lp_modelling.py`); overriding `solver_options` must use
+  the selected backend's own option names. The Gurobi defaults are barrier (`Method=2`), one
+  thread (`Threads=1`), and the HiGHS default tolerances (`FeasibilityTol=1e-7`,
+  `OptimalityTol=1e-7`, `BarConvTol=1e-8`). Warm-starting between simulation years only works
+  with simplex-family methods on either backend - HiGHS's default `hipo` and Gurobi's default
+  barrier method both start fresh each year. The HiGHS retry chain (`fallback_solvers`) does
+  not apply to Gurobi: a non-optimal Gurobi solve is not retried.
 - `capacity_limit`: Production safety factor (0.95) - models realistic availability
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
+- `carbon_border_export_rebates`: Also rebate exports leaving a carbon-border region (default False)
 
 **Physical constraints:**
 - `hot_metal_radius`: Maximum transport distance for hot commodities (~5 km by default). Enforced in several layers:
-  1. **LP-build time** — international hot-commodity flows (different ISO3) are fixed to zero via `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`. When `cluster_hot_metal_techs_by_plant_group=True`, hot flows between meta-FGs with different `plant_group_id` are additionally zeroed.
-  2. **Clustering** — BOF FGs with no active BF/ESF/SR within radius in the same country are excluded from their cluster. BOF cluster capacity is capped at `min(physical_cap, Σ[reachable_BF_cap] / min_hot_metal_share)` so the LP cannot over-allocate.
+  1. **LP-build time** — `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` fixes hot-commodity flows to zero by scope (see the four modes above). Under `"plant"` scope (the default) it applies the radius itself; under `"plant_group"` it blocks flows between plant groups; under `"iso3"` it blocks flows between countries.
+  2. **Clustering** — BOF FGs that no active [hot-metal producer](#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) can reach are excluded from their cluster. Reach follows one shared rule, also used for the plant agents' access flag: within the radius, and in the same plant group under `"plant_group"` scope or the same country under `"iso3"` scope. BOF cluster capacity is capped at `min(physical_cap, Σ[reachable hot-metal producer capacity] / min_hot_metal_share)` so the LP cannot over-allocate.
   3. **Disaggregation pre-pass (strict)** — hot flows to destinations with a BOM minimum-share constraint are solved under strict radius with per-FG physical-capacity caps: radius-violating edges are omitted from the min-cost-flow graph, and when a geographic pocket can't physically meet its demand, destination demand is scaled down (producing downstream shortfalls the drift mechanism rebalances).
   4. **Drift + rebalance** — clusters whose actual joint-strict flow differs from LP get their Case 2 (cluster → demand) batches scaled by the drift factor and their Case 3 (supplier → cluster) batches rebalanced so per-cluster demand matches actual production × BOM ratio while per-supplier totals stay below LP (mine capacity hard-bounded).
   5. **Disaggregation (relabeling)** — hot flows without a binding minimum constraint that exceed the radius are relabeled to their cold equivalent (e.g. `dri_high` → `hbi_high`, `hot_metal` → `pig_iron`).
   6. **Post-disaggregation** — physical capacity and BOM consistency are validated for every FG; any BOF FG that received insufficient hot metal has its utilisation corrected downward.
 - `closely_allocated_products`: Hot commodities limited to short distances (`hot_metal`, `dri_high`/`dri_mid`/`dri_low`, `liquid_iron`).
 - `distantly_allocated_products`: Cold equivalents that ship globally (`pig_iron`, `hbi_high`/`hbi_mid`/`hbi_low`, `electrolytic_iron`).
-- `enable_furnace_group_clustering`: When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; all radius and minimum-ratio enforcement runs at disaggregation time as described above.
-- `cluster_hot_metal_techs_by_plant_group`: When clustering is enabled, FGs whose `effective_primary_feedstocks` touch a closely-allocated commodity (as `metallic_charge` or `outputs`) cluster by `plant.ultimate_plant_group` instead of `iso3`. Stored on each `MetaFurnaceGroup.plant_group_id` and consumed by the LP's cross-plant-group zero-fix rule (#1 above). Non-affected techs keep iso3 keying; the `[CLUSTERING]` log line reports the split per year. No effect when `enable_furnace_group_clustering` is off.
+- `enable_furnace_group_clustering` (default `True`): When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; apart from the LP-build and clustering checks above, radius and minimum-ratio enforcement runs at disaggregation time.
+- `geographical_clustering_scope`: When clustering is enabled, controls the geographical granularity of clustering for FGs whose `effective_primary_feedstocks` touch a closely-allocated commodity. Options:
+  - `"iso3"`: Cluster by country. Hot commodities are constrained to intra-country flows at the LP stage, and a BOF counts only in-country producers within the radius.
+  - `"plant_group"`: Cluster by corporate group (`plant.ultimate_plant_group`). Hot commodities are constrained to intra-plant-group flows at the LP stage, with no country check, and a BOF counts only its own group's producers within the radius.
+  - `"plant"` (default): Cluster by individual plant (`plant.plant_id`). Hot commodities may flow between plants within `hot_metal_radius` at the LP stage, whatever the owner or country, and a BOF counts every producer within the radius.
+
+  The same scope also sets the plant agents' hot-metal access flag (see [Hot-metal producers](#hot-metal-producers)). With clustering off, the access flag uses the `"plant"` rule.
+  
+  A FG is considered *affected* by the hot-metal radius by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers clustering-scope application. Non-affected techs always keep iso3 keying. The `[CLUSTERING]` log line reports the split per year (e.g., "X FGs keyed by plant_group, Y by iso3"). No effect when `enable_furnace_group_clustering` is off.
 
 See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section in `overview_trade_model.md` for full details.
 
@@ -237,11 +243,10 @@ See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section i
 The trade model is called during each simulation time step:
 
 1. **Allocation Model** prepares input data (plants, demand, suppliers for current year)
-2. **Setup phase** builds LP model with `set_up_steel_trade_lp()`
-3. **Optional adjustments** apply carbon border mechanisms
-4. **Solve phase** optimizes with `solve_steel_trade_lp_and_return_commodity_allocations()`
-5. **Analysis phase** identifies bottlenecks and validates results
-6. **Allocations** are returned to simulation for plant-level profit calculations
+2. **Setup phase** builds LP model with `set_up_steel_trade_lp()`; active carbon border mechanisms adjust the allocation costs inside `build_lp_model()`, before the objective is built
+3. **Solve phase** optimizes with `solve_steel_trade_lp_and_return_commodity_allocations()`
+4. **Analysis phase** identifies bottlenecks and validates results
+5. **Allocations** are returned to simulation for plant-level profit calculations
 
 ---
 

@@ -2,14 +2,6 @@
 import re
 from pathlib import Path
 
-# Per your guidelines, these modules are allowed to import settings.project_root
-ALLOWED_EXCEPTIONS = {
-    "cost_of_renewables.py",
-    "baseload_power_optimization.py",
-    "baseload_power_simulation.py",
-    "renewable_energy_input_prep.py",  # Part of standalone baseload power simulation
-}
-
 
 def test_forbid_global_config_imports_in_core_logic():
     """
@@ -26,8 +18,8 @@ def test_forbid_global_config_imports_in_core_logic():
 
     violations = []
     for py_file in steelo_src.rglob("*.py"):
-        # Skip allowed exceptions and the config modules themselves
-        if py_file.name in ALLOWED_EXCEPTIONS or "config.py" in str(py_file):
+        # Skip the config modules themselves
+        if "config.py" in str(py_file):
             continue
 
         content = py_file.read_text()

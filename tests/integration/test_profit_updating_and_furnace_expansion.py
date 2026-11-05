@@ -247,13 +247,17 @@ def test_furnace_group_balance_sheet_updates(bus, mutliple_plants, mocker, count
 
     bus.env.current_demand = 150
 
-    # Initialize industrial_cost_of_debt for test countries
-    if not hasattr(bus.env, "industrial_cost_of_debt") or not bus.env.industrial_cost_of_debt:
-        bus.env.industrial_cost_of_debt = {iso3: 0.05 for iso3 in test_iso3_codes}
+    # Initialize cost of debt for test countries
+    if not bus.env.cost_of_debt_by_tech:
+        bus.env.cost_of_debt_by_tech = {
+            iso3: {tech: 0.05 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")} for iso3 in test_iso3_codes
+        }
 
-    # Initialize industrial_cost_of_equity for test countries
-    if not hasattr(bus.env, "industrial_cost_of_equity") or not bus.env.industrial_cost_of_equity:
-        bus.env.industrial_cost_of_equity = {iso3: 0.08 for iso3 in test_iso3_codes}
+    # Initialize cost of equity for test countries
+    if not bus.env.cost_of_equity_by_tech:
+        bus.env.cost_of_equity_by_tech = {
+            iso3: {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")} for iso3 in test_iso3_codes
+        }
 
     # Fixing market price eval and prediction
     mocker.patch.object(bus.env, "extract_price_from_costcurve", return_value=100)
@@ -384,13 +388,17 @@ def test_total_plant_group_balance_sheet(bus, mutliple_plants, mocker, country_m
 
     bus.env.current_demand = 150
 
-    # Initialize industrial_cost_of_debt for test countries
-    if not hasattr(bus.env, "industrial_cost_of_debt") or not bus.env.industrial_cost_of_debt:
-        bus.env.industrial_cost_of_debt = {iso3: 0.05 for iso3 in test_iso3_codes}
+    # Initialize cost of debt for test countries
+    if not bus.env.cost_of_debt_by_tech:
+        bus.env.cost_of_debt_by_tech = {
+            iso3: {tech: 0.05 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")} for iso3 in test_iso3_codes
+        }
 
-    # Initialize industrial_cost_of_equity for test countries
-    if not hasattr(bus.env, "industrial_cost_of_equity") or not bus.env.industrial_cost_of_equity:
-        bus.env.industrial_cost_of_equity = {iso3: 0.08 for iso3 in test_iso3_codes}
+    # Initialize cost of equity for test countries
+    if not bus.env.cost_of_equity_by_tech:
+        bus.env.cost_of_equity_by_tech = {
+            iso3: {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")} for iso3 in test_iso3_codes
+        }
 
     # Fixing market price eval and prediction
     mocker.patch.object(bus.env, "extract_price_from_costcurve", return_value=100)

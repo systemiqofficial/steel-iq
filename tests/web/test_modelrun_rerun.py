@@ -1,11 +1,13 @@
 import types
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from django.core.files.base import ContentFile
 from django.urls import reverse
 from django.utils import timezone
 
-from steeloweb.models import ModelRun
+from steeloweb.models import ModelRun, SimulationPlot
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +117,63 @@ def test_rerun_from_cancelled_resets_and_enqueues(client, monkeypatch):
     assert modelrun.finished_at is None
 
     enqueue_stub.assert_called_once_with(modelrun.pk)
+
+
+@pytest.mark.django_db
+def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
+    """
+    A reset removes the output folder, the result CSV file and the plot rows with their image files, so a rerun
+    shows only its own results and leaves no stale files under MEDIA_ROOT.
+    """
+    output_dir = Path(temp_media_root) / "model_outputs" / "run_old"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.csv").write_text("stale")
+    modelrun = ModelRun.objects.create(
+        state=ModelRun.RunState.FAILED,
+        output_directory=str(output_dir),
+        result_csv=ContentFile(b"stale", name="old_results.csv"),
+    )
+    plot = SimulationPlot.objects.create(
+        modelrun=modelrun,
+        plot_type=SimulationPlot.PlotType.OTHER,
+        title="Old plot",
+        image=ContentFile(b"png", name="old.png"),
+    )
+    csv_file = Path(modelrun.result_csv.path)
+    image_file = Path(plot.image.path)
+
+    modelrun.reset_for_rerun()
+
+    modelrun.refresh_from_db()
+    assert not modelrun.result_csv
+    assert modelrun.output_directory == ""
+    assert not output_dir.exists()
+    assert not modelrun.simulation_plots.exists()
+    assert not csv_file.exists()
+    assert not image_file.exists()
+
+
+@pytest.mark.django_db
+def test_rerun_refused_for_lack_of_workers_keeps_the_previous_outputs(client, monkeypatch, temp_media_root):
+    """With no worker to take it, a rerun leaves the run's state and output folder as they were."""
+    monkeypatch.setattr(
+        "steeloweb.views_worker.check_worker_availability_for_simulation",
+        lambda: {"status": "no_workers", "message": "No workers are running.", "data": {}},
+    )
+    output_dir = Path(temp_media_root) / "model_outputs" / "run_old"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.csv").write_text("partial")
+    modelrun = ModelRun.objects.create(
+        state=ModelRun.RunState.FAILED,
+        error_message="RuntimeError\n\nTraceback:\nValueError: boom",
+        output_directory=str(output_dir),
+    )
+
+    response = client.post(reverse("rerun-modelrun", args=[modelrun.pk]))
+
+    assert response.status_code == 302
+    assert response.url == reverse("modelrun-detail", args=[modelrun.pk])
+    modelrun.refresh_from_db()
+    assert modelrun.state == ModelRun.RunState.FAILED
+    assert modelrun.output_directory == str(output_dir)
+    assert (output_dir / "old.csv").exists()

@@ -15,69 +15,117 @@ from typing import Dict
 from collections import defaultdict
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..domain import Year
+from ..domain.constants import END_YEAR_DEFAULT, RANDOM_SEED_DEFAULT, START_YEAR_DEFAULT
 
-from ..simulation import SimulationConfig
+from ..simulation import SimulationConfig, config_as_json_dict, config_default, run_names_in_use, unique_run_name
 from ..bootstrap import bootstrap_simulation
+from ..data.path_resolver import resolve_scenario_fixtures
+from ..adapters.geospatial.boa_lcoe import resolve_boa_run
+from ..utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
+GUROBI_LICENSE_NOTICE = (
+    "Gurobi is commercial software that is not part of this project. You need your own Gurobi "
+    "license and must use it as its license agreement allows (for example, an academic license "
+    "is not valid for commercial use)."
+)
 
-def run_full_simulation() -> str:
-    """
-    Run a full simulation from start to end year with the
-    configuration provided via command line arguments.
-    """
-    console = Console()
 
+def _build_parser() -> argparse.ArgumentParser:
+    """The argument parser of ``run_simulation``.
+
+    Returns:
+        The parser, every flag defined and nothing parsed yet.
+
+    Notes:
+        A flag that repeats a run setting's default takes it from ``config_default``, the years from the
+        constants, so a CLI run on the defaults records the class defaults. ``--log-level`` defaults to WARNING
+        against the class's DEBUG on purpose, for a quiet console.
+    """
     # Initialize the argument parser
     parser = argparse.ArgumentParser(description="Run a full steel model simulation.")
 
     # Add the options for the simulation
-    parser.add_argument("--start-year", type=int, default=2025, help="The year to start the simulation (default: 2025)")
-    parser.add_argument("--end-year", type=int, default=2050, help="The year to end the simulation (default: 2050)")
     parser.add_argument(
-        "--plants-json",
-        type=str,
-        default=None,
-        help="Path to the plants JSON file (default: ./data/fixtures/plants.json)",
+        "--start-year",
+        type=int,
+        default=START_YEAR_DEFAULT,
+        help="The year to start the simulation (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=END_YEAR_DEFAULT,
+        help="The year to end the simulation (default: %(default)s)",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
         default=None,
-        help="Base output directory for simulation results (default: ./outputs)",
+        help="Base output directory for simulation results (default: $STEELO_HOME/output)",
     )
     parser.add_argument(
-        "--output-file",
+        "--demand-scenario",
+        type=str,
+        default=config_default("chosen_demand_scenario"),
+        help=(
+            "Steel demand scenario of the run, named as in the 'Demand and scrap availability' sheet and picked "
+            "at run time from the prepared data; a name it lacks stops the run before it starts "
+            "(default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--scrap-scenario",
         type=str,
         default=None,
-        help="Path for the output JSON file (default: <output-dir>/pam_simulation_run.json)",
+        help=(
+            "Scrap availability scenario of the run, named and picked the same way (default: same as --demand-scenario)"
+        ),
     )
     parser.add_argument(
-        "--demand-excel",
+        "--grid-emissions-scenario",
+        type=str,
+        default=config_default("chosen_grid_emissions_scenario"),
+        help=(
+            "Grid emissivity projection applied at run time, named as in the 'Power grid emissivity' sheet "
+            "without its 'projection_' prefix (default: '%(default)s'; alternative: 'Net Zero')"
+        ),
+    )
+    parser.add_argument(
+        "--run-name",
         type=str,
         default=None,
-        help="Path to the demand excel file (default: ./data/fixtures/2025_05_27 Demand outputs for trade module.xlsx)",
+        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name); "
+        "a name already in use under the output base gets _2, _3, and so on",
     )
     parser.add_argument(
-        "--demand-sheet",
-        type=str,
-        default="Steel_Demand_Chris Bataille",
-        help="Sheet name in the demand excel file (default: 'Steel_Demand_Chris Bataille')",
-    )
-    parser.add_argument(
-        "--location-csv",
-        type=str,
+        "--hydrogen-ceiling-percentile",
+        type=float,
         default=None,
-        help="Path to the location CSV file (default: ./data/fixtures/countries.csv)",
+        help=(
+            "Percentile of a region's LCOH used as the regional hydrogen price cap "
+            "(default: the GeoConfig value, 100, which disables the cap)"
+        ),
     )
     parser.add_argument(
-        "--cost-of-x-csv",
-        type=str,
+        "--intraregional-trade",
+        action=argparse.BooleanOptionalAction,
         default=None,
-        help="Path to the cost of x CSV file (default: ./data/fixtures/cost_of_x.json)",
+        help="Allow hydrogen imports between linked regions (default: the GeoConfig value, off)",
+    )
+    parser.add_argument(
+        "--power-mix",
+        choices=list(POWER_MIX_TO_COVERAGE_MAP),
+        default=None,
+        metavar="MIX",
+        help=(
+            "Power mix, quoted: %(choices)s. A baseload mix reads the BOA LCOE file of its coverage "
+            "(default: the GeoConfig value, 85%% baseload + 15%% grid)"
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -108,35 +156,45 @@ def run_full_simulation() -> str:
     parser.add_argument("--cache-stats", action="store_true", help="Show cache statistics and exit")
     parser.add_argument("--clear-cache", action="store_true", help="Clear preparation cache and exit")
     parser.add_argument(
-        "--baseload-power-sim-dir",
+        "--boa-run",
         type=str,
         default=None,
-        help="Path to BOA-generated baseload power simulation output directory (overrides default)",
-    )
-    parser.add_argument(
-        "--enable-clustering",
-        action="store_true",
-        help="Enable furnace group clustering to reduce LP complexity",
-    )
-
-    def _str2bool(v: str) -> bool:
-        if v.lower() in ("true", "t", "yes", "y", "1"):
-            return True
-        if v.lower() in ("false", "f", "no", "n", "0"):
-            return False
-        raise argparse.ArgumentTypeError(f"expected a boolean value, got {v!r}")
-
-    parser.add_argument(
-        "--cluster-hot-metal-by-plant-group",
-        type=_str2bool,
-        nargs="?",
-        const=True,
-        default=False,
         help=(
-            "When clustering is enabled, cluster hot-metal-affected techs "
-            "(those whose feedstocks or outputs include hot_metal/dri_*/liquid_iron) "
-            "by plant_group_id instead of iso3. Accepts bare flag, =True, or =False. "
-            "No effect without --enable-clustering."
+            "Promoted BOA run that prices baseload power: a folder, or a run name under $BOA_DATA_ROOT "
+            "(else ~/.boa)/lcoe-only/ (default: the LCOE files geo-data ships in the prepared data)"
+        ),
+    )
+    parser.add_argument(
+        "--clustering",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Cluster furnace groups to reduce LP complexity (default: on)",
+    )
+    # Former spelling of --clustering, kept so existing launch scripts still parse
+    parser.add_argument(
+        "--enable-clustering", dest="clustering", action="store_true", default=None, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--plot-tm",
+        action="store_true",
+        help="Write the per-year trade maps under plots/TM (off by default; the interactive trade viewers replace them)",
+    )
+    parser.add_argument(
+        "--plot-geo",
+        action="store_true",
+        help="Write the geospatial PNGs under plots/GEO (off by default)",
+    )
+
+    parser.add_argument(
+        "--clustering-scope",
+        type=str,
+        choices=["iso3", "plant_group", "plant"],
+        default=None,
+        help=(
+            "When clustering is enabled, geographical scope for clustering hot-metal-affected techs. "
+            "'plant' (default): cluster by individual plant. 'plant_group': cluster by corporate group. "
+            "'iso3': cluster by country. "
+            "Only affects FGs with hot_metal/dri_*/liquid_iron feedstocks or outputs."
         ),
     )
     parser.add_argument(
@@ -147,16 +205,105 @@ def run_full_simulation() -> str:
     parser.add_argument(
         "--iron-to-steel-price-ratio",
         type=float,
-        default=0.8,
-        help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
+        default=config_default("iron_to_steel_price_ratio"),
+        help="Ratio of steel price for iron floor when pegging is enabled (default: %(default)s)",
     )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=RANDOM_SEED_DEFAULT,
+        help=(
+            "Seed for the run-time RNGs shared by the plant agent, geospatial and trade LP modules "
+            "(default: %(default)s); data preparation keeps its own fixed seed"
+        ),
+    )
+    parser.add_argument(
+        "--enable-capacity-policy",
+        action="store_true",
+        help="Enable China's capacity-replacement policy (default: disabled)",
+    )
+    parser.add_argument(
+        "--credit-validity-years",
+        type=int,
+        default=None,
+        help=(
+            "Years a capacity-pool credit may sit banked before it expires; requires "
+            "--enable-capacity-policy (default: no expiry)"
+        ),
+    )
+    parser.add_argument(
+        "--cbam-rebate",
+        action="store_true",
+        help="Rebate the carbon already paid on exports leaving a carbon border region (default: disabled)",
+    )
+    parser.add_argument(
+        "--optimization-solver",
+        type=str,
+        choices=["highs", "gurobi"],
+        default=config_default("optimization_solver"),
+        help="Trade LP solver backend (default: %(default)s). 'gurobi' requires your own Gurobi license "
+        "and a gurobipy installation reachable from wherever the simulation runs; you must "
+        "follow the terms of your license.",
+    )
+    return parser
+
+
+def _exit_unless_prepared(console: Console, data_dir: Path, demand_scenario: str, scrap_scenario: str) -> None:
+    """Stop the CLI before the run when the prepared data lacks the run's demand or scrap scenario.
+
+    Args:
+        console: The CLI's console, for the error.
+        data_dir: The prepared data folder the run would use.
+        demand_scenario: The run's demand scenario.
+        scrap_scenario: The run's scrap scenario.
+
+    Notes:
+        Exits with code 1 and the resolver's message, which lists the scenarios the preparation holds; the
+        prepared data is kept, since one preparation serves every scenario.
+    """
+    try:
+        resolve_scenario_fixtures(data_dir / "fixtures", demand_scenario, scrap_scenario)
+    except ValueError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        sys.exit(1)
+
+
+def run_full_simulation() -> None:
+    """
+    Run a full simulation from start to end year with the
+    configuration provided via command line arguments.
+
+    Notes:
+        The console script passes the return value to sys.exit(), so a successful run
+        returns None (exit code 0); failures call sys.exit() with a non-zero code.
+        The resolved ``--steelo-home`` is exported as ``STEELO_HOME`` for the rest of the process.
+    """
+    console = Console()
+    parser = _build_parser()
 
     # Parse the command-line arguments
     try:
         args = parser.parse_args()
 
+        if args.credit_validity_years is not None and args.credit_validity_years <= 0:
+            parser.error("--credit-validity-years must be a positive number of years")
+        if args.credit_validity_years is not None and not args.enable_capacity_policy:
+            parser.error("--credit-validity-years requires --enable-capacity-policy")
+
+        # Before the home, the cache and the run folder exist, so a wrong name costs nothing
+        boa_run_dir = None
+        if args.boa_run is not None:
+            try:
+                boa_run_dir = resolve_boa_run(args.boa_run)
+            except FileNotFoundError as error:
+                console.print(f"[red]{escape(str(error))}[/red]")
+                sys.exit(1)
+            console.print(f"[blue]Baseload LCOE run:[/blue] {escape(str(boa_run_dir))}")
+        boa_run = boa_run_dir.name if boa_run_dir is not None else None
+
         # Setup directories
         steelo_home = Path(args.steelo_home)
+        os.environ["STEELO_HOME"] = str(steelo_home)  # for helpers that read the variable, such as the geo-unit lookup
         steelo_home.mkdir(parents=True, exist_ok=True)
 
         # Handle cache operations
@@ -169,17 +316,22 @@ def run_full_simulation() -> str:
             console.print("[blue]Cache Statistics:[/blue]")
             for key, value in stats.items():
                 console.print(f"  {key}: {value}")
-            return "Cache stats displayed"
+            return
 
         if args.clear_cache:
             removed = cache_manager.clear_cache()
             console.print(f"[green]Cleared {removed} cached preparations[/green]")
-            return "Cache cleared"
+            return
 
         # Prepare output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_base = steelo_home / "output"
-        output_base.mkdir(exist_ok=True)
+        output_base = Path(args.output_dir) if args.output_dir else steelo_home / "output"
+        output_base.mkdir(parents=True, exist_ok=True)
+        run_name = (
+            unique_run_name(args.run_name, run_names_in_use(output_base))
+            if args.run_name and args.run_name.strip()
+            else None
+        )
 
         # Unique output directory for this simulation
         output_dir = output_base / f"sim_{timestamp}"
@@ -194,6 +346,15 @@ def run_full_simulation() -> str:
             "CRITICAL": logging.CRITICAL,
         }
         log_level = log_levels[args.log_level]
+
+        # Scrap availability follows the demand scenario unless picked separately
+        demand_scenario = args.demand_scenario
+        scrap_scenario = args.scrap_scenario or args.demand_scenario
+        grid_emissions_scenario = args.grid_emissions_scenario
+        console.print(
+            f"[blue]Demand scenario:[/blue] {demand_scenario}  [blue]Scrap scenario:[/blue] {scrap_scenario}  "
+            f"[blue]Grid emissions scenario:[/blue] {grid_emissions_scenario}"
+        )
 
         # Prepare data with caching
         from ..data import DataPreparationService
@@ -238,6 +399,7 @@ def run_full_simulation() -> str:
         if cached_data_dir:
             # Use cached data directory directly
             actual_data_dir = cached_data_dir
+            _exit_unless_prepared(console, actual_data_dir, demand_scenario, scrap_scenario)
 
             # Create symlink to cached data
             try:
@@ -253,28 +415,28 @@ def run_full_simulation() -> str:
                 "data_dir": actual_data_dir,
                 "output_dir": output_dir,
                 "master_excel_path": master_excel_path,
-                "demand_sheet_name": args.demand_sheet,
+                "chosen_demand_scenario": demand_scenario,
+                "chosen_scrap_scenario": scrap_scenario,
+                "chosen_grid_emissions_scenario": grid_emissions_scenario,
+                "run_name": run_name,
                 "log_level": log_level,
+                "random_seed": args.random_seed,
+                "plot_tm": args.plot_tm,
+                "plot_geo": args.plot_geo,
+                "boa_run_dir": boa_run_dir,
+                "boa_run": boa_run,
             }
-
-            # Add custom baseload_power_sim_dir if provided
-            if args.baseload_power_sim_dir:
-                baseload_dir = Path(args.baseload_power_sim_dir)
-                if not baseload_dir.exists():
-                    console.print(f"[red]Error: Baseload power simulation directory not found: {baseload_dir}[/red]")
-                    sys.exit(1)
-                config_kwargs["baseload_power_sim_dir"] = baseload_dir
-                console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
 
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
             # Override clustering setting from command line
-            if args.enable_clustering:
-                config.enable_furnace_group_clustering = True
-                console.print("[green]Furnace group clustering enabled[/green]")
-            if args.cluster_hot_metal_by_plant_group:
-                config.cluster_hot_metal_techs_by_plant_group = True
-                console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
+            if args.clustering is not None:
+                config.enable_furnace_group_clustering = args.clustering
+                state = "enabled" if args.clustering else "disabled"
+                console.print(f"[green]Furnace group clustering {state}[/green]")
+            if args.clustering_scope is not None:
+                config.geographical_clustering_scope = args.clustering_scope
+                console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
             # Override iron price pegging settings from command line
             if args.peg_iron_to_steel_price:
@@ -284,16 +446,46 @@ def run_full_simulation() -> str:
                     f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                 )
 
+            if args.enable_capacity_policy:
+                config.capacity_policy.enabled = True
+                console.print("[green]China capacity-replacement policy enabled[/green]")
+            if args.credit_validity_years is not None:
+                config.capacity_policy.credit_validity_years = args.credit_validity_years
+            if args.hydrogen_ceiling_percentile is not None:
+                config.geo_config.hydrogen_ceiling_percentile = args.hydrogen_ceiling_percentile
+                console.print(
+                    f"[green]Hydrogen ceiling at the {args.hydrogen_ceiling_percentile:g}th LCOH percentile[/green]"
+                )
+            if args.intraregional_trade is not None:
+                config.geo_config.intraregional_trade_allowed = args.intraregional_trade
+                state = "enabled" if args.intraregional_trade else "disabled"
+                console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+            if args.power_mix is not None:
+                config.geo_config.included_power_mix = args.power_mix
+                console.print(f"[green]Power mix: {args.power_mix}[/green]")
+            if args.cbam_rebate:
+                config.carbon_border_export_rebates = True
+                console.print("[green]Carbon border export rebates enabled[/green]")
+            # Override trade LP solver backend from command line
+            if args.optimization_solver != config_default("optimization_solver"):
+                config.optimization_solver = args.optimization_solver
+                console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
+                if args.optimization_solver == "gurobi":
+                    console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
+
             # Save config and metadata
-            config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
-            config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+            config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
             prep_metadata = {
                 "preparation_time": datetime.now().isoformat(),
                 "cache_used": True,
                 "master_excel": str(master_excel_path),
                 "cached_from": str(cached_data_dir),
+                "demand_scenario": demand_scenario,
+                "scrap_scenario": scrap_scenario,
+                "made_in": "cli",
+                "master_source": "custom" if args.master_excel else "default",
             }
             (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -316,6 +508,7 @@ def run_full_simulation() -> str:
                 )
 
                 actual_data_dir = prep_dir
+                _exit_unless_prepared(console, actual_data_dir, demand_scenario, scrap_scenario)
 
                 # Create symlink to prepared data
                 try:
@@ -331,30 +524,28 @@ def run_full_simulation() -> str:
                     "data_dir": actual_data_dir,
                     "output_dir": output_dir,
                     "master_excel_path": master_excel_path,
-                    "demand_sheet_name": args.demand_sheet,
+                    "chosen_demand_scenario": demand_scenario,
+                    "chosen_scrap_scenario": scrap_scenario,
+                    "chosen_grid_emissions_scenario": grid_emissions_scenario,
+                    "run_name": run_name,
                     "log_level": log_level,
+                    "random_seed": args.random_seed,
+                    "plot_tm": args.plot_tm,
+                    "plot_geo": args.plot_geo,
+                    "boa_run_dir": boa_run_dir,
+                    "boa_run": boa_run,
                 }
-
-                # Add custom baseload_power_sim_dir if provided
-                if args.baseload_power_sim_dir:
-                    baseload_dir = Path(args.baseload_power_sim_dir)
-                    if not baseload_dir.exists():
-                        console.print(
-                            f"[red]Error: Baseload power simulation directory not found: {baseload_dir}[/red]"
-                        )
-                        sys.exit(1)
-                    config_kwargs["baseload_power_sim_dir"] = baseload_dir
-                    console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
 
                 config = SimulationConfig.from_data_directory(**config_kwargs)
 
                 # Override clustering setting from command line
-                if args.enable_clustering:
-                    config.enable_furnace_group_clustering = True
-                    console.print("[green]Furnace group clustering enabled[/green]")
-                if args.cluster_hot_metal_by_plant_group:
-                    config.cluster_hot_metal_techs_by_plant_group = True
-                    console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
+                if args.clustering is not None:
+                    config.enable_furnace_group_clustering = args.clustering
+                    state = "enabled" if args.clustering else "disabled"
+                    console.print(f"[green]Furnace group clustering {state}[/green]")
+                if args.clustering_scope is not None:
+                    config.geographical_clustering_scope = args.clustering_scope
+                    console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
                 # Override iron price pegging settings from command line
                 if args.peg_iron_to_steel_price:
@@ -364,10 +555,36 @@ def run_full_simulation() -> str:
                         f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                     )
 
+                if args.enable_capacity_policy:
+                    config.capacity_policy.enabled = True
+                    console.print("[green]China capacity-replacement policy enabled[/green]")
+                if args.credit_validity_years is not None:
+                    config.capacity_policy.credit_validity_years = args.credit_validity_years
+                if args.hydrogen_ceiling_percentile is not None:
+                    config.geo_config.hydrogen_ceiling_percentile = args.hydrogen_ceiling_percentile
+                    console.print(
+                        f"[green]Hydrogen ceiling at the {args.hydrogen_ceiling_percentile:g}th LCOH percentile[/green]"
+                    )
+                if args.intraregional_trade is not None:
+                    config.geo_config.intraregional_trade_allowed = args.intraregional_trade
+                    state = "enabled" if args.intraregional_trade else "disabled"
+                    console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+                if args.power_mix is not None:
+                    config.geo_config.included_power_mix = args.power_mix
+                    console.print(f"[green]Power mix: {args.power_mix}[/green]")
+                if args.cbam_rebate:
+                    config.carbon_border_export_rebates = True
+                    console.print("[green]Carbon border export rebates enabled[/green]")
+                # Override trade LP solver backend from command line
+                if args.optimization_solver != config_default("optimization_solver"):
+                    config.optimization_solver = args.optimization_solver
+                    console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
+                    if args.optimization_solver == "gurobi":
+                        console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
+
                 # Save config and metadata
-                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
                 config_path = output_dir / "simulation_config.json"
-                config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+                config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
                 prep_metadata = {
                     "preparation_time": datetime.now().isoformat(),
@@ -376,6 +593,10 @@ def run_full_simulation() -> str:
                     "preparation_duration": prep_result.total_duration,
                     "files_prepared": len(prep_result.files),
                     "temp_prep_dir": str(prep_dir),
+                    "demand_scenario": demand_scenario,
+                    "scrap_scenario": scrap_scenario,
+                    "made_in": "cli",
+                    "master_source": "custom" if args.master_excel else "default",
                 }
                 (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -438,9 +659,8 @@ def run_full_simulation() -> str:
 
         console.print("[green]Simulation completed![/green]")
         console.print(f"[green]Results in:[/green] {output_dir}")
+        console.print(f"[green]View it:[/green] steelo-viewer {output_dir}")
         console.print(f"[green]Latest symlink:[/green] {latest_link}")
-
-        return f"Simulation completed! Results in: {output_dir}"
 
     except argparse.ArgumentError as e:
         console.print(f"[red]Argument parsing error: {e}[/red]")
@@ -698,12 +918,13 @@ def show_geo_plots() -> None:
 
     args = parser.parse_args()
 
-    # Create SimulationConfig from data directory
+    # Create SimulationConfig from data directory; this command exists to make the GEO plots
     config = SimulationConfig.from_data_directory(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         start_year=args.year,
         end_year=args.year,
+        plot_geo=True,
     )
 
     # Create PlotPaths object

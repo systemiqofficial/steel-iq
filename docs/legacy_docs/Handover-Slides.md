@@ -1,4 +1,6 @@
-# Slide 1: Overview of the Architecture
+# Handover Slides
+
+## Slide 1: Overview of the Architecture
 - **Core Concept**: Separation of concerns through a modular structure.
 - [Link to Diagram in Cosmic Python](https://www.cosmicpython.com/book/chapter_13_dependency_injection.html)
 - **Key Components**:
@@ -13,7 +15,7 @@
 
 ---
 
-# Slide 2: Core Business Domain
+## Slide 2: Core Business Domain
 - **Principle**: Core domain modules are independent of external libraries.
 - **Implementation**:
   - Use interfaces for external dependencies (e.g., repositories, preprocessing).
@@ -23,7 +25,7 @@
 
 ---
 
-# Slide 3: Message Bus
+## Slide 3: Message Bus
 - **Purpose**:
   - Central logging
   - Reconstruct application state from logs
@@ -36,7 +38,7 @@
 
 ---
 
-# Slide 4: Command and Event Handlers
+## Slide 4: Command and Event Handlers
 - **Decoupling**:
   - Commands: Single handler for intent.
   - Events: Multiple handlers for facts.
@@ -46,7 +48,7 @@
 
 ---
 
-# Slide 5: Unit of Work (UoW)
+## Slide 5: Unit of Work (UoW)
 - **Role**:
   - Abstracts atomic operations.
   - Tracks exceptions and events during processing.
@@ -58,7 +60,7 @@
 
 ---
 
-# Slide 6: DevData and Testing
+## Slide 6: DevData and Testing
 - **DevData**:
   - Standard Python patterns for development setup.
 - **Testing Strategy**:
@@ -68,7 +70,7 @@
 
 ---
 
-# Slide 7: Extensibility Examples
+## Slide 7: Extensibility Examples
 - **New Integrations**:
   - Datasette for cleaning Excel data.
   - Web applications using FastAPI or Flask.
@@ -78,7 +80,7 @@
 
 ---
 
-# Slide 8: Conclusion
+## Slide 8: Conclusion
 - **Benefits of the Architecture**:
   - Modular and decoupled design.
   - Scalable and traceable.

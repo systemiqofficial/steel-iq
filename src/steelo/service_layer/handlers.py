@@ -10,8 +10,10 @@ import json
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities, T_TO_KT  # Keep enum as constant
 from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
-from steelo.domain.calculate_costs import filter_subsidies_for_year
+from steelo.domain.calculate_costs import collect_subsidies_for_geo, filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
+from steelo.capacity_policy import handlers as capacity_policy_handlers
+from steelo.utilities import energy_trace
 import logging
 
 if TYPE_CHECKING:
@@ -43,21 +45,27 @@ def renovate_furnace_group(cmd: commands.RenovateFurnaceGroup, uow: UnitOfWork, 
     Side Effects:
         - Updates the furnace group's lifetime, last_renovation_date, and financial parameters.
         - Changes the technology CAPEX type to "brownfield".
+        - Installs the new site's stack of the renovation year, traced as ``greenfield_relock``.
         - Logs a FurnaceGroupRenovated event.
         - Commits the changes to the repository.
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
         plant.renovate_furnace_group(
             cmd.furnace_group_id,
             env.config.plant_lifetime,
+            capacity=cmd.capacity,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
+            captive_energy=cmd.captive_energy,
         )
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        energy_trace.greenfield_relock("renovation", plant, fg, env.year, old_captive, cmd.captive_energy, env.year)
         uow.commit()
 
 
@@ -81,6 +89,7 @@ def change_furnace_group_status_to_switching_technology(
     Side Effects:
         - Changes the furnace group's status to 'operating switching technology'.
         - Stores the year_of_switch and embedded command for future execution.
+        - Traces a new site's stack locked for the switch as ``greenfield_relock``; the old one stays installed.
         - Tracks the switched capacity using the new technology name and capacity from the embedded command.
         - Commits the changes to the repository.
 
@@ -94,6 +103,10 @@ def change_furnace_group_status_to_switching_technology(
         fg = plant.get_furnace_group(cmd.furnace_group_id)
         old_reductant = fg.chosen_reductant
         plant.change_furnace_group_status_to_switching_technology(cmd.furnace_group_id, cmd.year_of_switch, cmd.cmd)
+        # The old technology keeps its stack until the switch executes
+        energy_trace.greenfield_relock(
+            "switch_decision", plant, fg, env.year, fg.captive_energy, cmd.cmd.captive_energy, env.year
+        )
 
         # Track the switched capacity - use the NEW technology name and capacity from the embedded command
         if cmd.cmd and hasattr(cmd.cmd, "technology_name") and hasattr(cmd.cmd, "capacity"):
@@ -124,6 +137,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
 
     Side Effects:
         - Changes the furnace group's technology and associated parameters.
+        - Installs a new site's stack carried by the command, traced as ``greenfield_relock``.
         - Updates the bill of materials and financial metrics.
         - Applies dynamic feedstock data if available for the new technology.
         - Logs a FurnaceGroupTechnologyChanged event.
@@ -147,6 +161,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
                 f"Empty BOM passed to technology change for {cmd.technology_name} "
                 f"(materials={len(bom_materials)}, energy={len(bom_energy)})"
             )
+        old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
         plant.change_furnace_group_technology(
             furnace_group_id=cmd.furnace_group_id,
             technology_name=cmd.technology_name,
@@ -156,13 +171,21 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             bom=cmd.bom,
+            chosen_reductant=cmd.chosen_reductant,
             lag=0,
+            capacity=cmd.capacity,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+            captive_energy=cmd.captive_energy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
+            legacy_years=cmd.remaining_lifetime,
+        )
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        energy_trace.greenfield_relock(
+            "switch_execution", plant, fg, env.year, old_captive, cmd.captive_energy, env.year
         )
         uow.commit()
 
@@ -180,7 +203,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
 
     Args:
         cmd (commands.AddFurnaceGroup): Command containing furnace_group_id, plant_id,
-            technology_name, capacity, product, equity_needed (capex × capacity × equity_share),
+            technology_name, capacity, product, equity_share, equity_needed (capex × capacity × equity_share),
             npv, financial parameters (capex, capex_no_subsidy, cost_of_debt,
             cost_of_debt_no_subsidy), and subsidy lists (capex_subsidies, debt_subsidies).
         uow (UnitOfWork): Unit of work for managing the transaction and accessing repositories.
@@ -188,7 +211,9 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             dynamic_feedstocks data, and bill of materials information.
 
     Side Effects:
-        - Creates a new furnace group in construction status with zero utilization.
+        - Creates a new furnace group in construction status with zero utilization. At a new site the group
+          holds the command's stack and its electricity and hydrogen without subsidy come from it and the
+          year's grid price; the expansion is traced as ``greenfield_relock``.
         - Sets applied_subsidies["capex"] to the capex_subsidies list from the command.
         - Sets applied_subsidies["debt"] to the debt_subsidies list from the command.
         - Adds the furnace group to the plant.
@@ -213,8 +238,17 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             plant.energy_costs or {},
             cmd.technology_name,
             cmd.capacity,
-            env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            cmd.chosen_reductant,
         )
+        # A new site's group pays its own stack's prices on the year's grid, every other carrier at its sibling's
+        # prices without subsidy, so the year-start loop applies each subsidy once; an existing plant's group
+        # takes the plant's prices, which the year-end refresh re-bases on the input costs
+        site_prices: dict[str, float] | None = None
+        if cmd.captive_energy is not None:
+            site_prices = dict(plant.furnace_groups[-1].energy_costs_no_subsidy)
+            grid = env.grid_electricity_for_year(plant.location, env.year)
+            site_prices["electricity"] = cmd.captive_energy.electricity(grid)
+            site_prices["hydrogen"] = cmd.captive_energy.hydrogen(grid)
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
             product=cmd.product,
@@ -223,6 +257,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+            equity_share=cmd.equity_share,
             current_year=env.year,
             lag=env.config.construction_time,
             status="construction",
@@ -233,13 +268,16 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             bill_of_materials=avg_bom_result[0],
-            chosen_reductant=avg_bom_result[2],
+            chosen_reductant=cmd.chosen_reductant,
             disposal_cost_outputs=env.config.disposal_cost_outputs,
+            energy_costs=site_prices,
         )
+        new_furnace.captive_energy = cmd.captive_energy
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
         new_furnace.applied_subsidies["debt"] = cmd.debt_subsidies
         plant.add_furnace_group(new_furnace)
+        energy_trace.greenfield_relock("expansion", plant, new_furnace, env.year, None, cmd.captive_energy, env.year)
         plant.added_capacity = Volumes(plant.added_capacity + cmd.capacity)
 
         # Debit the group treasury AFTER the furnace has been attached — factory exceptions
@@ -279,7 +317,10 @@ def update_cost_curve(_event: events.Event, uow: UnitOfWork, env: Environment):
     with uow:
         env.update_cost_curve(
             world_furnace_groups=[
-                fg for p in uow.plants.list() for fg in p.furnace_groups if (fg.status in env.config.active_statuses)
+                fg
+                for p in uow.plants.list()
+                for fg in p.furnace_groups
+                if (fg.status.lower() in env.config.active_statuses)
             ],
             lag=0,
         )
@@ -295,12 +336,24 @@ def update_future_cost_curve(_event: events.Event, uow: UnitOfWork, env: Environ
 
 
 def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, uow: UnitOfWork, env: Environment):
+    """Push the solved trade allocations back onto the active furnace groups.
+
+    Propagates costs through the TM-PAM connector, updates each group's
+    utilisation rate and records it under the current year (the per-year
+    history the capacity policy's utilisation gate reads), then refreshes the
+    bills of materials.
+    """
     trade_allocations = event.trade_allocations
     if env.config is None:
         raise ValueError("SimulationConfig is required for update_furnace_utilization_rates")
 
     with uow:
-        fgs = [fg for p in uow.plants.list() for fg in p.furnace_groups if (fg.status in env.config.active_statuses)]
+        fgs = [
+            fg
+            for p in uow.plants.list()
+            for fg in p.furnace_groups
+            if (fg.status.lower() in env.config.active_statuses)
+        ]
         active_bof_count = sum(1 for fg in fgs if fg.technology.name.upper() == "BOF")
 
         tmpc = TM_PAM_connector(
@@ -312,7 +365,10 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         tmpc.diagnostics_active_bof_count = active_bof_count
         tmpc.set_up_network_and_propagate_costs(solved_trade_allocations=trade_allocations)
         tmpc.update_furnace_group_utilisation(fgs)
+        for fg in fgs:
+            fg.record_utilization(int(env.year))
         bom_issue_count_materials, bom_issue_count_energy = tmpc.update_bill_of_materials(fgs)
+        tmpc.update_furnace_group_embedded_carbon(fgs)
         logger.info(
             f"BOM Update Summary (year {env.year}):\n"
             f"  - {bom_issue_count_materials} furnace groups retained existing material entries\n"
@@ -339,7 +395,6 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
                     f"[BOM-CHECK] Year {env.year}: corrected utilization for {corrected} supply-constrained FG(s)"
                 )
         tmpc.update_furnace_group_emissions(fgs)
-        env.allocation_and_transportation_costs = tmpc.extract_transportation_costs(fgs)
 
         # Store trade allocations for data collection
         env.trade_allocations = trade_allocations
@@ -356,7 +411,7 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         iron_demand_from_production = 0.0
         for plant in uow.plants.list():
             for fg in plant.furnace_groups:
-                if fg.status in env.config.active_statuses and fg.technology.product.lower() == "iron":
+                if fg.status.lower() in env.config.active_statuses and fg.technology.product.lower() == "iron":
                     iron_demand_from_production += fg.production
 
         print(f"Iron demand based on production in year {env.year} is {iron_demand_from_production * T_TO_KT:,.0f} kt")
@@ -373,6 +428,58 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
     env.generate_average_material_costs(uow.plants.list())
     env.generate_average_boms(uow.plants.list())
     uow.commit()
+
+
+def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, env: Environment) -> None:
+    """Replay a furnace group's deferred technology switch in its effective year.
+
+    Applies the stored ChangeFurnaceGroupTechnology command exactly as the direct
+    handler would - in particular the evaluated reductant (C7) must land with the
+    new technology instead of surfacing with the old one and waiting for the
+    year-start re-pick to correct it. A new site installs the stack it locked in the
+    decision year, traced as ``greenfield_relock``.
+
+    Args:
+        cmd: The furnace group's stored future_switch_cmd.
+        uow: Unit of work providing plant access.
+        env: Environment carrying plant_lifetime and dynamic feedstocks.
+    """
+    if not isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
+        return
+    plant = uow.plants.get(cmd.plant_id)
+    old_captive = plant.get_furnace_group(cmd.furnace_group_id).captive_energy
+    plant.change_furnace_group_technology(
+        furnace_group_id=cmd.furnace_group_id,
+        technology_name=cmd.technology_name,
+        plant_lifetime=env.config.plant_lifetime,
+        dynamic_business_case=env.dynamic_feedstocks.get(
+            cmd.technology_name,
+            env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
+        ),
+        bom=cmd.bom,
+        chosen_reductant=cmd.chosen_reductant,
+        lag=0,
+        capacity=cmd.capacity,
+        capex=cmd.capex,
+        capex_no_subsidy=cmd.capex_no_subsidy,
+        cost_of_debt=cmd.cost_of_debt,
+        cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+        captive_energy=cmd.captive_energy,
+        capex_subsidies=cmd.capex_subsidies,
+        debt_subsidies=cmd.debt_subsidies,
+        # Anchor the old technology's debt tail to the decision-time lifetime
+        legacy_years=max(0, cmd.remaining_lifetime - env.config.construction_time),
+    )
+    # A new site installs the stack it locked when it decided the switch, construction_time years ago
+    energy_trace.greenfield_relock(
+        "switch_execution",
+        plant,
+        plant.get_furnace_group(cmd.furnace_group_id),
+        env.year,
+        old_captive,
+        cmd.captive_energy,
+        env.year - env.config.construction_time,
+    )
 
 
 def finalise_iteration(
@@ -424,7 +531,8 @@ def finalise_iteration(
 
     Note:
         - Technology switches scheduled via 'operating switching technology' status are executed when
-          the current year matches the future_switch_year.
+          the current year matches the future_switch_year, and only while the furnace group still holds a
+          switching status: the end year is finalised twice (time_step_increment=0) and must not replay them.
         - Furnace groups in 'operating switching technology' status transition to 'construction switching technology'
           at end-of-life, allowing them to continue to the new technology construction phase.
     """
@@ -464,36 +572,28 @@ def finalise_iteration(
                 # Step 3a: Update current year in lifetime tracking
                 fg.lifetime.current = env.year
 
-                # Step 3b: Execute scheduled technology switches if the future_switch_year matches current year
-                if fg.future_switch_year == env.year and fg.future_switch_cmd is not None:
-                    cmd = fg.future_switch_cmd
-                    # Execute the technology change command directly during finalisation of the year
-                    if isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
-                        plant = uow.plants.get(cmd.plant_id)
-                        plant.change_furnace_group_technology(
-                            furnace_group_id=cmd.furnace_group_id,
-                            technology_name=cmd.technology_name,
-                            plant_lifetime=env.config.plant_lifetime,
-                            dynamic_business_case=env.dynamic_feedstocks.get(
-                                cmd.technology_name,
-                                env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
-                            ),
-                            bom=cmd.bom,
-                            lag=0,
-                            capex=cmd.capex,
-                            capex_no_subsidy=cmd.capex_no_subsidy,
-                            cost_of_debt=cmd.cost_of_debt,
-                            cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
-                            capex_subsidies=cmd.capex_subsidies,
-                            debt_subsidies=cmd.debt_subsidies,
-                        )
+                # Step 3b: Execute scheduled technology switches if the future_switch_year matches current year.
+                # The command outlives its execution (the collector reads it), so the status gates a replay
+                if (
+                    fg.future_switch_year == env.year
+                    and fg.future_switch_cmd is not None
+                    and "switching technology" in fg.status.lower()
+                ):
+                    execute_scheduled_technology_switch(fg.future_switch_cmd, uow=uow, env=env)
 
                 # Step 3c: Handle end-of-life transitions
                 # Close operating furnaces or switch to construction mode for technology switches
                 if fg.lifetime.current > fg.lifetime.time_frame.end and fg.status.lower() in env.config.active_statuses:
                     if fg.status.lower() != "operating switching technology":
                         # Standard end-of-life: close the furnace group
+                        logger.info(
+                            f"[FG LIFETIME] DECISION - CLOSE FG:{fg.furnace_group_id} plant:{plant.plant_id} "
+                            f"tech:{fg.technology.name} capacity:{fg.capacity * T_TO_KT:,.0f} kt "
+                            f"(end of life {fg.lifetime.time_frame.end} reached in {env.year}, "
+                            f"was '{fg.status}')"
+                        )
                         fg.status = "closed"
+                        capacity_policy_handlers.deposit_on_end_of_life_closure(plant, fg, uow, env)
                     else:
                         # Technology switch scenario: transition to construction phase of new technology
                         fg.status = "construction switching technology"
@@ -517,7 +617,9 @@ def finalise_iteration(
                         )
 
                 # Step 3e: Update OPEX subsidies based on active subsidies for the current year
-                all_opex_subsidies = env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                all_opex_subsidies = collect_subsidies_for_geo(env.opex_subsidies, plant.location.geo_key).get(
+                    fg.technology.name, []
+                )
                 active_opex_subsidies = filter_subsidies_for_year(all_opex_subsidies, env.year)
                 fg.applied_subsidies["opex"] = active_opex_subsidies
 
@@ -542,9 +644,9 @@ def finalise_iteration(
         for supplier in uow.repository.suppliers.list():
             if supplier.commodity == "scrap":
                 pricing_source = "default"
-                source_cost = 200.0  # Default scrap cost
+                source_cost = env.config.initial_scrap_production_cost  # Default when no cost data exists
                 sample_size = getattr(env, "_diag_bof_sample_count", None)
-                # Use BOF hot_metal cost if available, otherwise use hardcoded default
+                # Use BOF hot_metal cost if available, otherwise use the configured default
                 if "BOF" in env.avg_boms and "hot_metal" in env.avg_boms["BOF"]:
                     source_cost = env.avg_boms["BOF"]["hot_metal"]["unit_cost"] * 0.95
                     pricing_source = "avg_bom"
@@ -556,7 +658,7 @@ def finalise_iteration(
                         pricing_source = "fallback"
                     else:
                         # Ultimate fallback if no cost data available
-                        source_cost = 200.0
+                        source_cost = env.config.initial_scrap_production_cost
                         pricing_source = "default"
                 # Update production cost for the current year
                 supplier.production_cost_by_year[env.year] = source_cost
@@ -610,7 +712,7 @@ def finalise_iteration(
 
     print(f"Demand for year {env.year}: is {env.current_demand * T_TO_KT:,.0f} kt")
     print(
-        f"Steel capacity for year {env.year}: is {sum([fg.capacity for p in uow.plants.list() for fg in p.furnace_groups if fg.status in env.config.active_statuses and fg.technology.product == 'steel']) * T_TO_KT:,.0f} kt"
+        f"Steel capacity for year {env.year}: is {sum([fg.capacity for p in uow.plants.list() for fg in p.furnace_groups if fg.status.lower() in env.config.active_statuses and fg.technology.product == 'steel']) * T_TO_KT:,.0f} kt"
     )
     logger.debug(f"finalising iteration. time: {datetime.now()}")
 
@@ -678,6 +780,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                         ),
                         plant_lifetime=env.config.plant_lifetime,
                     )
+                    energy_trace.greenfield_build(plant, fg, year, env)
 
                     # New plants start at 0% utilization, will be ramped up by trade module
                     fg.utilization_rate = 0.0
@@ -706,6 +809,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                     need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
                     if need > 0.0:
                         env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
+                    capacity_policy_handlers.refund_greenfield_on_discard(fg, iso3, plant.location.geo_unit, int(year))
         uow.commit()
 
 
@@ -716,7 +820,8 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
         - Energy costs for all carriers (subsidised input, output, and unsubsidised)
-        - Bill of materials with updated energy prices
+        - Expected utilisation (fleet average for the technology)
+        - The site's power and electrolyser stack, which the NPV re-valuation prices it with
     """
     logger = logging.getLogger(f"{__name__}.update_dynamic_costs")
     with uow:
@@ -730,8 +835,8 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
                 fg.energy_costs = cmd.new_energy_costs
                 fg.output_energy_costs = cmd.new_output_energy_costs
                 fg.energy_costs_no_subsidy = cmd.new_energy_costs_no_subsidy
-                if cmd.new_bill_of_materials is not None:
-                    fg.bill_of_materials = cmd.new_bill_of_materials
+                fg.utilization_rate = cmd.new_utilization_rate
+                fg.captive_energy = cmd.new_captive_energy
                 logger.debug(
                     "[HANDLER] UpdateDynamicCosts %s/%s: energy_costs=%s output=%s no_sub=%s",
                     cmd.plant_id,
@@ -767,13 +872,38 @@ def load_checkpoint_handler(
 
 
 EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
-    events.FurnaceGroupClosed: [update_cost_curve],
-    events.FurnaceGroupTechChanged: [update_cost_curve],
-    events.FurnaceGroupRenovated: [update_cost_curve],
-    events.FurnaceGroupAdded: [update_future_cost_curve, update_capacity_buildout],
+    events.FurnaceGroupClosed: [
+        update_cost_curve,
+        capacity_policy_handlers.deposit_on_furnace_group_closed,
+        capacity_policy_handlers.record_motion_on_furnace_group_closed,
+    ],
+    events.FurnaceGroupTechChanged: [
+        update_cost_curve,
+        capacity_policy_handlers.deposit_on_furnace_group_tech_changed,
+        capacity_policy_handlers.record_motion_on_furnace_group_tech_changed,
+    ],
+    events.FurnaceGroupRenovated: [
+        update_cost_curve,
+        capacity_policy_handlers.deposit_on_furnace_group_renovated,
+        capacity_policy_handlers.record_motion_on_furnace_group_renovated,
+    ],
+    events.FurnaceGroupAdded: [
+        update_future_cost_curve,
+        update_capacity_buildout,
+        capacity_policy_handlers.attribute_greenfield_on_furnace_group_added,
+        # After the attribution, so a credit-funded greenfield records its new owner
+        capacity_policy_handlers.record_motion_on_furnace_group_added,
+    ],
     events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
-    events.IterationOver: [finalise_iteration, update_cost_curve],
+    events.IterationOver: [
+        capacity_policy_handlers.snapshot_pool_state,
+        finalise_iteration,
+        # After the year increment, so credits still usable through the year just
+        # snapshotted are purged on entering the next one, before any decision
+        capacity_policy_handlers.purge_expired_credits,
+        update_cost_curve,
+    ],
     events.SaveCheckpoint: [save_checkpoint_handler],
     events.LoadCheckpoint: [load_checkpoint_handler],
 }

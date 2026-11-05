@@ -33,7 +33,7 @@ The pipeline to select the best locations for building new steel and iron plants
 Each grid point is assigned to a country using country boundary shapefiles. This enables country-specific constraints and ensures location data can be mapped to national policies and regulations.
 
 ### Feasibility Mask
-Not all locations are suitable for building steel plants. The feasibility mask filters out locations based on physical constraints: sea points, high altitude locations, steep slopes, and extreme latitudes. The altitude is calculated from geopotential data, and the final mask combines all terrain constraints.
+Not all locations are suitable for building steel plants. The feasibility mask filters out locations based on physical constraints: sea points, high altitude locations, steep slopes, and extreme latitudes. Land at or below sea level is feasible — water is excluded by the land-sea mask, so the altitude constraint is an upper bound only. The altitude is calculated from geopotential data, and the final mask combines all terrain constraints.
 
 **Configuration:**
 - `max_altitude`: Maximum elevation in meters (default: 1'500m)
@@ -42,13 +42,16 @@ Not all locations are suitable for building steel plants. The feasibility mask f
 
 ### Power Prices
 Electricity costs vary by location and depend on the user-configured power mix. Three options are available:
-- **Baseload renewable** (85% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
+- **Baseload renewable** (85%, 90% or 95% coverage): Uses pre-calculated optimal LCOE values from own renewable energy simulations (see the documentation on baseload power optimization for more details). The remaining percentage comes from grid power:
 `power_price = baseload_coverage × lcoe_baseload + (1 - baseload_coverage) × grid_price`
-- **Grid only**: Uses country-level grid electricity prices from input data
+  The BOA LCOE is the cost per MWh delivered by the renewable system, so it is weighted by the share it delivers.
+- **Grid only**: Uses grid electricity prices from input data
 - **Not included**: Sets power price to zero. This is only valid for the selection of best locations. New plant energy costs are set to the grid power price in this case since they cannot be zero.
 
+The grid price of a cell is the master's `Input costs` electricity for the cell's geo unit (for example `CHN:CN-XJ`) where the master has a sub-national row, otherwise for its country. Cells are tagged with their geo unit by point-in-polygon against the Natural Earth admin-1 layer, gated by `geo_hierarchy.json`. Unlike plant locations, a cell whose centre falls outside every admin-1 polygon (some coastal cells) gets no nearest-unit fallback and stays at country level. A feasible cell whose country has no price takes the highest country-level grid price, never a province's, so it is never chosen as a site.
+
 ### Hydrogen Costs
-The levelized cost of hydrogen (LCOH) is calculated from the power prices set above based on country-specific electrolyzer efficiency and electricity consumption. To prevent unrealistically high costs in regions with poor renewable resources, a regional ceiling is applied.
+The levelised cost of hydrogen (LCOH) is calculated from the power prices set above, the electrolyser's electricity use and its CAPEX/OPEX: `lcoh = kWh per kg × power_price + capex_opex`. The electricity use is one value per year, the same worldwide (the master's `Hydrogen efficiency`). The CAPEX/OPEX is the master's value for the cell's geo unit where it has a sub-national row, otherwise for its country. To prevent unrealistically high costs in regions with poor renewable resources, a regional ceiling can be applied: a percentile below 100 of the LCOH across the region's cells. By default the ceiling sits at the 100th percentile and intraregional trade is off, so each location pays its own LCOH.
 
 **Intraregional Hydrogen Trade:**
 Optionally, regions can import hydrogen from connected regions. When enabled, the capped LCOH accounts for the possibility of importing hydrogen via pipeline from neighboring regions at their regional ceiling price plus long-distance transport costs. The hydrogen trade network is the following (to ↔ from):
@@ -75,9 +78,11 @@ Optionally, regions can import hydrogen from connected regions. When enabled, th
    - Where `min_connected_ceiling` is the lowest ceiling among connected trade regions
    - And `pipeline_cost` is the long-distance hydrogen pipeline transport cost per kg
 
+The effective ceilings of steps 2 to 4 are computed once, in the first geospatial year, for every year a new site can lock its hydrogen supply (`site_hydrogen_ceilings`); each year's raster is then capped at the stored ceilings of its year (see [Energy Prices](../overarching_elements/energy_prices.md#1-the-site-rasters)).
+
 **Configuration:**
-- `hydrogen_ceiling_percentile`: Percentile for regional cap (default: 20th percentile)
-- `intraregional_trade_allowed`: Enable/disable hydrogen imports between regions (default: True)
+- `hydrogen_ceiling_percentile`: Percentile for regional cap (default: 100, which leaves hydrogen prices uncapped); `run_simulation --hydrogen-ceiling-percentile`
+- `intraregional_trade_allowed`: Enable/disable hydrogen imports between regions (default: False); `run_simulation --intraregional-trade` switches it on
 - `long_dist_pipeline_transport_cost`: Pipeline transport cost in USD/kg (default: 1 USD/kg H2)
 
 ### CAPEX Proxy
@@ -127,6 +132,8 @@ Different land cover types and uses are more or less expensive to build on. This
 | Water | 2.0× |
 | Snow and Ice | 2.0× |
 
+Cells without LULC coverage receive the neutral minimum factor 1.0×.
+
 **Purpose:** Accounts for site clearing, grading, and environmental remediation costs.
 **Configuration:** Can be disabled entirely via `include_lulc_cost = False`
 
@@ -163,7 +170,7 @@ Iron and steel are calculated separately, each receiving a share of CAPEX and en
 
 ### Step 2: Global Priority Location Extraction
 
-After calculating outgoing cashflow for all feasible locations, the system extracts the top X% cheapest locations globally (where X is defined by `priority_pct`, default 5%) by flattening the 2D cost grid, removing infeasible locations, sorting by cost, and applying a distribution-adaptive selection method:
+After calculating outgoing cashflow for all feasible locations, the system extracts the top X% cheapest locations globally (where X% is `geo_config.pick_priority_sites_share`, a fraction 0.0-1.0, default 0.05 i.e. 5%) by flattening the 2D cost grid, removing infeasible locations, sorting by cost, and applying a distribution-adaptive selection method:
 
 1. **Continuous Distribution** (≥ 20 unique values): Uses quantile threshold to select all locations below the Xth percentile (most common case)
 2. **Low-Variance Distribution** (< 20 unique values): Samples from cost-ranked chunks with random selection within chunks to prevent systematic geographic bias
@@ -175,7 +182,7 @@ To ensure all countries have an opportunity to build new plants (even small coun
 
 **Process:**
 1. For each country (ISO3 code), extract the top X/10% cheapest locations within that country (e.g., if global priority is 5%, select top 0.5% per country)
-2. Add these country-specific locations to the global top locations
+2. Add these country-specific locations to the global top locations (duplicates already present in the global top are dropped)
 3. Number of locations per country is proportional to the country's feasible land area
 4. Uses the same distribution-adaptive selection method as Step 2
 
@@ -201,22 +208,27 @@ The pipeline generates the following plots (saved to `geo_plots_dir`):
 - `altitude_bin.png` - Binary altitude feasibility
 - `slope_bin.png` - Binary slope feasibility
 - `feasibility_mask.png` - Combined binary feasibility mask (land-sea mask, altitude, and slope)
-- `power_price_{year}.png` - Electricity costs by location (grid)
-- `baseload_lcoe_{year}_p{X}.png` - Renewable LCOE (if baseload used)
-- `capped_lcoh_{year}.png` - Hydrogen costs (after regional cap and intraregional trade, if allowed)
-- `distance_to_rail.png` - Distance to nearest railway network
-- `rail_infrastructure_cost.png` - Railway buildout costs
-- `distance_to_demand_{product}_{year}.png` - Distance to nearest demand by product (demand centers for steel, steel plants for iron)
-- `transport_cost_to_demand_{product}_{year}.png` - Per-tonne shipping cost to demand
-- `distance_to_feedstock_{product}_{year}.png` - Distance to nearest feedstock sources by product (iron plants for steel, iron ore mines for iron)
-- `transport_cost_to_feedstock_{product}_{year}.png` - Per-tonne shipping cost from feedstock
+- `grid_power_price_{year}.png` - Grid electricity price by location
+- `power_price_100cov_{year}.png` - Blended power price (baseload LCOE + grid share)
+- `optimal_lcoe_{year}_p{X}.png` - Renewable baseload LCOE (if baseload used)
+- `lcoh_{year}_p{X}.png` - Hydrogen costs (after regional cap and intraregional trade, if allowed)
+- `rail_distance.png` - Distance to nearest railway network
+- `rail_cost.png` - Railway buildout costs
+- `landtype_factor.png` - Land-type CAPEX multiplier map
+- `demand_distance_{product}_{year}.png` - Distance to nearest demand by product (demand centers for steel, steel plants for iron)
+- `demand_transportation_cost_per_ton_{product}_{year}.png` - Per-tonne shipping cost to demand
+- `feedstock_distance_{product}_{year}.png` - Distance to nearest feedstock sources by product (iron plants for steel, iron ore mines for iron)
+- `feedstock_transportation_cost_per_ton_{product}_{year}.png` - Per-tonne shipping cost from feedstock
+- `iron_ore_mines.png` - Iron-ore mine bubble map
 
 ### Priority Calculation Plots (Per Year, Per Product)
-- `outgoing_cashflow_proxy_{product}_{year}_p{X}.png` - Total lifetime costs
+- `lifetime_cost_proxy_{product}_{year}_p{X}.png` - Total lifetime costs
 - `priority_heatmap_{product}_{year}_p{X}.png` - Inverted priority map (higher = better)
-- `top{X}_priority_locations_{product}_{year}.png` - Selected candidate locations
+- `top{P}_priority_locations_{product}_{year}.png` - Selected candidate locations, where `{P}` is `pick_priority_sites_share` expressed as a percentage (e.g. `top5` for the 0.05 default; not the same `{X}` as the grid-power-mix plots below)
 
 Where `{X}` indicates the percentage of grid power vs. baseload (e.g., p5 = 95% baseload + 5% grid).
+
+**Plot cadence:** year-stamped maps are drawn on milestone years only (first and final year, plus every 5th year for price/LCOH layers and every 10th for distance/transport layers). The power-price histogram and the iron-ore mine map are written only in the final simulation year.
 
 ## Code implementation
 
@@ -229,18 +241,19 @@ The wrapper function `get_candidate_locations_for_opening_new_plants()` in `src/
 
 1. **Calculate baseload coverage** - Determines the percentage of power from renewable baseload sources based on user configuration
 2. **Add ISO3 codes** - Assigns country codes to each grid point (cached for reuse)
-3. **Add feasibility mask** - Filters out sea, mountains, steep slopes, and extreme latitudes (cached for reuse)
-4. **Add power prices** - Calculates electricity costs from baseload renewable energy and/or grid
-5. **Add capped hydrogen price** - Computes hydrogen costs with regional ceiling constraints (and intraregional trade, if allowed)
-6. **Add CAPEX proxy** - Estimates capital costs for steel/iron-making technologies
-7. **Add infrastructure costs** - Calculates railway buildout costs (cached for reuse)
-8. **Add transportation costs** - Computes shipping costs to demand centers and from feedstock sources (optional)
-9. **Add land type factor** - Applies CAPEX multipliers based on land cover type (optional)
-10. **Calculate priority KPI** - Combines all layers into final priority rankings
-11. **Extract energy prices** - Stores power and hydrogen costs for downstream NPV calculations
+3. **Build geo keys** - Tags each grid point with its sub-national geo unit where `geo_hierarchy.json` declares one, else its country; grid prices and electrolyser costs resolve at it. In the first year only, the effective hydrogen ceiling of every region is then precomputed for every year a new site can lock
+4. **Add feasibility mask** - Filters out sea, mountains, steep slopes, and extreme latitudes (cached for reuse)
+5. **Add power prices** - Calculates electricity costs from baseload renewable energy and/or grid
+6. **Add capped hydrogen price** - Computes hydrogen costs capped at the year's stored regional ceilings (with intraregional trade, if allowed)
+7. **Add CAPEX proxy** - Estimates capital costs for steel/iron-making technologies
+8. **Add infrastructure costs** - Calculates railway buildout costs (cached for reuse)
+9. **Add transportation costs** - Computes shipping costs to demand centers and from feedstock sources (optional)
+10. **Add land type factor** - Applies CAPEX multipliers based on land cover type (optional)
+11. **Calculate priority KPI** - Combines all layers into final priority rankings
+12. **Extract energy prices** - Stores power and hydrogen costs for downstream NPV calculations
 
 **Timing & Performance:**
-Each step is timed and logged separately. The total pipeline typically takes 30 sec - 5 min depending on:
+Each step is timed and logged separately (`[GEO TIMING]`, DEBUG). After vectorisation of the priority-KPI and lottery loops, a steady-state year takes well under a minute at the default 0.25° resolution; the first year is slower while static layers are built. Runtime depends on:
 - Whether cached layers exist (ISO3, feasibility mask, infrastructure costs) - year 1 vs the rest
 - Available cores for task parallelization
 
@@ -252,7 +265,7 @@ Key parameters affecting priority location selection:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `priority_pct` | 5 | Percentage of global top locations to extract as priority locations |
+| `pick_priority_sites_share` | 0.05 | Fraction of global top locations to extract as priority locations |
 | `included_power_mix` | 85% baseload + 15% grid | Power source for new plants |
 | `include_transport_cost` | True | Whether to include shipping costs |
 | `include_infrastructure_cost` | True | Whether to include railway buildout |
@@ -261,9 +274,10 @@ Key parameters affecting priority location selection:
 | `max_slope` | 2 | Maximum slope (degrees) for feasibility |
 | `max_latitude` | 65 | Maximum latitude (degrees) for feasibility |
 | `iron_ore_steel_ratio` | 1.6 | Amount of iron ore needed to produce one unit of steel |
-| `hydrogen_ceiling_percentile` | 20 | Regional hydrogen cost cap (percentile) |
-| `intraregional_trade_allowed` | True | Enable hydrogen imports between regions |
+| `hydrogen_ceiling_percentile` | 100 | Regional hydrogen cost cap (percentile); 100 = no cap; CLI `--hydrogen-ceiling-percentile` |
+| `intraregional_trade_allowed` | False | Enable hydrogen imports between regions; CLI `--intraregional-trade` |
 | `long_dist_pipeline_transport_cost` | 1.0 | Pipeline transport cost (USD/kg H2) |
+| `excluded_greenfield_technologies` | `["BOF"]` | Technologies never considered for new greenfield plants (see [New Plant Opening](new_plant_opening.md)); brownfield switching is unaffected. Neither the CLI nor the app lets a user change it (the app stores the default with each run); only a Python config sets another |
 
 #### `GeoDataPaths` Parameters
 
@@ -275,7 +289,7 @@ Required file paths:
 | `terrain_nc_path` | NetCDF file with land-sea mask, altitude, slope |
 | `lulc_nc_path` | NetCDF file with land cover classifications |
 | `shp_countries_path` | Shapefile with country boundaries (for ISO3 codes) |
-| `baseload_power_sim_dir` | Directory with pre-calculated renewable LCOE files - see baseload power documentation to modify |
+| `baseload_lcoe_dir` | Folder of the promoted BOA LCOE files: the run `--boa-run` names, else the prepared data's `outputs/GEO/baseload_lcoe/` - see the baseload power documentation |
 | `geo_plots_dir` | Output directory for plots |
 
 ### Output Format
@@ -344,5 +358,6 @@ The outgoing cashflow proxy is based on the geospatial indicators we consider th
 ## Related Documentation
 
 - [New Plant Opening Logic](new_plant_opening.md) - How candidate locations are used to create new plants
-- [Baseload Power Optimization](baseload_optimization_atlas.md) - Details on renewable LCOE calculations
+- [Energy Prices of Existing and New Plants](../overarching_elements/energy_prices.md) - Where the site power and hydrogen prices go after selection
+- [Baseload Optimisation Atlas](baseload_optimisation_atlas.md) - Details on renewable LCOE calculations
 - [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

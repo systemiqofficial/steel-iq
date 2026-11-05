@@ -1,5 +1,7 @@
 import pytest
 import math
+import types
+import highspy
 from geopy.distance import geodesic
 import pyomo.environ as pyo
 
@@ -339,6 +341,202 @@ def test_trade_lp_model_basic_build_and_solve(location_mock_factory):
     # The BOM says 1.5 iron_ore -> 1 steel, we have capacity 80 for steel production,
     # but only demand 50. We can meet that. Let's check we haven't exceeded it:
     assert total_steel_to_demand <= 50 + LP_EPSILON
+
+
+def test_secondary_feedstock_cap_binds_at_full_value(location_mock_factory):
+    """A regional secondary-feedstock cap limits the inflow into that region to exactly the cap.
+
+    Mirrors the production set-up: one synthetic supply centre for the feedstock, a production centre
+    consuming it as a dependent commodity, and the cap keyed by the joined iso3 string.
+    """
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+
+    iron_ore = Commodity("iron_ore")
+    bio_pci = Commodity("bio_pci")
+    steel = Commodity("steel")
+
+    ore_supply_bom = BOMElement(
+        name="iron_ore_supply", commodity=iron_ore, output_commodities=[iron_ore], parameters={}
+    )
+    bio_pci_supply_bom = BOMElement(
+        name="bio_pci_supply", commodity=bio_pci, output_commodities=[bio_pci], parameters={}
+    )
+    steel_demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    bom_ore2steel = BOMElement(
+        name="BOM_Ore2Steel",
+        commodity=iron_ore,
+        output_commodities=[steel],
+        parameters={MaterialParameters.INPUT_RATIO.value: 1.0},
+        dependent_commodities={bio_pci: 1.0},
+    )
+
+    ore_supply_process = Process(name="iron_ore_supply", type=ProcessType.SUPPLY, bill_of_materials=[ore_supply_bom])
+    bio_pci_supply_process = Process(
+        name="bio_pci_supply", type=ProcessType.SUPPLY, bill_of_materials=[bio_pci_supply_bom]
+    )
+    production_process = Process(name="SteelProduction", type=ProcessType.PRODUCTION, bill_of_materials=[bom_ore2steel])
+    demand_process = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[steel_demand_bom])
+
+    pc_ore = ProcessCenter(
+        name="PC_Ore",
+        process=ore_supply_process,
+        capacity=2000.0,
+        location=location_mock_factory(lat=0, lon=0, iso3="SUP"),
+    )
+    pc_bio_pci = ProcessCenter(
+        name="bio_pci_supply_process_center",
+        process=bio_pci_supply_process,
+        capacity=1000.0,
+        location=location_mock_factory(lat=0, lon=1, iso3="XXX"),
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod",
+        process=production_process,
+        capacity=1000.0,
+        location=location_mock_factory(lat=1, lon=1, iso3="PRO"),
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand",
+        process=demand_process,
+        capacity=1000.0,
+        location=location_mock_factory(lat=2, lon=2, iso3="DEM"),
+    )
+
+    model.add_commodities([iron_ore, bio_pci, steel])
+    model.add_processes([ore_supply_process, bio_pci_supply_process, production_process, demand_process])
+    model.add_process_centers([pc_ore, pc_bio_pci, pc_prod, pc_demand])
+    model.add_bom_elements([ore_supply_bom, bio_pci_supply_bom, steel_demand_bom, bom_ore2steel])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=ore_supply_process, to_process=production_process),
+            ProcessConnector(from_process=bio_pci_supply_process, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand_process),
+        ]
+    )
+    model.secondary_feedstock_constraints = {"bio_pci": {"PRO": 200.0}}
+
+    model.build_lp_model()
+    result = model.solve_lp_model()
+    assert result.solver.status == pyo.SolverStatus.ok
+    model.extract_solution()
+
+    bio_pci_inflow = sum(
+        volume
+        for (from_pc, to_pc, commodity), volume in model.allocations.allocations.items()
+        if to_pc == pc_prod and commodity == bio_pci
+    )
+    assert bio_pci_inflow == pytest.approx(200.0, abs=LP_EPSILON)
+
+
+def test_extract_solution_carries_carbon_border_charges(location_mock_factory):
+    """Charges recorded per arc during the build come out on Allocations keyed by the extracted objects."""
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    iron_ore, steel = Commodity("iron_ore"), Commodity("steel")
+    ore_supply_bom = BOMElement(
+        name="iron_ore_supply", commodity=iron_ore, output_commodities=[iron_ore], parameters={}
+    )
+    steel_demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    bom_ore2steel = BOMElement(
+        name="BOM_Ore2Steel",
+        commodity=iron_ore,
+        output_commodities=[steel],
+        parameters={MaterialParameters.INPUT_RATIO.value: 1.0},
+    )
+    ore_supply_process = Process(name="iron_ore_supply", type=ProcessType.SUPPLY, bill_of_materials=[ore_supply_bom])
+    production_process = Process(name="SteelProduction", type=ProcessType.PRODUCTION, bill_of_materials=[bom_ore2steel])
+    demand_process = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[steel_demand_bom])
+    pc_ore = ProcessCenter(
+        name="PC_Ore", process=ore_supply_process, capacity=2000.0, location=location_mock_factory(0, 0, "SUP")
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod", process=production_process, capacity=1000.0, location=location_mock_factory(1, 1, "PRO")
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand", process=demand_process, capacity=500.0, location=location_mock_factory(2, 2, "DEM")
+    )
+    model.add_commodities([iron_ore, steel])
+    model.add_processes([ore_supply_process, production_process, demand_process])
+    model.add_process_centers([pc_ore, pc_prod, pc_demand])
+    model.add_bom_elements([ore_supply_bom, steel_demand_bom, bom_ore2steel])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=ore_supply_process, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand_process),
+        ]
+    )
+
+    model.build_lp_model()
+    model.lp_model.carbon_border_charge[("PC_Prod", "PC_Demand", "steel")] = 32.0
+    model.lp_model.carbon_border_charge[("PC_Ore", "PC_Nowhere", "iron_ore")] = 99.0
+    assert model.solve_lp_model().solver.status == pyo.SolverStatus.ok
+    model.extract_solution()
+
+    assert model.allocations.allocations[(pc_prod, pc_demand, steel)] == pytest.approx(500.0, abs=LP_EPSILON)
+    assert model.allocations.carbon_border_charges == {(pc_prod, pc_demand, steel): 32.0}
+
+
+def test_secondary_feedstock_procured_per_tonne_of_product(location_mock_factory):
+    """0.45 t bio-PCI per tonne of product on a 1.4565 t/t input yields 450 t for 1000 t of steel, not 655."""
+    from types import SimpleNamespace
+
+    from steelo.domain.models import PrimaryFeedstock
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import create_process_from_furnace_group
+
+    feedstock = PrimaryFeedstock(metallic_charge="io_low", reductant="coke", technology="BF")
+    feedstock.required_quantity_per_ton_of_product = 1.4565
+    feedstock.add_secondary_feedstock("bio_pci", 0.45)
+    feedstock.outputs = {"steel": 1.0}
+    furnace_group = SimpleNamespace(
+        furnace_group_id="bf_fg",
+        technology=SimpleNamespace(name="BF", dynamic_business_case=[feedstock]),
+        chosen_reductant="coke",
+        effective_primary_feedstocks=[feedstock],
+        energy_vopex_by_input={},
+    )
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    production_process = create_process_from_furnace_group(
+        furnace_group, model, SimpleNamespace(primary_products=["steel"])
+    )
+
+    io_low, bio_pci, steel = Commodity("io_low"), Commodity("bio_pci"), Commodity("steel")
+    ore_supply_bom = BOMElement(name="io_low_supply", commodity=io_low, output_commodities=[io_low], parameters={})
+    bio_supply_bom = BOMElement(name="bio_pci_supply", commodity=bio_pci, output_commodities=[bio_pci], parameters={})
+    demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    ore_supply = Process(name="io_low_supply", type=ProcessType.SUPPLY, bill_of_materials=[ore_supply_bom])
+    bio_supply = Process(name="bio_pci_supply", type=ProcessType.SUPPLY, bill_of_materials=[bio_supply_bom])
+    demand = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[demand_bom])
+    pc_ore = ProcessCenter(
+        name="PC_Ore", process=ore_supply, capacity=5000.0, location=location_mock_factory(0, 0, "SUP")
+    )
+    pc_bio = ProcessCenter(
+        name="PC_Bio", process=bio_supply, capacity=5000.0, location=location_mock_factory(0, 1, "XXX")
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod", process=production_process, capacity=2000.0, location=location_mock_factory(1, 1, "PRO")
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand", process=demand, capacity=1000.0, location=location_mock_factory(2, 2, "DEM")
+    )
+    model.add_commodities([io_low, bio_pci, steel])
+    model.add_processes([ore_supply, bio_supply, production_process, demand])
+    model.add_process_centers([pc_ore, pc_bio, pc_prod, pc_demand])
+    model.add_bom_elements([ore_supply_bom, bio_supply_bom, demand_bom])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=ore_supply, to_process=production_process),
+            ProcessConnector(from_process=bio_supply, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand),
+        ]
+    )
+
+    model.build_lp_model()
+    assert model.solve_lp_model().solver.status == pyo.SolverStatus.ok
+    model.extract_solution()
+
+    flows = model.allocations.allocations
+    assert flows[(pc_prod, pc_demand, steel)] == pytest.approx(1000.0, abs=LP_EPSILON)
+    assert flows[(pc_ore, pc_prod, io_low)] == pytest.approx(1456.5, abs=LP_EPSILON)
+    assert flows[(pc_bio, pc_prod, bio_pci)] == pytest.approx(450.0, abs=LP_EPSILON)
 
 
 def test_trade_lp_model_infeasible_demand(location_mock_factory):
@@ -813,3 +1011,117 @@ def test_get_distance_invalid_type_raises_error(location_mock_factory):
 
     with pytest.raises(ValueError, match="Unknown distance type"):
         model.get_distance("PC1", "PC2", type="unknown_type")
+
+
+def _build_supply_to_demand_model(location_mock_factory) -> tuple[TradeLPModel, ProcessCenter]:
+    """Smallest deliverable trade LP: iron ore supply -> 5 t steel production -> 5 t steel demand."""
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    iron_ore = Commodity("iron_ore")
+    steel = Commodity("steel")
+    bom = BOMElement(
+        name="BOM_Iron2Steel",
+        commodity=iron_ore,
+        output_commodities=[steel],
+        parameters={MaterialParameters.INPUT_RATIO: 1.5},
+    )
+    # Supply and demand processes carry pass-through BOM elements, as in set_up_steel_trade_lp,
+    # so that Process.products and the legal allocations are populated
+    supply_bom = BOMElement(name="iron_ore_supply", commodity=iron_ore, output_commodities=[iron_ore], parameters={})
+    demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    supply_process = Process(name="IronOreSupply", type=ProcessType.SUPPLY, bill_of_materials=[supply_bom])
+    production_process = Process(name="SteelProduction", type=ProcessType.PRODUCTION, bill_of_materials=[bom])
+    demand_process = Process(name="SteelDemand", type=ProcessType.DEMAND, bill_of_materials=[demand_bom])
+    pc_supply = ProcessCenter(
+        name="PC_Supply",
+        process=supply_process,
+        capacity=10.0,
+        location=location_mock_factory(lat=0, lon=0, iso3="SUP"),
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod",
+        process=production_process,
+        capacity=5.0,
+        location=location_mock_factory(lat=1, lon=1, iso3="PRO"),
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand",
+        process=demand_process,
+        capacity=5.0,
+        location=location_mock_factory(lat=2, lon=2, iso3="DEM"),
+    )
+    model.add_commodities([iron_ore, steel])
+    model.add_processes([supply_process, production_process, demand_process])
+    model.add_process_centers([pc_supply, pc_prod, pc_demand])
+    model.add_bom_elements([supply_bom, bom, demand_bom])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=supply_process, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand_process),
+        ]
+    )
+    model.build_lp_model()
+    return model, pc_demand
+
+
+def test_solve_lp_model_logs_highs_diagnostics_and_dumps_lp_on_failure(location_mock_factory, tmp_path, caplog):
+    """
+    A non-optimal solve must log HiGHS's raw model status and iteration counts for the primary
+    solve and every fallback, and write the LP to failure_dump_path once for offline reproduction.
+    """
+    model, pc_demand = _build_supply_to_demand_model(location_mock_factory)
+
+    # Demand slack is bounded by the 5 t demand, so requiring 100 t of it makes the LP infeasible
+    model.lp_model.force_infeasible = pyo.Constraint(expr=model.lp_model.demand_slack_variable[pc_demand.name] >= 100)
+    model.failure_dump_path = tmp_path / "TM" / "trade_lp_failed_2035.mps"
+
+    with caplog.at_level("WARNING"):
+        result = model.solve_lp_model()
+
+    assert result.solver.termination_condition != pyo.TerminationCondition.optimal
+    diagnostics = [r.getMessage() for r in caplog.records if "highs_status=" in r.getMessage()]
+    assert len(diagnostics) == 1 + len(model.fallback_solvers)
+    assert all("highs_status='Infeasible'" in line for line in diagnostics)
+    assert "ipm_iterations=" in diagnostics[0] and "crossover_iterations=" in diagnostics[0]
+    retries = [r.getMessage() for r in caplog.records if "status=retry" in r.getMessage()]
+    assert retries == [
+        f"operation=trade_optimization status=retry solver={s} after=hipo" for s in model.fallback_solvers
+    ]
+    assert model.failure_dump_path.exists()
+    assert model.failure_dump_path.read_text().startswith("NAME")
+
+
+def test_solve_lp_model_falls_back_to_cold_ipx_when_hipo_errors(location_mock_factory, caplog, monkeypatch):
+    """
+    When the HiPO solve ends in a solver error, the LP is re-solved from scratch with IPX under the
+    relaxed fallback tolerances, and the model carries on with that optimal solution as if nothing had happened.
+    """
+    model, pc_demand = _build_supply_to_demand_model(location_mock_factory)
+    real_run_solver = TradeLPModel._run_solver
+    attempts: list[tuple[str, bool]] = []
+
+    def hipo_errors_out(self, solver_name, warm_start, logger, relaxed_tolerances=False):
+        attempts.append((solver_name, relaxed_tolerances))
+        if solver_name == "hipo":
+            failed = types.SimpleNamespace(
+                solver=types.SimpleNamespace(
+                    termination_condition=pyo.TerminationCondition.error, status=pyo.SolverStatus.error
+                )
+            )
+            return types.SimpleNamespace(_solver_model=highspy.Highs()), failed
+        return real_run_solver(self, solver_name, warm_start, logger, relaxed_tolerances)
+
+    monkeypatch.setattr(TradeLPModel, "_run_solver", hipo_errors_out)
+
+    with caplog.at_level("WARNING"):
+        result = model.solve_lp_model()
+
+    # Only the fallback runs under relaxed tolerances; the primary solve keeps HiGHS's defaults
+    assert attempts == [("hipo", False), ("ipx", True)]
+    assert not set(model.fallback_solver_options) & set(model.solver_options)
+    assert any("solver=ipx relaxed_tolerances=" in r.getMessage() for r in caplog.records)
+    assert result.solver.termination_condition == pyo.TerminationCondition.optimal
+    assert model.solution_status == pyo.SolverStatus.ok
+    assert any("status=retry solver=ipx after=hipo" in r.getMessage() for r in caplog.records)
+    model.extract_solution()
+    delivered = sum(vol for (_, to_pc, _), vol in model.allocations.allocations.items() if to_pc == pc_demand)
+    assert delivered == pytest.approx(5.0, abs=LP_EPSILON)

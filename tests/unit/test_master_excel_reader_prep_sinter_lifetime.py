@@ -18,6 +18,7 @@ def test_prep_sinter_lifetime_current():
                 "Plant ID": ["P001"],
                 "Coordinates": ["52.52, 13.40"],
                 "Country": ["Germany"],
+                "ISO3": ["DEU"],
                 "Main production equipment": ["BF"],  # Iron-making tech should get Prep Sinter
                 "Nominal BF capacity (ttpa)": [1000],
                 "Start date": ["2010-01-01"],

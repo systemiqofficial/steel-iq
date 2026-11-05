@@ -6,6 +6,7 @@ This module handles downloading, caching, and validation of data files.
 import hashlib
 import json
 import logging
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -21,6 +22,21 @@ from .manifest import DataManifest, DataPackage
 logger = logging.getLogger(__name__)
 
 
+def default_cache_dir() -> Path:
+    """Resolve the default package download cache directory.
+
+    Returns:
+        $STEELO_DATA_CACHE if set (lets packaged apps share one download cache
+        across version-specific homes), else $STEELO_HOME/data_cache
+        (~/.steelo/data_cache when unset), so isolated simulation homes get
+        isolated download caches.
+    """
+    from ..config import get_steelo_home
+
+    env_override = os.getenv("STEELO_DATA_CACHE")
+    return Path(env_override) if env_override else get_steelo_home() / "data_cache"
+
+
 class DataManager:
     """Manages data downloads and caching for the Steel Model."""
 
@@ -33,11 +49,12 @@ class DataManager:
         """Initialize data manager.
 
         Args:
-            cache_dir: Directory for caching downloaded data
+            cache_dir: Directory for caching downloaded data. Defaults to
+                default_cache_dir() — see its docstring for the resolution order.
             manifest_path: Path to data manifest file
             offline_mode: If True, only use cached data
         """
-        self.cache_dir = cache_dir or Path.home() / ".steelo" / "data_cache"
+        self.cache_dir = cache_dir if cache_dir is not None else default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         default_manifest = Path(__file__).parent / "manifest.json"

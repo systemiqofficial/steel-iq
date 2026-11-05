@@ -4,19 +4,25 @@ This module contains functions for recreating JSON repositories from various dat
 These functions were moved from cli.py to follow clean architecture principles.
 """
 
+import csv
 import json
+import logging
+import re
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from collections import defaultdict
 
+import pandas as pd
+import pycountry
 from rich.console import Console
 
-from ..domain.models import Plant, PlantGroup, InputCosts
+from ..domain.models import Plant, PlantGroup, InputCosts, compose_geo_key
 from ..domain.constants import PLANT_LIFETIME, T_TO_KG, Year
 from ..adapters.dataprocessing.excel_reader import (
     read_biomass_availability,
     read_co2_storage_availability,
+    read_demand_and_scrap_scenarios,
     read_demand_centers,
     read_scrap_as_suppliers,
     read_mines_as_suppliers,
@@ -38,6 +44,9 @@ from ..adapters.dataprocessing.excel_reader import (
     read_carbon_border_mechanisms,
     read_fallback_material_costs,
     read_willingness_to_pay,
+    read_capacity_pool_provinces,
+    read_capacity_pool_technologies,
+    read_capacity_pool_opening_credits,
 )
 from ..adapters.repositories.json_repository import (
     BiomassAvailabilityJsonRepository,
@@ -62,10 +71,19 @@ from ..adapters.repositories.json_repository import (
     CarbonBorderMechanismJsonRepository,
     FallbackMaterialCostJsonRepository,
     WillingnessToPayJsonRepository,
+    CapacityPoolProvinceJsonRepository,
+    CapacityPoolTechnologyJsonRepository,
+    CapacityPoolOpeningCreditJsonRepository,
 )
 from ..domain.calculate_costs import calculate_lcoh_from_electricity_country_level
+from .geo_hierarchy_overrides import (
+    ADMIN1_COLUMNS,
+    GEO_UNIT_DISPLAY_OVERRIDES,
+    OWNED_AS_SEPARATE_COUNTRY,
+)
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def recreate_country_mappings_data(
@@ -86,32 +104,8 @@ def recreate_country_mappings_data(
         # Read mappings from master Excel
         mappings = read_country_mappings(master_excel_path, "Country mapping")
 
-        # Convert to JSON format
-        mappings_data = []
-        for mapping in mappings:
-            mapping_dict = {
-                "Country": mapping.country,
-                "ISO 2-letter code": mapping.iso2,
-                "ISO 3-letter code": mapping.iso3,
-                "irena_name": mapping.irena_name,
-                "region_for_outputs": mapping.region_for_outputs,
-                "ssp_region": mapping.ssp_region,
-                "gem_country": mapping.gem_country,
-                "ws_region": mapping.ws_region,
-                "tiam-ucl_region": mapping.tiam_ucl_region,
-                "eu_or_non_eu": mapping.eu_region,
-                # Add new regional boolean fields
-                "EU": mapping.EU,
-                "EFTA_EUCJ": mapping.EFTA_EUCJ,
-                "OECD": mapping.OECD,
-                "NAFTA": mapping.NAFTA,
-                "Mercosur": mapping.Mercosur,
-                "ASEAN": mapping.ASEAN,
-                "RCEP": mapping.RCEP,
-            }
-            # Validate with Pydantic model
-            CountryMappingInDb(**mapping_dict)
-            mappings_data.append(mapping_dict)
+        # Serialise via the Pydantic model so every detected bloc column is carried
+        mappings_data = [CountryMappingInDb.from_domain(mapping).model_dump(by_alias=True) for mapping in mappings]
 
         # Sort by ISO3 for consistent output
         mappings_data.sort(key=lambda x: x["ISO 3-letter code"] or "")
@@ -219,10 +213,13 @@ def recreate_demand_center_data(
     demand_sheet_name: str,
     gravity_distances_path: Path | None = None,
     location_csv: Path | None = None,
+    *,
+    demand_scenario: str,
 ) -> DemandCenterJsonRepository:
     """
     Recreate the JSON sample demand center data from the current CSV file.
 
+    Only the rows of `demand_scenario` (the sheet's "Scenario" column) are read.
     Note: gravity_distances_path and location_csv must be provided by the caller.
     """
     if not gravity_distances_path:
@@ -235,6 +232,7 @@ def recreate_demand_center_data(
         demand_excel_path=demand_excel_path,
         demand_sheet_name=demand_sheet_name,
         location_csv=location_csv,
+        demand_scenario=demand_scenario,
     )
 
     write_repository = DemandCenterJsonRepository(json_path)
@@ -251,10 +249,13 @@ def recreate_mines_and_scrap_as_suppliers_data(
     mines_sheet_name: str = "Iron ore mines",
     location_csv: Path | None = None,
     gravity_distances_pkl_path: Path | None = None,
+    *,
+    scrap_scenario: str,
 ) -> SupplierJsonRepository:
     """
     Recreate the JSON sample mines/scrap suppliers data from the current Excel file.
 
+    Scrap suppliers are read for `scrap_scenario` (the sheet's "Scenario" column); mines have no scenario.
     Note: location_csv is now a required parameter.
     """
     if location_csv is None:
@@ -270,6 +271,7 @@ def recreate_mines_and_scrap_as_suppliers_data(
         scrap_sheet_name=scrap_sheet_name,
         location_csv=location_path,
         gravity_distances_pkl_path=gravity_path,
+        scrap_scenario=scrap_scenario,
     )
     console.print(f"[blue]  Read {len(scrap_suppliers)} scrap suppliers[/blue]")
 
@@ -288,6 +290,117 @@ def recreate_mines_and_scrap_as_suppliers_data(
         f"[green]  Total suppliers: {len(suppliers)} ({len(scrap_suppliers)} scrap + {len(mine_suppliers)} mines)[/green]"
     )
     return write_repository
+
+
+def scenario_fixture_path(fixtures_dir: Path, kind: str, scenario: str) -> Path:
+    """
+    The file a preparation writes for one demand or scrap scenario.
+
+    Args:
+        fixtures_dir: The preparation's fixtures folder.
+        kind: "demand" or "scrap".
+        scenario: The scenario's name in the sheet's "Scenario" column.
+
+    Returns:
+        Path: ``demand_scenarios/<slug>/demand_centers.json`` or ``scrap_scenarios/<slug>/suppliers.json`` under
+        ``fixtures_dir``, ``<slug>`` the name in lower case with each run of characters other than letters and digits
+        made one hyphen.
+
+    Raises:
+        ValueError: If the name holds no letter or digit.
+    """
+    folder, filename = {
+        "demand": ("demand_scenarios", "demand_centers.json"),
+        "scrap": ("scrap_scenarios", "suppliers.json"),
+    }[kind]
+    slug = re.sub(r"[\W_]+", "-", scenario.casefold()).strip("-")
+    if not slug:
+        raise ValueError(f"Scenario name {scenario!r} holds no letter or digit to name its folder")
+    return fixtures_dir / folder / slug / filename
+
+
+def write_scenario_index(json_path: Path, paths: dict[str, dict[str, Path]]) -> Path:
+    """
+    Write the index that maps each demand and scrap scenario name to its file.
+
+    Args:
+        json_path: The index, ``scenarios.json`` in the fixtures folder.
+        paths: Under "demand" and "scrap", each scenario name and the path of its file.
+
+    Returns:
+        Path: ``json_path``, holding ``{"demand": {name: path}, "scrap": {name: path}}`` with each path relative to
+        the fixtures folder, so readers never derive a name from a folder.
+    """
+    index = {
+        kind: {name: path.relative_to(json_path.parent).as_posix() for name, path in kind_paths.items()}
+        for kind, kind_paths in paths.items()
+    }
+    json_path.write_text(json.dumps(index, indent=2))
+    return json_path
+
+
+def recreate_scenario_fixtures(
+    *,
+    json_path: Path,
+    master_excel_path: Path,
+    sheet_name: str,
+    mines_sheet_name: str,
+    gravity_distances_path: Path,
+    location_csv: Path,
+) -> Path:
+    """
+    Write the demand centres of every demand scenario, the suppliers of every scrap scenario and their index.
+
+    Args:
+        json_path: The index, ``scenarios.json`` in the fixtures folder; the scenario files go under the same folder.
+        master_excel_path: Workbook holding the demand and scrap sheet and the mines sheet.
+        sheet_name: The demand and scrap sheet, with "Scenario" and "Metric" columns.
+        mines_sheet_name: The iron ore mines sheet; its mines go into every scrap scenario's suppliers.
+        gravity_distances_path: Pickled {iso3: {iso3: distance}} dict.
+        location_csv: Country centroid CSV used to place each centre and supplier.
+
+    Returns:
+        Path: The index written by ``write_scenario_index``.
+
+    Raises:
+        ValueError: If two names of one kind would share a folder.
+
+    Notes:
+        A run picks its pair from the index, so one preparation serves every scenario. The sheet is read once per
+        scenario and the mines once per scrap scenario.
+    """
+    fixtures_dir = json_path.parent
+    names = read_demand_and_scrap_scenarios(master_excel_path, sheet_name)
+    paths = {
+        kind: {name: scenario_fixture_path(fixtures_dir, kind, name) for name in kind_names}
+        for kind, kind_names in names.items()
+    }
+    for kind, kind_paths in paths.items():
+        if len(set(kind_paths.values())) != len(kind_paths):
+            raise ValueError(f"The {kind} scenarios {sorted(kind_paths)} do not each have a folder name of their own")
+
+    for name, path in paths["demand"].items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        recreate_demand_center_data(
+            json_path=path,
+            demand_excel_path=master_excel_path,
+            demand_sheet_name=sheet_name,
+            gravity_distances_path=gravity_distances_path,
+            location_csv=location_csv,
+            demand_scenario=name,
+        )
+    for name, path in paths["scrap"].items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        recreate_mines_and_scrap_as_suppliers_data(
+            json_path=path,
+            master_excel_path=str(master_excel_path),
+            scrap_sheet_name=sheet_name,
+            mines_sheet_name=mines_sheet_name,
+            location_csv=location_csv,
+            gravity_distances_pkl_path=gravity_distances_path,
+            scrap_scenario=name,
+        )
+    return write_scenario_index(json_path, paths)
 
 
 def recreate_tarrifs_data(
@@ -350,6 +463,188 @@ def recreate_subsidy_data(
     console.print(f"[green]Writing subsidy data to[/green]: {json_path}")
 
     return repo
+
+
+# geo_hierarchy: a country's first-order divisions keyed by ISO 3166-2 code (Location.geo_unit), generated from Natural
+# Earth admin-1 + pycountry. Hand-verified overrides live in geo_hierarchy_overrides.py.
+
+
+def _pycountry_top_level_codes(iso2: str) -> set[str]:
+    """Return the first-order (top-level) ISO 3166-2 codes pycountry lists for a country.
+
+    Args:
+        iso2: ISO 3166-1 alpha-2 country code (e.g. "CN").
+
+    Returns:
+        Codes whose subdivision has no parent — i.e. the country's first-order divisions.
+    """
+    return {
+        sub.code
+        for sub in pycountry.subdivisions
+        if sub.country_code == iso2 and getattr(sub, "parent_code", None) in (None, "")
+    }
+
+
+def build_geo_hierarchy(
+    records: Iterable[dict[str, Any]],
+    *,
+    declared_iso2: Iterable[str] = ("CN",),
+) -> list[dict[str, Any]]:
+    """Build geo_hierarchy rows from Natural Earth admin-1 attribute records.
+
+    For each declared country, keeps NE features whose `iso_3166_2` is a pycountry first-order
+    (top-level) code, excluding any the model owns as a separate country
+    (``OWNED_AS_SEPARATE_COUNTRY``). The top-level gate doubles as a family detector: a country
+    whose NE features are one level too deep (Italy's provincie, France's departements) yields
+    zero admitted units, which is raised as a loud error rather than emitted at the wrong level
+    — those countries need the NE-`region`-column rollup path (not implemented; deferred).
+
+    Args:
+        records: NE admin-1 features as dicts carrying at least ``ADMIN1_COLUMNS``.
+        declared_iso2: ISO 3166-1 alpha-2 codes of the countries to populate. Features of any
+            other country are ignored, so they resolve at country level via the fallback.
+
+    Returns:
+        One row per first-order unit, sorted by ``geo_key``, each with: ``iso3``, ``geo_unit``
+        (ISO 3166-2 code), ``geo_key`` (``iso3:code``), ``display_name``, ``unit_type``,
+        ``ne_region`` (NE macro-grouping, faithful pass-through — consumed only by the later
+        GEO percentile rollup), ``ne_name``.
+
+    Raises:
+        NotImplementedError: If a declared country has features but none are first-order codes
+            (NE feature is finer than first-order) — it needs the region-column path.
+
+    Notes:
+        Validating against pycountry top-level codes also drops NE disputed placeholders such
+        as ``CN-X01~`` (Paracel Islands) without a hand-maintained list.
+    """
+    declared = set(declared_iso2)
+    records = list(records)
+    rows: list[dict[str, Any]] = []
+
+    for iso2 in declared:
+        top_level = _pycountry_top_level_codes(iso2)
+        excluded = OWNED_AS_SEPARATE_COUNTRY.get(iso2, set())
+        country_records = [r for r in records if r.get("iso_a2") == iso2]
+        admitted = 0
+
+        for record in country_records:
+            code = (record.get("iso_3166_2") or "").strip()
+            if not code or code in excluded or code not in top_level:
+                continue
+            admitted += 1
+            iso3 = record["adm0_a3"]
+            ne_name = (record.get("name") or "").strip()
+            rows.append(
+                {
+                    "iso3": iso3,
+                    "geo_unit": code,
+                    "geo_key": compose_geo_key(iso3, code),
+                    "display_name": GEO_UNIT_DISPLAY_OVERRIDES.get(code, ne_name),
+                    "unit_type": (record.get("type_en") or "").strip(),
+                    "ne_region": (record.get("region") or "").strip(),
+                    "ne_name": ne_name,
+                }
+            )
+
+        if country_records and admitted == 0:
+            raise NotImplementedError(
+                f"{iso2}: no NE admin-1 feature is a first-order ISO 3166-2 unit — the feature "
+                f"level is finer than first-order (e.g. provinces, not regions). This country "
+                f"needs the NE `region`-column rollup path, which is not implemented."
+            )
+
+    rows.sort(key=lambda row: row["geo_key"])
+    return rows
+
+
+def recreate_geo_hierarchy_data(
+    geo_hierarchy_json_path: Path,
+    admin1_shapefile_path: Path,
+    declared_iso2: Iterable[str] = ("CN",),
+) -> list[dict]:
+    """Recreate geo_hierarchy.json from the Natural Earth admin-1 shapefile.
+
+    Args:
+        geo_hierarchy_json_path: Output path for the generated table.
+        admin1_shapefile_path: Path to ``ne_10m_admin_1_states_provinces.shp``.
+        declared_iso2: Countries to populate (China only for now).
+
+    Returns:
+        The geo_hierarchy rows that were written, for in-memory use by the caller
+        (e.g. handing the valid geo-keys to the plants readers without re-reading the file).
+    """
+    import geopandas as gpd
+
+    console.print(f"[blue]Reading Natural Earth admin-1 from[/blue]: {admin1_shapefile_path}")
+    gdf = gpd.read_file(admin1_shapefile_path)
+    present = [column for column in ADMIN1_COLUMNS if column in gdf.columns]
+    rows = build_geo_hierarchy(gdf[present].to_dict("records"), declared_iso2=declared_iso2)
+
+    geo_hierarchy_json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+    console.print(f"[green]Wrote {len(rows)} geo_hierarchy rows to[/green]: {geo_hierarchy_json_path}")
+    return rows
+
+
+GEO_OPTIONS_COLUMNS = [
+    "Region",
+    "Country (iso3)",
+    "Country (name)",
+    "Subnational (geo_unit)",
+    "Subnational (display_name)",
+    "unit_type",
+    "geo_key",
+]
+
+
+def write_geo_options_csv(geo_hierarchy_json_path: Path, out_csv_path: Path) -> Path:
+    """Generate the ``geo_options.csv`` reference from a ``geo_hierarchy.json``.
+
+    One row per populated sub-national unit, sorted by ``geo_key`` — the human-facing list of authorable
+    geo-keys to paste into the master Excel. The country name is joined from the sibling
+    ``country_mappings.json`` (the model's own iso3→name source; the hierarchy rows carry no country
+    name), and is left blank if that file is absent. ``Region`` is the Natural Earth ``ne_region``
+    pass-through and is blank for units NE leaves unregioned.
+
+    Args:
+        geo_hierarchy_json_path: Path to a generated ``geo_hierarchy.json``.
+        out_csv_path: Destination CSV path.
+
+    Returns:
+        The path the CSV was written to.
+    """
+    rows = json.loads(geo_hierarchy_json_path.read_text())
+
+    iso3_to_name: dict[str, str] = {}
+    country_mappings_path = geo_hierarchy_json_path.parent / "country_mappings.json"
+    if country_mappings_path.exists():
+        for mapping in json.loads(country_mappings_path.read_text()):
+            iso3_code = mapping.get("ISO 3-letter code")
+            if iso3_code:
+                iso3_to_name[iso3_code] = mapping.get("Country", "")
+
+    out_rows = []
+    for row in sorted(rows, key=lambda r: r["geo_key"]):
+        iso3 = row["iso3"]
+        out_rows.append(
+            {
+                "Region": row.get("ne_region", ""),
+                "Country (iso3)": iso3,
+                "Country (name)": iso3_to_name.get(iso3, ""),
+                "Subnational (geo_unit)": row["geo_unit"],
+                "Subnational (display_name)": row["display_name"],
+                "unit_type": row.get("unit_type", ""),
+                "geo_key": row["geo_key"],
+            }
+        )
+
+    with out_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=GEO_OPTIONS_COLUMNS)
+        writer.writeheader()
+        writer.writerows(out_rows)
+
+    console.print(f"[green]Wrote {len(out_rows)} geo_options rows to[/green]: {out_csv_path}")
+    return out_csv_path
 
 
 def recreate_willingness_to_pay_data(
@@ -452,17 +747,18 @@ def recreate_input_costs_data(
         electricity_by_year: dict[Year, dict[str, float]] = defaultdict(dict)
         for ic in ic_list:
             year = Year(int(ic.year))
-            ic_index[(ic.iso3, year)] = ic
+            ic_index[(ic.geo_key, year)] = ic
             electricity_price = ic.costs.get("electricity")
             if electricity_price is not None:
-                electricity_by_year[year][ic.iso3] = electricity_price
+                electricity_by_year[year][ic.geo_key] = electricity_price
 
         for year, electricity_by_country in electricity_by_year.items():
             # Filter to countries where we have CAPEX/OPEX values for the current year
+            # H2 capex is country-keyed, so sub-national geo_keys fall out here (handled at runtime)
             applicable_electricity = {
-                iso3: price
-                for iso3, price in electricity_by_country.items()
-                if iso3 in hydrogen_capex_by_country and year in hydrogen_capex_by_country[iso3]
+                geo_key: price
+                for geo_key, price in electricity_by_country.items()
+                if geo_key in hydrogen_capex_by_country and year in hydrogen_capex_by_country[geo_key]
             }
             if not applicable_electricity:
                 continue
@@ -480,8 +776,8 @@ def recreate_input_costs_data(
                 )
                 continue
 
-            for iso3, usd_per_kg in lcoh_by_country.items():
-                existing_ic: InputCosts | None = ic_index.get((iso3, year))
+            for geo_key, usd_per_kg in lcoh_by_country.items():
+                existing_ic: InputCosts | None = ic_index.get((geo_key, year))
                 if existing_ic is None:
                     continue
                 # Convert USD/kg to USD/t to match other BOM-aligned commodities.
@@ -839,4 +1135,175 @@ def recreate_fallback_material_costs(
         f"[green]Created {fallback_material_costs_json_path.name} with "
         f"{len(fallback_costs)} fallback material cost entries[/green]"
     )
+    return repo
+
+
+def chinese_capacity_pool_geo_keys() -> set[str]:
+    """The geo_keys of every Chinese first-order unit the model resolves.
+
+    Built with the same construction as ``build_geo_hierarchy`` (pycountry
+    first-order codes minus units owned as separate countries) because the
+    geo_hierarchy fixture is generated in a later preparation step and does
+    not exist yet when the capacity pool fixtures are recreated.
+    """
+    codes = _pycountry_top_level_codes("CN") - OWNED_AS_SEPARATE_COUNTRY.get("CN", set())
+    return {compose_geo_key("CHN", code) for code in codes}
+
+
+def _report_capacity_pool_issues(issues: list) -> None:
+    """Report validation issues: warnings are logged, errors fail recreation.
+
+    Raises:
+        ValueError: When any issue is an error, listing every error found.
+    """
+    warnings = [issue for issue in issues if issue.severity == "warning"]
+    errors = [issue for issue in issues if issue.severity == "error"]
+    if warnings:
+        console.print(f"[yellow]Capacity pool content gaps ({len(warnings)}) - fixtures still build:[/yellow]")
+    for issue in warnings:
+        console.print(f"[yellow]  {issue.sheet}: {issue.message}[/yellow]")
+        logger.warning("%s: %s", issue.sheet, issue.message)
+    if errors:
+        detail = "\n".join(f"{issue.sheet}: {issue.message}" for issue in errors)
+        raise ValueError(f"Capacity pool sheet validation failed:\n{detail}")
+
+
+def recreate_capacity_pool_provinces_data(
+    json_path: Path,
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - CHN provinces",
+) -> CapacityPoolProvinceJsonRepository | None:
+    """Recreate the capacity pool provinces fixture from the master Excel file.
+
+    Args:
+        json_path: Path to the JSON fixture to write.
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - CHN provinces").
+
+    Returns:
+        The repository pointing at the written fixture, or None when the
+        optional sheet is absent — no fixture is written then, so a missing
+        fixture stays distinguishable from an empty one.
+
+    Raises:
+        ValueError: When the sheet is present but fails validation.
+    """
+    from ..capacity_policy.validation import validate_provinces
+
+    if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+        console.print(f"[yellow]Sheet '{sheet_name}' absent - not writing {json_path.name}[/yellow]")
+        return None
+
+    console.print(f"[blue]Reading capacity pool provinces from Excel[/blue]: {excel_path}")
+    rows = read_capacity_pool_provinces(excel_path, sheet_name=sheet_name)
+    _report_capacity_pool_issues(
+        validate_provinces(rows, chinese_geo_keys=chinese_capacity_pool_geo_keys(), sheet=sheet_name)
+    )
+
+    repo = CapacityPoolProvinceJsonRepository(json_path)
+    repo.add_list(rows)
+    console.print(f"[green]Writing capacity pool provinces to[/green]: {json_path}")
+    return repo
+
+
+def recreate_capacity_pool_technologies_data(
+    json_path: Path,
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - technologies",
+) -> CapacityPoolTechnologyJsonRepository | None:
+    """Recreate the capacity pool technologies fixture from the master Excel file.
+
+    Sheet names are validated against the same workbook's technology roster
+    (`Techno-economic details`) and reductant vocabulary (`Bill of Materials`).
+    Unauthored classification flags are content gaps: they warn here and only
+    block a run with the policy enabled. Alongside the fixture, the effective
+    transition-ratio grid implied by the flags and overrides is written as a
+    diagnostic CSV — generated, never authored.
+
+    Args:
+        json_path: Path to the JSON fixture to write.
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - technologies").
+
+    Returns:
+        The repository pointing at the written fixture, or None when the
+        optional sheet is absent (no fixture, no grid).
+
+    Raises:
+        ValueError: When the sheet is present but fails validation.
+    """
+    from ..capacity_policy.config import CapacityPolicyConfig
+    from ..capacity_policy.inputs import effective_ratio_grid
+    from ..capacity_policy.validation import validate_technologies
+
+    if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+        console.print(f"[yellow]Sheet '{sheet_name}' absent - not writing {json_path.name}[/yellow]")
+        return None
+
+    console.print(f"[blue]Reading capacity pool technologies from Excel[/blue]: {excel_path}")
+    rows = read_capacity_pool_technologies(excel_path, sheet_name=sheet_name)
+    techno_df = pd.read_excel(excel_path, sheet_name="Techno-economic details")
+    roster = set(techno_df["Technology"].dropna().astype(str).str.strip())
+    bom_df = pd.read_excel(excel_path, sheet_name="Bill of Materials")
+    vocabulary = set(bom_df["Reductant"].dropna().astype(str).str.strip())
+    _report_capacity_pool_issues(
+        validate_technologies(rows, technology_roster=roster, reductant_vocabulary=vocabulary, sheet=sheet_name)
+    )
+
+    repo = CapacityPoolTechnologyJsonRepository(json_path)
+    repo.add_list(rows)
+    console.print(f"[green]Writing capacity pool technologies to[/green]: {json_path}")
+
+    labels, grid = effective_ratio_grid(rows, CapacityPolicyConfig().replacement_ratio)
+    grid_path = json_path.parent / "capacity_pool_ratio_grid.csv"
+    with open(grid_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["old route \\ new route"] + labels)
+        for label, line in zip(labels, grid):
+            writer.writerow([label] + line)
+    console.print(f"[green]Wrote effective ratio grid diagnostic to[/green]: {grid_path}")
+    return repo
+
+
+def recreate_capacity_pool_opening_credits_data(
+    json_path: Path,
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - opening credits",
+) -> CapacityPoolOpeningCreditJsonRepository | None:
+    """Recreate the capacity pool opening-credits fixture from the master Excel file.
+
+    Args:
+        json_path: Path to the JSON fixture to write.
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - opening credits").
+
+    Returns:
+        The repository pointing at the written fixture, or None when the
+        optional sheet is absent — no fixture is written then.
+
+    Raises:
+        ValueError: When the sheet is present but fails validation.
+    """
+    from ..capacity_policy.validation import validate_opening_credits
+
+    if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+        console.print(f"[yellow]Sheet '{sheet_name}' absent - not writing {json_path.name}[/yellow]")
+        return None
+
+    console.print(f"[blue]Reading capacity pool opening credits from Excel[/blue]: {excel_path}")
+    rows = read_capacity_pool_opening_credits(excel_path, sheet_name=sheet_name)
+    techno_df = pd.read_excel(excel_path, sheet_name="Techno-economic details")
+    roster = set(techno_df["Technology"].dropna().astype(str).str.strip())
+    _report_capacity_pool_issues(
+        validate_opening_credits(
+            rows,
+            technology_roster=roster,
+            chinese_geo_keys=chinese_capacity_pool_geo_keys(),
+            sheet=sheet_name,
+        )
+    )
+
+    repo = CapacityPoolOpeningCreditJsonRepository(json_path)
+    repo.add_list(rows)
+    console.print(f"[green]Writing capacity pool opening credits to[/green]: {json_path}")
     return repo

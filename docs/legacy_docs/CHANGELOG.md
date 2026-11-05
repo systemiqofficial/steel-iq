@@ -1,5 +1,6 @@
-0.1.3 - Unreleased
-==================
+# Changelog
+
+## 0.1.3 - Unreleased
 
 ### Features
 - **Checkpoint System**: Added simulation checkpointing functionality for crash recovery and debugging
@@ -16,16 +17,14 @@
 - Fixed various bill_of_materials access errors with defensive programming checks
 - Added ESF, MOE, Prep Pellet, and Prep Coke to Technology._allowed_names validation
 
-0.1.2 - 2024-12-20
-==================
+## 0.1.2 - 2024-12-20
 
 ### Features
 - Added a new command line entrypoint: `recreate_plants_sample_data` which recreates the sample JSON plants data
   from the default plants CSV file.
 - New event-driven architecture
 
-0.1.1 - 2024-12-05
-==================
+## 0.1.1 - 2024-12-05
 
 ### Features
 
@@ -33,8 +32,7 @@
 - Mypy type checking for the project
 - Added json steel plants sample data to the project / packages fixture folder
 
-0.1.0 - 2024-11-22
-==================
+## 0.1.0 - 2024-11-22
 
 ### Initial Release
 

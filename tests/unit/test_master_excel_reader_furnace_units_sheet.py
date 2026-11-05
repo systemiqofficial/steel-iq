@@ -1,0 +1,374 @@
+"""Unit tests for MasterExcelReader.read_plants_from_furnace_units_sheet()
+(Phase 2 reader for the flattened 'Furnace units' sheet)."""
+
+import pandas as pd
+import pytest
+
+from steelo.adapters.dataprocessing.master_excel_reader import MasterExcelReader
+
+
+@pytest.fixture
+def furnace_units_excel_path(tmp_path):
+    path = tmp_path / "furnace_units.xlsx"
+
+    furnace_units = pd.DataFrame(
+        {
+            "plant_id": ["P1", "P1", "P2"],
+            "plant_name": ["US Plant", "US Plant", "China Plant"],
+            "iso3": ["USA", "USA", "CHN"],
+            "region": ["North America", "North America", "East Asia"],
+            "geo_unit_or_province": [None, None, None],
+            "latitude": [40.0, 40.0, 31.0],
+            "longitude": [-83.0, -83.0, 121.0],
+            "technology": ["BF", "BOF", "BF"],
+            "capacity_ttpa": [1000.0, 900.0, 1500.0],
+            "status": ["operating", "operating", "operating"],
+            "start_year": [2005, 2005, 2011],
+            "last_renovation_year": [2015, 2015, 2011],
+            "soe_status": ["private", "private", "state-owned"],
+            "power_source": ["grid", "grid", "grid"],
+            "parent_gem_id": ["", "", ""],
+            "workforce_size": [1000, 1000, 2000],
+            "source": ["gem_unit", "gem_unit", "external"],
+            "source_sheet": ["Blast furnaces", "Basic oxygen furnaces", "Units"],
+            "source_row": [2, 3, 10],
+            "unit_id": ["U1", "U3", "EXT_ROW10_G1"],
+        }
+    )
+
+    bom_data = pd.DataFrame(
+        {
+            "Business case": ["iron_bf", "steel_bof"],
+            "Metallic charge": ["", ""],
+            "Reductant": ["", ""],
+            "Side": ["Input", "Input"],
+            "Metric type": ["Feedstock", "Feedstock"],
+            "Type": [None, None],
+            "Vector": ["", ""],
+            "Value": [1.0, 1.0],
+            "Unit": ["t/t", "t/t"],
+            "System boundary": ["cradle-to-gate", "cradle-to-gate"],
+            "ghg_factor_scope_1": [0.0, 0.0],
+            "ghg_factor_scope_2": [0.0, 0.0],
+            "ghg_factor_scope_3_rest": [0.0, 0.0],
+        }
+    )
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        furnace_units.to_excel(writer, sheet_name="Furnace units", index=False)
+        bom_data.to_excel(writer, sheet_name="Bill of Materials", index=False)
+
+    return path
+
+
+class TestReadPlantsFromFurnaceUnitsSheet:
+    def test_missing_sheet_raises(self, tmp_path):
+        empty_path = tmp_path / "empty.xlsx"
+        pd.DataFrame({"a": [1]}).to_excel(empty_path, sheet_name="Not furnace units", index=False)
+        reader = MasterExcelReader(excel_path=empty_path)
+        with pytest.raises(ValueError, match="Furnace units"):
+            reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+    def test_two_rows_same_plant_merge_into_one_plant(self, furnace_units_excel_path):
+        reader = MasterExcelReader(excel_path=furnace_units_excel_path)
+        plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        by_id = {p.plant_id: p for p in plants}
+        assert "P1" in by_id
+        assert len(by_id["P1"].furnace_groups) == 2
+        techs = {fg.technology.name for fg in by_id["P1"].furnace_groups}
+        assert techs == {"BF", "BOF"}
+
+    def test_plant_location_built_from_row(self, furnace_units_excel_path):
+        reader = MasterExcelReader(excel_path=furnace_units_excel_path)
+        plants, _, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        by_id = {p.plant_id: p for p in plants}
+        p2 = by_id["P2"]
+        assert p2.location.iso3 == "CHN"
+        assert p2.location.lat == 31.0
+        assert p2.location.lon == 121.0
+
+    def test_furnace_group_capacity_converted_to_tonnes(self, furnace_units_excel_path):
+        from steelo.domain.constants import KT_TO_T
+
+        reader = MasterExcelReader(excel_path=furnace_units_excel_path)
+        plants, _, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        by_id = {p.plant_id: p for p in plants}
+        bf_fg = next(fg for fg in by_id["P1"].furnace_groups if fg.technology.name == "BF")
+        assert bf_fg.capacity == KT_TO_T * 1000.0
+
+    def test_metadata_captured_per_furnace_group(self, furnace_units_excel_path):
+        reader = MasterExcelReader(excel_path=furnace_units_excel_path)
+        plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        total_fg = sum(len(p.furnace_groups) for p in plants)
+        assert len(metadata) == total_fg
+        assert all(m.commissioning_year is not None for m in metadata.values())
+
+    def test_furnace_group_ids_are_unique(self, furnace_units_excel_path):
+        reader = MasterExcelReader(excel_path=furnace_units_excel_path)
+        plants, _, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        all_ids = [fg.furnace_group_id for p in plants for fg in p.furnace_groups]
+        assert len(all_ids) == len(set(all_ids))
+
+
+def _write_geography_variant(base_path, tmp_path, iso3, geo_unit):
+    """Copy the fixture workbook with plant P1's iso3/geo_unit_or_province replaced (both rows)."""
+    df = pd.read_excel(base_path, sheet_name="Furnace units")
+    bom = pd.read_excel(base_path, sheet_name="Bill of Materials")
+    df.loc[df["plant_id"] == "P1", "iso3"] = iso3
+    df.loc[df["plant_id"] == "P1", "geo_unit_or_province"] = geo_unit
+    path = tmp_path / "furnace_units_geo.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Furnace units", index=False)
+        bom.to_excel(writer, sheet_name="Bill of Materials", index=False)
+    return path
+
+
+def _reader_with_injected_geo_keys(excel_path):
+    """A reader with deterministic geo-keys (no prepared-data dependency), as prep passes
+    the in-memory geo_hierarchy."""
+    return MasterExcelReader(excel_path=excel_path, valid_geo_keys={"CHN:CN-HE", "CHN:CN-SH"})
+
+
+class TestReadPlantsFromFurnaceUnitsSheetGeography:
+    """Prep-time enforcement of the sheet's authored geography."""
+
+    def test_invalid_iso3_raises(self, furnace_units_excel_path, tmp_path):
+        path = _write_geography_variant(furnace_units_excel_path, tmp_path, iso3="ZZZ", geo_unit=None)
+        reader = _reader_with_injected_geo_keys(path)
+        with pytest.raises(ValueError, match="not a valid ISO-3"):
+            reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+    def test_unrecognised_geo_unit_raises(self, furnace_units_excel_path, tmp_path):
+        """A raw province name where an ISO 3166-2 code is expected fails loudly at read time."""
+        path = _write_geography_variant(furnace_units_excel_path, tmp_path, iso3="CHN", geo_unit="Hebei")
+        reader = _reader_with_injected_geo_keys(path)
+        with pytest.raises(ValueError, match="CHN:Hebei"):
+            reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+    def test_declared_geo_unit_lands_on_location(self, furnace_units_excel_path, tmp_path):
+        path = _write_geography_variant(furnace_units_excel_path, tmp_path, iso3="CHN", geo_unit="CN-HE")
+        reader = _reader_with_injected_geo_keys(path)
+        plants, _, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        by_id = {p.plant_id: p for p in plants}
+        assert by_id["P1"].location.geo_unit == "CN-HE"
+        assert by_id["P1"].location.geo_key == "CHN:CN-HE"
+
+
+@pytest.fixture
+def undated_furnace_units_excel_path(tmp_path):
+    """Sheet with one dated unit and many undated CHN / non-CHN units."""
+    path = tmp_path / "undated_furnace_units.xlsx"
+    n = 40
+    iso3 = ["USA"] + ["CHN"] * n + ["IND"] * n
+    furnace_units = pd.DataFrame(
+        {
+            "plant_id": [f"P{i}" for i in range(len(iso3))],
+            "plant_name": [f"Plant {i}" for i in range(len(iso3))],
+            "iso3": iso3,
+            "region": ["x"] * len(iso3),
+            "geo_unit_or_province": [None] * len(iso3),
+            "latitude": [10.0] * len(iso3),
+            "longitude": [10.0] * len(iso3),
+            "technology": ["BOF"] * len(iso3),
+            "capacity_ttpa": [1000.0] * len(iso3),
+            "status": ["operating"] * len(iso3),
+            "start_year": [2005] + [None] * (2 * n),
+            "last_renovation_year": [None] * len(iso3),
+            "soe_status": ["private"] * len(iso3),
+            "power_source": ["grid"] * len(iso3),
+            "parent_gem_id": [""] * len(iso3),
+            "workforce_size": [100] * len(iso3),
+            "source": ["gem_unit"] * len(iso3),
+            "source_sheet": ["Basic oxygen furnaces"] * len(iso3),
+            "source_row": list(range(2, len(iso3) + 2)),
+            "unit_id": [f"U{i}" for i in range(len(iso3))],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        furnace_units.to_excel(writer, sheet_name="Furnace units", index=False)
+    return path
+
+
+def _drawn_start_years(plants, metadata, iso3):
+    """Start years imputed for every furnace group in the given country, recovered from the metadata age."""
+    years = []
+    for plant in plants:
+        if plant.location.iso3 != iso3:
+            continue
+        for fg in plant.furnace_groups:
+            meta = metadata[fg.furnace_group_id]
+            assert meta.age_source == "imputed" and meta.commissioning_year is None
+            years.append(2025 - meta.age_at_reference_year)
+    return sorted(years)
+
+
+def test_missing_start_year_is_drawn_from_country_band(undated_furnace_units_excel_path):
+    """Undated CHN units draw from 2000-2013, others from 2005-2025; dated rows are kept."""
+    reader = MasterExcelReader(excel_path=undated_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[]
+    )
+    chn = _drawn_start_years(plants, metadata, "CHN")
+    ind = _drawn_start_years(plants, metadata, "IND")
+    assert len(chn) == 40 and all(2000 <= y <= 2013 for y in chn)
+    assert len(ind) == 40 and all(2005 <= y <= 2025 for y in ind)
+    assert len(set(chn)) > 1 and len(set(ind)) > 1, "draws should spread across vintages"
+    (usa,) = [fg for p in plants if p.location.iso3 == "USA" for fg in p.furnace_groups]
+    assert metadata[usa.furnace_group_id].commissioning_year == 2005
+    assert metadata[usa.furnace_group_id].age_source == "exact"
+
+
+def test_missing_start_year_draw_is_reproducible(undated_furnace_units_excel_path):
+    """Two reads of the same sheet impute identical start years."""
+    reads = [
+        MasterExcelReader(excel_path=undated_furnace_units_excel_path).read_plants_from_furnace_units_sheet(
+            dynamic_feedstocks_dict={}, aggregated_constraints=[]
+        )
+        for _ in range(2)
+    ]
+    (plants_a, meta_a, _), (plants_b, meta_b, _) = reads
+    for iso3 in ("CHN", "IND"):
+        assert _drawn_start_years(plants_a, meta_a, iso3) == _drawn_start_years(plants_b, meta_b, iso3)
+
+
+@pytest.fixture
+def pipeline_furnace_units_excel_path(tmp_path):
+    """Sheet with undated and stale-dated announced / construction units next to dated and inactive ones."""
+    path = tmp_path / "pipeline_furnace_units.xlsx"
+    n = 30
+    status = ["construction"] * n + ["announced"] * n + ["announced", "construction", "cancelled", "retired"]
+    start_year = [None] * (2 * n) + [2028, 2023, None, None]
+    rows = len(status)
+    furnace_units = pd.DataFrame(
+        {
+            "plant_id": [f"P{i}" for i in range(rows)],
+            "plant_name": [f"Plant {i}" for i in range(rows)],
+            "iso3": ["IND"] * rows,
+            "region": ["x"] * rows,
+            "geo_unit_or_province": [None] * rows,
+            "latitude": [10.0] * rows,
+            "longitude": [10.0] * rows,
+            "technology": ["EAF"] * rows,
+            "capacity_ttpa": [1000.0] * rows,
+            "status": status,
+            "start_year": start_year,
+            "last_renovation_year": [None] * rows,
+            "soe_status": ["private"] * rows,
+            "power_source": ["grid"] * rows,
+            "parent_gem_id": [""] * rows,
+            "workforce_size": [100] * rows,
+            "source": ["gem_unit"] * rows,
+            "source_sheet": ["Electric arc furnaces"] * rows,
+            "source_row": list(range(2, rows + 2)),
+            "unit_id": [f"U{i}" for i in range(rows)],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        furnace_units.to_excel(writer, sheet_name="Furnace units", index=False)
+    return path
+
+
+def _furnace_groups_by_status(plants):
+    by_status: dict[str, list] = {}
+    for plant in plants:
+        for fg in plant.furnace_groups:
+            by_status.setdefault(fg.status, []).append(fg)
+    return by_status
+
+
+def test_undated_pipeline_units_are_dated_forward_from_the_reference_year(pipeline_furnace_units_excel_path):
+    """Undated construction units start in 2025-2029 (mid-build), undated announced ones in 2029-2030 (a full
+    construction time after a drawn construction start), both spread; the lifetime and renovation date follow
+    the imputed start, so the simulation can switch them on."""
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    by_status = _furnace_groups_by_status(plants)
+    undated = {
+        "construction": [fg for fg in by_status["construction"] if metadata[fg.furnace_group_id].source_row != 63],
+        "announced": [fg for fg in by_status["announced"] if metadata[fg.furnace_group_id].source_row != 62],
+    }
+    expected_range = {"construction": (2025, 2029), "announced": (2029, 2030)}
+    for status, fgs in undated.items():
+        lo, hi = expected_range[status]
+        starts = [fg.lifetime.time_frame.start for fg in fgs]
+        assert len(starts) == 30
+        assert all(lo <= y <= hi for y in starts), (status, sorted(starts))
+        assert len(set(starts)) > 1, f"{status} draws should spread across years"
+        for fg in fgs:
+            assert fg.last_renovation_date.year == fg.lifetime.time_frame.start
+            assert fg.lifetime.time_frame.end == fg.lifetime.time_frame.start + 20
+            meta = metadata[fg.furnace_group_id]
+            assert meta.age_source == "imputed"
+            assert meta.commissioning_year == fg.lifetime.time_frame.start, "metadata must anchor the imputed start"
+            assert meta.age_at_reference_year is None
+
+
+def test_dated_pipeline_units_keep_a_future_start_year_but_not_a_past_one(pipeline_furnace_units_excel_path):
+    """An announced unit dated 2028 keeps it; a construction unit dated 2023 (before the reference year) is
+    re-dated into the construction window instead of being stranded with a start year that never arrives."""
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    by_row = {metadata[fg.furnace_group_id].source_row: fg for p in plants for fg in p.furnace_groups}
+    future_dated = by_row[62]
+    assert future_dated.status == "announced" and future_dated.lifetime.time_frame.start == 2028
+    assert metadata[future_dated.furnace_group_id].commissioning_year == 2028
+    assert metadata[future_dated.furnace_group_id].age_source == "exact"
+    stale_dated = by_row[63]
+    assert stale_dated.status == "construction" and 2025 <= stale_dated.lifetime.time_frame.start <= 2029
+    assert metadata[stale_dated.furnace_group_id].commissioning_year == stale_dated.lifetime.time_frame.start
+    assert metadata[stale_dated.furnace_group_id].age_source == "imputed"
+
+
+def test_undated_inactive_units_keep_the_vintage_draw(pipeline_furnace_units_excel_path):
+    """Cancelled / retired rows are not pipeline: they get the country vintage band, not a future start."""
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    by_row = {metadata[fg.furnace_group_id].source_row: fg for p in plants for fg in p.furnace_groups}
+    for row in (64, 65):
+        fg = by_row[row]
+        assert fg.status in ("cancelled", "retired")
+        assert 2005 <= 2025 - metadata[fg.furnace_group_id].age_at_reference_year <= 2025
+
+
+def test_imputed_pipeline_start_survives_the_repository_round_trip(pipeline_furnace_units_excel_path, tmp_path):
+    """The simulation rebuilds every lifetime from plants_metadata.json, so the imputed start must come back
+    from a PlantJsonRepository load unchanged — otherwise the year loop would switch the units on at once."""
+    from steelo.adapters.dataprocessing.plant_metadata import create_metadata_dict, write_metadata_sidecar
+    from steelo.adapters.repositories.json_repository import PlantJsonRepository
+
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    PlantJsonRepository(tmp_path / "plants.json", plant_lifetime=20).add_list(plants)
+    write_metadata_sidecar(
+        create_metadata_dict(
+            furnace_group_metadata=metadata,
+            plant_lifetime_used=20,
+            data_reference_year=2025,
+            master_excel_path=pipeline_furnace_units_excel_path,
+            master_excel_version="test",
+        ),
+        tmp_path,
+    )
+    prepared = {fg.furnace_group_id: fg for p in plants for fg in p.furnace_groups}
+    repo = PlantJsonRepository(tmp_path / "plants.json", plant_lifetime=20, current_simulation_year=2025)
+    loaded = {fg.furnace_group_id: fg for p in repo.list() for fg in p.furnace_groups}
+    assert loaded.keys() == prepared.keys()
+    pipeline = [fg for fg in loaded.values() if fg.status in ("announced", "construction")]
+    assert len(pipeline) == 62
+    for fg in pipeline:
+        assert fg.lifetime.time_frame.start == prepared[fg.furnace_group_id].lifetime.time_frame.start
+    assert sum(fg.lifetime.time_frame.start == 2025 for fg in pipeline) < len(pipeline) / 3

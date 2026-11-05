@@ -16,6 +16,7 @@ def master_excel_with_plants(tmp_path):
         "Plant ID": ["P100000001", "P100000002", "P100000003"],
         "Plant name (English)": ["Plant A", "Plant B", "Plant C"],
         "Country": ["USA", "Germany", "China"],
+        "ISO3": ["USA", "DEU", "CHN"],
         "Coordinates": ["40.7128, -74.0060", "52.5200, 13.4050", "39.9042, 116.4074"],
         "Capacity operating status": ["operating", "construction", "operating"],
         "Main production equipment": ["BF;BOF", "DRI;EAF", "BF;BOF"],
@@ -90,6 +91,7 @@ def master_excel_with_all_sheets(tmp_path):
             "Plant ID": ["P001"],
             "Plant name": ["Test Plant"],
             "Country": ["USA"],
+            "ISO3": ["USA"],
         }
         pd.DataFrame(plants_data).to_excel(writer, sheet_name="Iron and steel plants", index=False)
 

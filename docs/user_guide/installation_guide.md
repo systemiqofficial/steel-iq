@@ -78,12 +78,6 @@ To run the tests, use the following command:
 pytest
 ```
 
-Run the tests including the ones for the `wind_and_pv` package which are skipped by default:
-
-```shell
-pytest --run-wind-and-pv-tests
-```
-
 To run the tests with coverage, use the following command:
 
 ```shell

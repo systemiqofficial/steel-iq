@@ -1,6 +1,8 @@
 import logging
 from typing import TYPE_CHECKING
 
+from steelo.domain.calculate_costs import carbon_price_from_series
+from steelo.domain.constants import Year
 from steelo.utilities.utils import normalize_name
 
 if TYPE_CHECKING:
@@ -111,7 +113,7 @@ def calculate_emissions(
 
     Notes:
         - Production volume calculated as: material_demand / required_quantity_per_ton_of_product
-        - Grid emissions added to indirect_ghg for all boundaries.
+        - Grid emissions added to indirect_ghg once per boundary, regardless of the number of materials.
         - Skips materials with zero/None required_quantity_per_ton_of_product.
         - Aggregates emissions across multiple materials in the bill of materials.
     """
@@ -160,9 +162,7 @@ def calculate_emissions(
                 "direct_with_biomass_ghg": direct_with_biomass_ghg_factor[0] * amount_of_product
                 if direct_with_biomass_ghg_factor
                 else 0.0,
-                "indirect_ghg": indirect_ghg_factor[0] * amount_of_product + grid_emissions
-                if indirect_ghg_factor
-                else 0.0,
+                "indirect_ghg": indirect_ghg_factor[0] * amount_of_product if indirect_ghg_factor else 0.0,
             }
 
         if not total_emissions:
@@ -174,6 +174,10 @@ def calculate_emissions(
                 else:
                     for scope, value in emissions.items():
                         total_emissions[convention][scope] += value
+
+    # grid_emissions is the furnace group's total, not a per-charge amount
+    for emissions in total_emissions.values():
+        emissions["indirect_ghg"] += grid_emissions
 
     return total_emissions
 
@@ -194,8 +198,8 @@ def calculate_emissions_cost_series(
         emissions: Emissions data by boundary and scope. Structure:
             {boundary: {"direct_ghg": float, "indirect_ghg": float, ...}}
             None or empty dict treated as zero emissions.
-        carbon_price_dict: Mapping of years to carbon prices in USD/tCO2e.
-            Missing years default to 0.0 price.
+        carbon_price_dict: Mapping of years to carbon prices in USD/tCO2e, read with
+            carbon_price_from_series (empty prices at zero; years past the end hold the last value).
         chosen_emission_boundary: Emissions boundary to use for cost calculation
             (e.g., "plant_boundary", "supply_chain").
         start_year: First year of the series (inclusive).
@@ -243,7 +247,7 @@ def calculate_emissions_cost_series(
         return [0.0] * (end_year - start_year + 1)
     else:
         return [
-            emissions[chosen_emission_boundary]["direct_ghg"] * carbon_price_dict.get(year, 0.0)
+            emissions[chosen_emission_boundary]["direct_ghg"] * carbon_price_from_series(carbon_price_dict, Year(year))
             for year in range(start_year, end_year + 1)
         ]
 

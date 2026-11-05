@@ -1,19 +1,13 @@
 import logging
-from typing import TYPE_CHECKING, TypedDict, Any
+from typing import TYPE_CHECKING, Callable, NamedTuple, Sequence, TypedDict, Any
 import math
 
 from steelo.utilities.utils import normalize_name
 
-from steelo.domain.calculate_emissions import (
-    calculate_emissions,
-    calculate_emissions_cost_series,
-    materiall_bill_business_case_match,
-)
-
 # Constants moved to domain.constants for clean architecture
 if TYPE_CHECKING:
     from steelo.domain.models import PrimaryFeedstock, Subsidy, CountryMappingService, TechnologyEmissionFactors
-from collections import Counter
+from collections import Counter, defaultdict
 from steelo.domain.constants import MWH_TO_KWH, Year
 
 # Normalized keys that represent genuine energy carriers. Any secondary-feedstock entry whose normalized
@@ -62,6 +56,30 @@ def _coerce_to_float(value: Any) -> float | None:
     return None
 
 
+def carbon_price_from_series(series: dict[Year, float] | None, year: Year) -> float:
+    """
+    Carbon price for a year from one country's (or bloc's) carbon price series.
+
+    Args:
+        series: Year -> carbon price, or None/empty when no carbon policy applies.
+        year: Any simulation or forecast year.
+
+    Returns:
+        0.0 without a series; years beyond the series end reuse its last value, so a
+        sheet ending before the simulation horizon does not drop carbon to zero.
+
+    Notes:
+        Years missing inside the covered range raise ValueError rather than pricing
+        carbon as zero.
+    """
+    if not series:
+        return 0.0
+    lookup_year = min(year, max(series))
+    if lookup_year not in series:
+        raise ValueError(f"Carbon price series has no value for {year} (series covers {min(series)}-{max(series)})")
+    return series[lookup_year]
+
+
 def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list["Subsidy"]:
     """
     Filter subsidies to only include those active in the specified year.
@@ -84,6 +102,48 @@ def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list[
         return []
     active = [subsidy for subsidy in subsidies if year >= subsidy.start_year and year <= subsidy.end_year]
     return active
+
+
+def collect_subsidies_for_geo(
+    subsidies_by_geo_key: dict[str, dict[str, list["Subsidy"]]],
+    geo_key: str,
+) -> dict[str, list["Subsidy"]]:
+    """Collect the subsidies (tech -> list) that apply at a location's geography.
+
+    Subsidies are additive instruments scoped to their authored geography, not
+    finest-available values: a country-wide row (keyed by bare ``iso3``) applies to every
+    plant in the country including province-tagged ones, while a province row (keyed by
+    ``iso3:geo_unit``) applies only to plants in that province — plants elsewhere in the
+    country do not receive it, and it never replaces a country-wide row.
+
+    Args:
+        subsidies_by_geo_key: Subsidy lookup keyed by geo_key (bare ``iso3`` and/or
+            ``iso3:code``), then technology name.
+        geo_key: The location's finest-available key (``Location.geo_key``) — a bare
+            ``iso3`` for country-level locations, else ``iso3:geo_unit``.
+
+    Returns:
+        Technology -> subsidies mapping combining the country-wide rows with the rows
+        scoped to the location's unit. The country dict is returned as-is (not copied)
+        when no province rows exist, so country-level behaviour is unchanged.
+    """
+    logger = logging.getLogger(f"{__name__}.collect_subsidies_for_geo")
+    iso3, _, geo_unit = geo_key.partition(":")
+    country = subsidies_by_geo_key.get(iso3, {})
+    if not geo_unit:
+        return country
+    province = subsidies_by_geo_key.get(geo_key, {})
+    if not province:
+        return country
+    logger.info(
+        "subsidies: applying sub-national rows for %s on top of country %s.",
+        geo_key,
+        iso3,
+    )
+    merged = {tech: list(subs) for tech, subs in country.items()}
+    for tech, subs in province.items():
+        merged.setdefault(tech, []).extend(subs)
+    return merged
 
 
 def collect_active_subsidies_over_period(
@@ -723,6 +783,43 @@ def calculate_unit_total_opex(unit_vopex: float, unit_fopex: float, utilization_
         return 0.0
 
 
+class ZeroUtilisationError(ValueError):
+    """Raised by scale_fopex_to_production when utilisation is non-positive.
+
+    A distinct type (rather than a bare ValueError) so callers can catch this specific,
+    expected condition — an investment candidate with no expected production — without
+    also swallowing unrelated ValueErrors.
+    """
+
+
+def scale_fopex_to_production(tech_unit_fopex: float, expected_utilisation_rate: float) -> float:
+    """
+    Convert fixed OPEX per tonne of capacity to fixed OPEX per tonne of production.
+
+    Technology fixed OPEX inputs are quoted per tonne of capacity per year. NPV cash flows
+    multiply unit costs by expected production (utilisation x capacity), so the per-capacity
+    figure must be spread over the production share to count the full fixed cost.
+
+    Args:
+        tech_unit_fopex (float): Fixed OPEX per tonne of capacity per year ($/t capacity).
+        expected_utilisation_rate (float): Expected utilisation rate (0.0 to 1.0, exclusive of 0).
+
+    Returns:
+        float: Fixed OPEX per tonne of production ($/t).
+
+    Raises:
+        ZeroUtilisationError: If expected_utilisation_rate is not positive — an investment
+            candidate with no expected production cannot be priced. Callers evaluating one
+            candidate among several (a technology switch, a new site, a plant expansion)
+            should catch this and skip the candidate rather than let it propagate.
+    """
+    if expected_utilisation_rate <= 0:
+        raise ZeroUtilisationError(
+            f"Expected utilisation rate must be positive to scale fixed OPEX, got {expected_utilisation_rate}"
+        )
+    return tech_unit_fopex / expected_utilisation_rate
+
+
 def calculate_debt_repayment(
     total_investment: float,
     equity_share: float,
@@ -745,7 +842,8 @@ def calculate_debt_repayment(
 
     Returns:
         list[float]: List of yearly repayment amounts (principal + interest) for the remaining lifetime.
-            Returns list of zeros if there is no debt (equity_share = 1.0).
+            Returns list of zeros if there is no debt (equity_share = 1.0), and an empty list once the
+            loan is fully repaid (lifetime_remaining <= 0).
 
     Note:
         - The repayment method uses constant principal payments with declining interest (not constant annuity payments).
@@ -756,6 +854,9 @@ def calculate_debt_repayment(
     if lifetime_remaining is None:
         lifetime_remaining = lifetime
 
+    if lifetime_remaining <= 0:
+        return []
+
     # Calculate total debt (investment minus equity portion)
     debt = total_investment * (1 - equity_share)
 
@@ -763,8 +864,8 @@ def calculate_debt_repayment(
     if debt == 0:
         total_repayment_list = [0.0] * lifetime
     else:
-        # Create schedule with constant principal repayments
-        capital_repayment_list = [debt / lifetime] * lifetime_remaining
+        # Amortise over the full lifetime so the tail slice reflects the debt already repaid
+        capital_repayment_list = [debt / lifetime] * lifetime
         total_repayment_list = []
 
         # Calculate total repayment (principal + interest) for each year
@@ -873,7 +974,7 @@ def calculate_unit_production_cost(
 
 
 def calculate_gross_cash_flow(
-    total_opex: list[float], price_series: list[float], expected_production: float
+    total_opex: Sequence[float | None], price_series: list[float], expected_production: float
 ) -> list[float]:
     """
     Calculate the gross cash flow over multiple time steps.
@@ -881,21 +982,20 @@ def calculate_gross_cash_flow(
     Computes cash flow as (revenue - operating costs) for each period.
 
     Args:
-        total_opex (list[float]): List of unit total operating expenditures per time step ($/unit).
+        total_opex (Sequence[float | None]): Unit total operating expenditures per time step ($/unit).
+            None marks a non-producing period (e.g. construction) with zero cash flow; a 0.0 entry
+            is a genuine zero-cost operating year and earns full revenue.
         price_series (list[float]): The market price per unit product per time step ($/unit).
         expected_production (float): The production volume per period (units/period).
 
     Returns:
         list[float]: A list of gross cash flows for each period ($/period).
-
-    Note:
-        - When OPEX is 0 (e.g., no production), cash flow is set to 0 rather than calculating revenue.
     """
     gross_cash_flow: list[float] = []
     # Calculate cash flow for each period
     for i, unit_total_opex_per_year in enumerate(total_opex):
-        # If no operating costs, no production is occurring
-        if unit_total_opex_per_year == 0:
+        # None marks a non-producing period (construction mask)
+        if unit_total_opex_per_year is None:
             cash_flow = 0.0
         else:
             # Cash flow = (price - cost) * production volume
@@ -929,41 +1029,15 @@ def calculate_net_cash_flow(total_debt_repayment: list[float], gross_cash_flow: 
     return [gross - debt for gross, debt in zip(gross_cash_flow, total_debt_repayment)]
 
 
-def calculate_lost_cash_flow(
-    total_debt_repayment: list[float] | list[int], gross_cash_flow: list[float] | list[int]
-) -> list[float]:
-    """
-    Calculate the lost cash flow by adding debt repayment to gross cash flow for each period.
-
-    This function is used in Cost of Stranded Asset (COSA) calculations where both the foregone
-    operating cash flows and the remaining debt obligations represent total losses from stranding.
-
-    Args:
-        total_debt_repayment (list[float] | list[int]): List of debt repayment amounts per period.
-        gross_cash_flow (list[float] | list[int]): List of gross cash flows per period.
-
-    Returns:
-        list[float]: Lost cash flow values for each period.
-
-    Note: Debt is added because remaining debt obligations represent additional losses when an asset is stranded.
-    """
-    # Validate input lists have matching lengths
-    if len(total_debt_repayment) != len(gross_cash_flow):
-        raise ValueError("The lengths of total_debt_repayment and gross_cash_flow must be the same.")
-
-    # Add debt repayment to gross cash flow for each period
-    return [gross + debt for gross, debt in zip(gross_cash_flow, total_debt_repayment)]
-
-
 def calculate_cost_of_stranded_asset(lost_cash_flow: list[float], cost_of_equity: float) -> float:
     """
     Calculate the net present value (NPV) of losses due to stranding an asset (COSA).
 
-    Discounts future lost cash flows (including both foregone operating profits and remaining
-    debt obligations) to present value using the cost of equity as the discount rate.
+    Discounts the future foregone operating cash flows to present value using the cost of equity
+    as the discount rate.
 
     Args:
-        lost_cash_flow (list[float]): Future lost cash flows per period.
+        lost_cash_flow (list[float]): Future foregone operating cash flows per period.
         cost_of_equity (float): The discount rate (cost of equity).
 
     Returns:
@@ -1036,25 +1110,21 @@ def calculate_npv_full(
     equity_share: float,
     lifetime: int,
     construction_time: int,
-    carbon_costs: list[float] | None = None,
     infrastructure_costs: float = 0.0,
-    secondary_output_adjustment: float = 0.0,
 ) -> float:
     """
     Calculate the full net present value (NPV) for a technology investment.
 
     Computes NPV by calculating total investment, debt repayment schedule, applying construction
-    time lags, adding carbon costs and secondary output adjustments to OPEX, and discounting
-    net cash flows to present value.
+    time lags, and discounting net cash flows to present value. Carbon costs and by-product
+    adjustments are part of the per-year opex list (they live inside the reductant score).
 
     Steps:
     1. Calculate total investment (CAPEX * capacity + infrastructure costs) and expected production
     2. Generate debt repayment schedule over the project lifetime
     3. Apply construction time lag to debt repayments and OPEX
-    4. Add carbon costs to OPEX (if provided and production > 0)
-    5. Add secondary output cost adjustment to OPEX (by-product revenue/cost)
-    6. Calculate gross and net cash flows
-    7. Discount to present value using cost of equity
+    4. Calculate gross and net cash flows
+    5. Discount to present value using cost of equity
 
     Args:
         capex (float): The capital expenditure per unit capacity ($/unit).
@@ -1067,12 +1137,8 @@ def calculate_npv_full(
         equity_share (float): The fraction of the investment financed by equity (0.0 to 1.0).
         lifetime (int): The project lifetime in years.
         construction_time (int): Construction time in years (creates lag before production starts).
-        carbon_costs (list[float] | None): List of total carbon costs per period ($). Defaults to None.
         infrastructure_costs (float): Additional infrastructure costs like rail (applies to new plants only).
             Defaults to 0.0.
-        secondary_output_adjustment (float): Per-unit cost adjustment from secondary outputs ($/unit).
-            Negative values represent by-product revenue (reduce cost), positive values represent
-            additional costs. Applied as a constant across all operational years. Defaults to 0.0.
 
     Returns:
         float: The calculated NPV for the technology investment.
@@ -1091,26 +1157,12 @@ def calculate_npv_full(
         total_investment=total_investment, equity_share=equity_share, lifetime=lifetime, cost_of_debt=cost_of_debt
     )
 
-    # Apply construction time lag to debt repayments and OPEX
-    zeros = [0.0] * construction_time
-    debt_repayment_lagged = zeros + debt_repayment
-    unit_opex_lagged = zeros + unit_total_opex_list
+    # Apply construction time lag to debt repayments and OPEX (None masks the non-producing construction years)
+    debt_repayment_lagged = [0.0] * construction_time + debt_repayment
+    unit_opex_lagged: list[float | None] = [None] * construction_time + list(unit_total_opex_list)
 
-    # Add carbon costs to OPEX if provided and production is positive
     if expected_production == 0:
-        func_logger.warning("[NPV FULL] Expected production is zero. Not applying carbon costs to OPEX.")
-    elif not carbon_costs:
-        func_logger.warning("[NPV FULL] No carbon costs provided. Not applying carbon costs to OPEX.")
-    else:
-        # Convert total carbon costs to unit carbon costs and apply construction lag
-        unit_carbon_costs = [carbon_cost / expected_production for carbon_cost in carbon_costs]
-        unit_carbon_costs_lagged = zeros + unit_carbon_costs
-        unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, unit_carbon_costs_lagged)]
-
-    # Add secondary output cost adjustment (by-product revenue/cost) to OPEX during operational years only
-    secondary_adjustment_lagged = zeros + [secondary_output_adjustment] * len(unit_total_opex_list)
-    unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, secondary_adjustment_lagged)]
-    func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t applied to OPEX")
+        func_logger.warning("[NPV FULL] Expected production is zero.")
 
     # Calculate cash flows
     gross_cash_flow = calculate_gross_cash_flow(
@@ -1123,8 +1175,7 @@ def calculate_npv_full(
     func_logger.debug(f"[NPV FULL] Expected production: {expected_production:,.0f} kt")
     func_logger.debug(f"[NPV FULL] Debt repayment: {debt_repayment}")
     func_logger.debug(f"[NPV FULL] Debt repayment lagged: {debt_repayment_lagged}")
-    func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t")
-    func_logger.debug(f"[NPV FULL] OPEX list (incl. carbon + secondary): {unit_opex_lagged}")
+    func_logger.debug(f"[NPV FULL] OPEX list: {unit_opex_lagged}")
     func_logger.debug(f"[NPV FULL] Gross cash flow: {gross_cash_flow}")
     func_logger.debug(f"[NPV FULL] Net cash flow: {net_cash_flow}")
 
@@ -1138,64 +1189,66 @@ def calculate_npv_full(
 
 
 def stranding_asset_cost(
-    debt_repayment_per_year: list[float],
     unit_total_opex_list: list[float],
     remaining_time: int,
     market_price_series: list[float],
     expected_production: float,
     cost_of_equity: float,
+    construction_time: int = 0,
 ) -> float:
     """
     Calculate the Cost of Stranded Asset (COSA) when switching technologies.
 
-    COSA represents the NPV of losses from abandoning the current technology before its planned
-    end of life. This includes both remaining debt obligations (current + legacy debt) and the
-    opportunity cost of foregone profitable operations.
+    COSA is the foregone operating margin: the NPV of the gross operating cash flow the current
+    asset would have earned over its remaining life. The remaining debt is deliberately excluded —
+    it is owed whether the agent stays or switches (it persists post-switch via the legacy-debt
+    schedule), so it cancels from the switch-vs-stay comparison and must not be charged here.
+    A deferred switch keeps the incumbent operating through the construction window, so those
+    years' margin is not foregone either — only years [construction_time, remaining_time) are
+    charged, at their original discount positions.
 
     Steps:
-    1. Extract remaining debt payments, OPEX, and prices for the remaining asset lifetime
-    2. Calculate gross cash flow (revenue - OPEX) for remaining periods
-    3. Calculate lost cash flow (gross cash flow + debt obligations)
-    4. Discount lost cash flows to present value using cost of equity
+    1. Extract OPEX and prices for the genuinely foregone years [construction_time, remaining_time)
+    2. Calculate gross cash flow (revenue - OPEX) for those periods
+    3. Discount to present value using cost of equity, keeping discount exponents aligned
 
     Args:
-        debt_repayment_per_year (list[float]): Total yearly debt repayments (current + legacy debt combined).
         unit_total_opex_list (list[float]): Yearly unit total OPEX expenditures ($/unit).
         remaining_time (int): Remaining asset lifetime in years.
         market_price_series (list[float]): Market price per unit product per year ($/unit).
         expected_production (float): Production volume per period (units/period).
         cost_of_equity (float): Annual cost of equity as discount rate (e.g., 0.08 for 8%).
+        construction_time (int): Years the incumbent keeps operating after a switch decision
+            before the new technology takes over. Defaults to 0 (charge the full remainder).
 
     Returns:
-        float: The net present value of losses due to the stranded asset (COSA).
-
-    Note: See FurnaceGroup.debt_repayment_per_year for full details on debt accumulation logic.
+        float: The NPV of the foregone operating margin (COSA). Zero when the construction
+        window covers the whole remainder; negative for a loss-making incumbent, which
+        correctly rewards exit.
     """
     # Use function-specific logger that respects the centralized configuration
     func_logger = logging.getLogger(f"{__name__}.stranding_asset_cost")
 
-    # Extract remaining time periods for all inputs (last N years of debt, first N years of OPEX/prices)
-    remaining_debt = debt_repayment_per_year[-remaining_time:]
-    remaining_opex = unit_total_opex_list[:remaining_time]
-    remaining_price_series = market_price_series[:remaining_time]
+    # Only years after the construction window are foregone
+    remaining_opex = unit_total_opex_list[construction_time:remaining_time]
+    remaining_price_series = market_price_series[construction_time:remaining_time]
 
-    # Calculate gross cash flow from operations for remaining periods
+    # Foregone operating margin: gross cash flow from operations for the remaining periods
     gross_cash_flow = calculate_gross_cash_flow(remaining_opex, remaining_price_series, expected_production)
 
-    # Calculate lost cash flow (both foregone profits and debt obligations)
-    lost_cash_flow = calculate_lost_cash_flow(remaining_debt, gross_cash_flow)
+    # Zero-pad the construction years so discount exponents stay anchored to today
+    lost_cash_flow = [0.0] * construction_time + gross_cash_flow
 
     # Log all intermediate calculations together for easier debugging
     func_logger.debug(
-        f"[STRANDING ASSET COST] Remaining time: {remaining_time}, Expected production: {expected_production:,.0f} kt"
+        f"[STRANDING ASSET COST] Remaining time: {remaining_time}, Construction time: {construction_time}, "
+        f"Expected production: {expected_production:,.0f} kt"
     )
     func_logger.debug(f"[STRANDING ASSET COST] Price per unit per year ($/t): {market_price_series}")
-    func_logger.debug(f"[STRANDING ASSET COST] Remaining debt: {remaining_debt}")
     func_logger.debug(f"[STRANDING ASSET COST] Remaining unit total OPEX: {remaining_opex}")
-    func_logger.debug(f"[STRANDING ASSET COST] Gross cash flow: {gross_cash_flow}")
-    func_logger.debug(f"[STRANDING ASSET COST] Lost cash flow: {lost_cash_flow}")
+    func_logger.debug(f"[STRANDING ASSET COST] Gross cash flow (foregone margin): {gross_cash_flow}")
 
-    # Discount lost cash flows to present value
+    # Discount the foregone operating margin to present value
     return calculate_cost_of_stranded_asset(lost_cash_flow, cost_of_equity)
 
 
@@ -1207,10 +1260,7 @@ def calculate_business_opportunity_npvs(
     plant_lifetime: int,
     construction_time: int,
     equity_share: float,
-    technology_emission_factors: list["TechnologyEmissionFactors"],
-    chosen_emissions_boundary_for_carbon_costs: str,
-    dynamic_business_cases: dict[str, list["PrimaryFeedstock"]],
-    disposal_cost_outputs: frozenset[str] | None = None,
+    increase_sizing_query: Callable[..., float] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Calculates the NPV for a series of business opportunities. If the calculation fails, it returns a very
@@ -1226,15 +1276,17 @@ def calculate_business_opportunity_npvs(
     Args:
         cost_data: Nested dictionary: product -> site_id -> tech -> cost_type -> cost
         target_year: Target year for the business opportunity
-        market_price: Dictionary mapping product to list of future market prices
+        market_price: Dictionary mapping product to list of future market prices,
+            anchored at target_year (index 0 = earliest construction start), so that
+            after calculate_npv_full's construction-time padding each price year
+            matches the cost year of the operating window
         steel_plant_capacity: Capacity of the steel plant in tonnes
         plant_lifetime: Lifetime of the plant in years
         construction_time: Time required for plant construction in years
         equity_share: Share of investment financed by equity
-        technology_emission_factors: List of technology-specific emission factors
-        chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon cost calculation
-        dynamic_business_cases: Dictionary mapping technology to list of primary feedstocks
-        disposal_cost_outputs: Carrier names where positive price = disposal cost.
+        increase_sizing_query: China capacity-policy sizing query, applied per candidate so the
+            NPV rests on the capacity the policy permits that route to build rather than the
+            nameplate it would plan. None (the default) values every candidate at nameplate.
 
     Returns:
         Dictionary mapping product -> site_id -> technology -> NPV.
@@ -1245,9 +1297,12 @@ def calculate_business_opportunity_npvs(
           picks them up. In real life, subsidies are often announced years in advance of actual plant
           construction. This metric only affects the decision to open a plant, not the actual costs once
           opened.
-        - The plant capacity does not affect the NPV calculation.
+        - Capacity scales every term of the NPV except the capacity-independent railway cost,
+          so two candidates sized differently do not rank as they would at equal capacity.
         - cost_data has been validated by validate_and_clean_cost_data to ensure all required fields are
           present with correct types (floats for costs, dict for bom).
+        - The per-capacity fixed OPEX is converted to per-production terms (divided by the expected
+          utilisation rate) so the full fixed cost is counted in the cash flows.
     """
     from steelo.domain.calculate_costs import calculate_npv_full, collect_active_subsidies_over_period
 
@@ -1269,61 +1324,46 @@ def calculate_business_opportunity_npvs(
                 )
                 bom = bo_costs["bom"]
                 assert isinstance(bom, dict), f"Expected bom to be dict, got {type(bom)}"
-                unit_vopex = calculate_variable_opex(bom["materials"], bom["energy"])
-                unit_fopex = bo_costs["fopex"]
-                assert isinstance(unit_fopex, (int, float)), f"Expected fopex to be numeric, got {type(unit_fopex)}"
-                unit_total_opex = unit_vopex + unit_fopex
+                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+                # by-products enter through the per-year reductant score
+                unit_vopex = calculate_variable_opex(bom["materials"], {})
+                raw_fopex = bo_costs["fopex"]
+                assert isinstance(raw_fopex, (int, float)), f"Expected fopex to be numeric, got {type(raw_fopex)}"
+                # Per-capacity fixed OPEX spread over the production the NPV multiplies by
+                try:
+                    unit_fopex = scale_fopex_to_production(raw_fopex, bo_costs["utilization_rate"])  # type: ignore[arg-type]
+                except ZeroUtilisationError:
+                    logger.warning(
+                        f"Zero utilisation for product {prod} - site {site_id} - technology {tech}. "
+                        "Cannot price fixed OPEX. Returning -inf."
+                    )
+                    npv_dict[prod][site_id][tech] = float("-inf")
+                    continue
+                score_series = bo_costs["score_series"]
+                assert isinstance(score_series, list), f"Expected score_series to be list, got {type(score_series)}"
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
-                    opex=unit_total_opex,
+                    opex=[unit_vopex + unit_fopex + score for score in score_series],
                     opex_subsidies=selected_opex_subsidies,
                     start_year=start_year,
                     end_year=end_year,
                 )
 
-                # Calculate carbon costs for earliest possible operation years
-                tech_business_cases = dynamic_business_cases.get(tech, dynamic_business_cases.get(tech.lower(), []))
-                reductant_value = bo_costs["reductant"]
-                assert reductant_value is None or isinstance(reductant_value, str), (
-                    f"Expected reductant to be str or None, got {type(reductant_value)}"
-                )
-                matched_business_cases = materiall_bill_business_case_match(
-                    dynamic_feedstocks=tech_business_cases,
-                    material_bill=bom["materials"],
-                    tech=tech,
-                    reductant=reductant_value,
-                )
-                bom_emissions = calculate_emissions(
-                    business_cases=matched_business_cases,
-                    material_bill=bom["materials"],
-                    technology_emission_factors=technology_emission_factors,
-                )
-                carbon_cost_series = bo_costs["carbon_cost_series"]
-                assert isinstance(carbon_cost_series, dict), (
-                    f"Expected carbon_cost_series to be dict, got {type(carbon_cost_series)}"
-                )
-                carbon_cost_list = calculate_emissions_cost_series(
-                    emissions=bom_emissions,
-                    carbon_price_dict=carbon_cost_series,
-                    chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                    start_year=start_year,
-                    end_year=end_year,
-                )
-
-                # Calculate secondary output cost adjustment (by-product revenue/cost)
-                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
-                    bill_of_materials=bom,
-                    dynamic_business_cases=list(matched_business_cases.values()),
-                    output_costs=bo_costs["output_costs"],
-                    disposal_cost_outputs=disposal_cost_outputs,
-                )
-                logger.debug(
-                    f"[NEW PLANT NPV] {prod}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                # The capacity the policy would permit this route, known before its NPV
+                npv_capacity = (
+                    steel_plant_capacity
+                    if increase_sizing_query is None
+                    else increase_sizing_query(
+                        iso3=site_id[2],
+                        technology=tech,
+                        reductant=str(bo_costs["reductant"]),
+                        capacity=float(steel_plant_capacity),
+                    )
                 )
 
                 # Calculate NPV
                 npv_value = calculate_npv_full(
                     capex=bo_costs["capex"],  # type: ignore[arg-type]
-                    capacity=steel_plant_capacity,
+                    capacity=npv_capacity,
                     unit_total_opex_list=unit_total_opex_list,  # type: ignore[arg-type]
                     expected_utilisation_rate=bo_costs["utilization_rate"],  # type: ignore[arg-type]
                     price_series=market_price[prod],
@@ -1333,8 +1373,6 @@ def calculate_business_opportunity_npvs(
                     cost_of_equity=bo_costs["cost_of_equity"],  # type: ignore[arg-type]
                     equity_share=equity_share,
                     infrastructure_costs=bo_costs["railway_cost"],  # type: ignore[arg-type]
-                    carbon_costs=carbon_cost_list,
-                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 # Set to very negative NPV if calculation returned NaN
@@ -1494,7 +1532,7 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
 
 
 def calculate_opex_list_with_subsidies(
-    opex: float,
+    opex: float | list[float],
     opex_subsidies: list["Subsidy"],
     start_year: "Year",
     end_year: "Year",
@@ -1506,7 +1544,9 @@ def calculate_opex_list_with_subsidies(
     and applies them to the base OPEX value.
 
     Args:
-        opex (float): The base operating expenditure per unit of production.
+        opex (float | list[float]): The base operating expenditure per unit of production —
+            a scalar held flat, or one value per year in [start_year, end_year) (e.g. a
+            year-varying reductant score folded into the base).
         opex_subsidies (list[Subsidy]): List of OPEX subsidy objects with start/end years.
         start_year (Year): The first year of operation.
         end_year (Year): The last year of operation (exclusive).
@@ -1514,9 +1554,17 @@ def calculate_opex_list_with_subsidies(
     Returns:
         list[float]: OPEX values for each year of operation after applying active subsidies.
     """
+    years = range(start_year, end_year)
+    if isinstance(opex, list):
+        if len(opex) != len(years):
+            raise ValueError(f"Per-year opex has {len(opex)} entries but the horizon spans {len(years)} years")
+        base_by_year = opex
+    else:
+        base_by_year = [opex] * len(years)
+
     opex_list = []
     # Calculate subsidized OPEX for each year of operation
-    for year in range(start_year, end_year):
+    for base, year in zip(base_by_year, years):
         # Filter subsidies that are active in this specific year
         subsidies_in_year = []
         for subsidy in opex_subsidies:
@@ -1524,7 +1572,7 @@ def calculate_opex_list_with_subsidies(
                 subsidies_in_year.append(subsidy)
 
         # Apply subsidies active in this year
-        opex_list.append(calculate_opex_with_subsidies(opex, subsidies_in_year))
+        opex_list.append(calculate_opex_with_subsidies(base, subsidies_in_year))
 
     return opex_list
 
@@ -1651,9 +1699,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
 
 
 # ----------------------------------- Hydrogen Costs -------------------------------------------------
-# Note: A pixel-level version of the functions below  can be found in geospatial_calculations.py and is used by the
-# GeospatialModel to follow the same logic to get hydrogen costs from electricity prices. For consistency,
-# any changes to the logic below should be reflected in there as well.
+# Note: geospatial_calculations.py holds the cell-level counterparts that price new sites' hydrogen. Both share
+# the LCOH formula and resolve the electrolyser cost at the geo key, then the country, so a change to either
+# belongs in both. The ceilings differ: there a percentile of a region's cells, here of its countries' prices,
+# with a province taking its country's ceiling.
 
 
 def calculate_lcoh_from_electricity_country_level(
@@ -1678,7 +1727,8 @@ def calculate_lcoh_from_electricity_country_level(
             Already converted from USD/MWh by excel_reader.
         hydrogen_efficiency: Dictionary mapping years to electrolyser energy consumption (MWh/kg H2).
             From "Hydrogen efficiency" sheet in master Excel.
-        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg).
+        hydrogen_capex_opex: Dictionary mapping geo-keys (bare ISO3, optionally sub-national
+            ``iso3:code`` overrides) to year->CAPEX+OPEX values (USD/kg).
             From "Hydrogen CAPEX_OPEX component" sheet in master Excel.
         year: Current simulation year.
 
@@ -1705,16 +1755,21 @@ def calculate_lcoh_from_electricity_country_level(
     )
 
     lcoh_by_country = {}
-    for iso3, electricity_price in electricity_by_country.items():
-        # Get CAPEX+OPEX component for this country and year
-        if iso3 not in hydrogen_capex_opex:
+    for geo_key, electricity_price in electricity_by_country.items():
+        iso3 = geo_key.split(":", 1)[0]
+        # Finest-available capex/opex: a sub-national row overrides its country's value,
+        # else the country value applies (today the data is country-keyed only).
+        capex_opex_by_year = hydrogen_capex_opex.get(geo_key, hydrogen_capex_opex.get(iso3))
+        if geo_key != iso3 and geo_key in hydrogen_capex_opex:
+            logger.info("hydrogen CAPEX/OPEX: resolved to sub-national row %s (not country %s).", geo_key, iso3)
+        if capex_opex_by_year is None:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3}")
-        if year not in hydrogen_capex_opex[iso3]:
+        if year not in capex_opex_by_year:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3} in year {year}")
-        capex_opex = hydrogen_capex_opex[iso3][year]
+        capex_opex = capex_opex_by_year[year]
 
         # Calculate LCOH: (kWh/kg) × (USD/kWh) + (USD/kg) = USD/kg
-        lcoh_by_country[iso3] = energy_consumption_kwh * electricity_price + capex_opex
+        lcoh_by_country[geo_key] = energy_consumption_kwh * electricity_price + capex_opex
 
     # Log a sample of LCOH values for verification
     sample_countries = list(lcoh_by_country.keys())[:3]
@@ -1795,7 +1850,7 @@ def apply_hydrogen_price_cap_country_level(
     intraregional_trade_allowed: bool,
     intraregional_trade_matrix: dict[str, list[str]],
     long_dist_pipeline_transport_cost: float,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, float]]:
     """
     Apply hydrogen price capping for all countries based on regional ceilings and trade options.
 
@@ -1807,7 +1862,7 @@ def apply_hydrogen_price_cap_country_level(
         the cluster plus long distance transport costs per kg of hydrogen.
 
     Args:
-        lcoh_by_country: Dictionary mapping ISO3 codes to LCOH values
+        lcoh_by_country: Mapping from geo_key (iso3 or iso3:code) to LCOH values
         regional_ceilings: Dictionary mapping regions to ceiling values
         country_to_region: Dictionary mapping ISO3 codes to region names
         intraregional_trade_allowed: Whether intraregional trade is allowed
@@ -1815,14 +1870,21 @@ def apply_hydrogen_price_cap_country_level(
         long_dist_pipeline_transport_cost: Transport cost for long-distance pipeline (USD/kg)
 
     Returns:
-        Dictionary mapping ISO3 codes to capped hydrogen prices
+        Tuple of:
+        - Mapping from geo_key (iso3 or iso3:code) to capped hydrogen prices
+        - Mapping from geo_key to the effective ceiling it was capped against (trade-adjusted when trade is allowed)
 
     Raises:
         ValueError: If required data is missing
+
+    Notes:
+        A sub-national geo_key inherits its country's region and therefore its ceiling.
     """
     capped_hydrogen_prices = {}
+    ceilings = {}
 
-    for iso3, lcoh in lcoh_by_country.items():
+    for geo_key, lcoh in lcoh_by_country.items():
+        iso3 = geo_key.split(":", 1)[0]  # sub-national rows inherit their country's region/ceiling
         region = country_to_region.get(iso3)
         if region is None:
             raise ValueError(f"No region mapping found for country {iso3}")
@@ -1834,7 +1896,8 @@ def apply_hydrogen_price_cap_country_level(
 
         # Option a: No intraregional trade allowed -> apply the cap: minimum of LCOH and ceiling
         if not intraregional_trade_allowed:
-            capped_hydrogen_prices[iso3] = min(lcoh, ceiling_value)
+            ceilings[geo_key] = ceiling_value
+            capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
         # Option b: Intraregional trade allowed -> consider trade options and choose the minimum among
         # the country's LCOH, its regional ceiling, and its intraregional trade options
@@ -1851,12 +1914,367 @@ def apply_hydrogen_price_cap_country_level(
                 ## Take minimum of regional ceiling and trade option
                 ceiling_value = min(ceiling_value, best_trade_value)
             ## Apply the cap: minimum of LCOH and ceiling
-            capped_hydrogen_prices[iso3] = min(lcoh, ceiling_value)
+            ceilings[geo_key] = ceiling_value
+            capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
-    return capped_hydrogen_prices
+    return capped_hydrogen_prices, ceilings
 
 
 # ----------------------------------------------------------------------------------------------------------
+
+
+def calculate_secondary_output_adjustment_per_tonne(
+    dbc: "PrimaryFeedstock",
+    output_costs: dict[str, float],
+    disposal_cost_outputs: frozenset[str] | None = None,
+) -> float:
+    """
+    Per-tonne-of-product cost adjustment from one business case's secondary outputs.
+
+    Physical by-product outputs are priced as revenue (``-abs(price)``) unless named in
+    ``disposal_cost_outputs``, where the raw price sign is kept (positive = disposal
+    cost). Carbon outputs always keep their raw sign (positive = storage cost,
+    negative = credit). Outputs without a price in ``output_costs`` are skipped.
+
+    Args:
+        dbc: PrimaryFeedstock whose ``outputs`` and ``carbon_outputs`` are priced.
+        output_costs: Carrier prices used for output pricing (USD/unit).
+        disposal_cost_outputs: Carrier names where positive price = disposal cost.
+
+    Returns:
+        Adjustment in USD per tonne of product (negative = revenue, positive = cost).
+    """
+    adjustment = 0.0
+    for output, quantity in (dbc.outputs or {}).items():
+        if output not in output_costs:
+            continue
+        if disposal_cost_outputs and output in disposal_cost_outputs:
+            effective_price = output_costs[output]  # positive = disposal cost
+        else:
+            effective_price = -abs(output_costs[output])  # revenue
+        adjustment += effective_price * quantity
+    for output, quantity in (dbc.carbon_outputs or {}).items():
+        if output in output_costs:
+            adjustment += output_costs[output] * quantity
+    return adjustment
+
+
+class ReductantScores(NamedTuple):
+    """Per-(metallic charge, reductant) scoring results for one technology's business cases."""
+
+    energy_vopex_by_input: dict[str, dict[str, float]]
+    energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]]
+    score_by_input: dict[str, dict[str, float]]
+    material_profile_by_input: dict[str, dict[str, tuple]]
+
+
+def summarise_reductant_picks(picks: list[str], start_year: "Year") -> str:
+    """
+    Compress a per-year pick list into year-range segments for log lines.
+
+    Args:
+        picks: One reductant per operating year.
+        start_year: Year of the first entry.
+
+    Returns:
+        e.g. "natural_gas:2028-2033, hydrogen:2034-2047" (empty picks -> "-").
+    """
+    if not picks:
+        return "-"
+    segments = []
+    segment_start = int(start_year)
+    for i in range(1, len(picks) + 1):
+        if i == len(picks) or picks[i] != picks[i - 1]:
+            segment_end = int(start_year) + i - 1
+            label = picks[i - 1] or "''"
+            segments.append(
+                f"{label}:{segment_start}" if segment_start == segment_end else f"{label}:{segment_start}-{segment_end}"
+            )
+            if i < len(picks):
+                segment_start = int(start_year) + i
+    return ", ".join(segments)
+
+
+class ReductantScoreSeries(NamedTuple):
+    """Year-wise reductant-optimised score series for one candidate technology.
+
+    One entry per operating year: the output-share-weighted score of the year's
+    picked reductant, and the pick itself. picks[0] is the operating-start-year
+    reductant an investment would commit.
+    """
+
+    scores: list[float]
+    picks: list[str]
+
+
+def build_direct_ghg_lookup(
+    technology_emission_factors: list["TechnologyEmissionFactors"],
+    chosen_emissions_boundary: str,
+) -> dict[tuple[str, str, str], float]:
+    """
+    Direct GHG factors keyed by (technology, reductant, metallic charge) for one boundary.
+
+    Args:
+        technology_emission_factors: The full EF table.
+        chosen_emissions_boundary: Boundary whose rows populate the lookup.
+
+    Returns:
+        Lookup dict using the same matching rules as calculate_emissions: technology
+        lowercased, reductant normalised, metallic charge raw.
+    """
+    return {
+        (factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge): factor.direct_ghg_factor
+        for factor in technology_emission_factors
+        if factor.boundary == chosen_emissions_boundary
+    }
+
+
+def score_reductants_for_business_cases(
+    dynamic_business_case: list["PrimaryFeedstock"],
+    energy_costs: dict[str, float],
+    output_energy_costs: dict[str, float],
+    carbon_price: float,
+    ef_by_key: dict[tuple[str, str, str], float] | None,
+    disposal_cost_outputs: frozenset[str] | None,
+) -> ReductantScores:
+    """
+    Score every (metallic charge, reductant) of a technology's business cases.
+
+    The score is energy VOPEX per tonne plus — when ``ef_by_key`` is provided —
+    ``carbon_price`` x direct GHG factor and the secondary-output adjustment
+    (by-product revenue / disposal and carbon storage costs). With ``ef_by_key``
+    None the score equals pure energy VOPEX (legacy energy-only choice).
+
+    Args:
+        dynamic_business_case: PrimaryFeedstock rows of one technology.
+        energy_costs: Input energy prices per carrier.
+        output_energy_costs: Output-side prices for the secondary-output adjustment.
+        carbon_price: Carbon price weighting the direct GHG factor (USD/tCO2e).
+        ef_by_key: Direct GHG lookup from build_direct_ghg_lookup, or None for
+            energy-only scoring. Missing keys raise KeyError (hard lookup) so a data
+            gap cannot silently score carbon as zero.
+        disposal_cost_outputs: Output names booked as disposal costs, not revenue.
+
+    Returns:
+        ReductantScores with energy VOPEX, its per-carrier breakdown, the total
+        score, and the material profile (for drift detection) per (charge, reductant).
+    """
+    energy_vopex_by_input: dict[str, dict[str, float]] = {}
+    energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
+    extra_score_by_input: dict[str, dict[str, float]] = {}
+    material_profile_by_input: dict[str, dict[str, tuple]] = {}
+
+    for dbc in dynamic_business_case:
+        metallic_input = dbc.metallic_charge
+        raw_energy_req = dbc.energy_requirements or {}
+        raw_secondary = dbc.secondary_feedstock or {}
+
+        combined_requirements: dict[str, float] = {}
+        for energy_type, volume in raw_energy_req.items():
+            normalized_energy = normalize_name(energy_type)
+            if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
+                continue
+            combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
+
+        non_energy_secondary: dict[str, float] = {}
+        for secondary_type, volume in raw_secondary.items():
+            normalized_secondary = normalize_name(secondary_type)
+            if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
+                non_energy_secondary[normalized_secondary] = volume
+                continue
+            combined_requirements[normalized_secondary] = combined_requirements.get(normalized_secondary, 0.0) + volume
+
+        # Material profile per reductant, only for the data-drift warning at the caller
+        material_profile_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
+            dbc.required_quantity_per_ton_of_product,
+            tuple(sorted(non_energy_secondary.items())),
+        )
+
+        if not combined_requirements:
+            continue
+
+        if metallic_input not in energy_vopex_by_input:
+            energy_vopex_by_input[metallic_input] = {}
+        if dbc.reductant not in energy_vopex_by_input[metallic_input]:
+            energy_vopex_by_input[metallic_input][dbc.reductant] = 0.0
+        energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(dbc.reductant, defaultdict(float))
+
+        for energy_type, volume in combined_requirements.items():
+            normalized_energy = normalize_name(energy_type)
+            price = energy_costs.get(normalized_energy, energy_costs.get(energy_type, 0.0))
+            cost_value = volume * price
+            energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
+            energy_breakdown_by_input[metallic_input][dbc.reductant][normalized_energy] += cost_value
+
+        if ef_by_key is not None:
+            # Hard lookup: a missing EF row would silently bias the pick towards dirty
+            # reductants if defaulted to 0, so fail loudly instead
+            direct_ghg_factor = ef_by_key[(dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)]
+            secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
+                dbc,
+                output_energy_costs,
+                disposal_cost_outputs,
+            )
+            extra = carbon_price * direct_ghg_factor + secondary_adjustment
+            extra_score_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
+                extra_score_by_input.get(metallic_input, {}).get(dbc.reductant, 0.0) + extra
+            )
+
+    if ef_by_key is not None:
+        # extra_score_by_input is populated in lockstep with energy_vopex_by_input above
+        score_by_input = {
+            metallic_input: {
+                reductant: energy_cost + extra_score_by_input[metallic_input][reductant]
+                for reductant, energy_cost in reductant_costs.items()
+            }
+            for metallic_input, reductant_costs in energy_vopex_by_input.items()
+        }
+    else:
+        score_by_input = energy_vopex_by_input
+
+    return ReductantScores(
+        energy_vopex_by_input=energy_vopex_by_input,
+        energy_breakdown_by_input=energy_breakdown_by_input,
+        score_by_input=score_by_input,
+        material_profile_by_input=material_profile_by_input,
+    )
+
+
+class CompiledBusinessCase(NamedTuple):
+    """The year-independent part of one business case for reductant scoring.
+
+    Built once per technology by ``compile_reductant_business_cases``; only the prices vary per call.
+    """
+
+    dbc: "PrimaryFeedstock"
+    metallic_input: str
+    reductant: str
+    energy_terms: tuple[tuple[str, str, float], ...]
+    ef_key: tuple[str, str, str]
+    material_profile: tuple
+
+
+def compile_reductant_business_cases(dynamic_business_case: list["PrimaryFeedstock"]) -> list[CompiledBusinessCase]:
+    """
+    Pre-compute what ``score_reductants_for_business_cases`` re-derives on every call.
+
+    That is the merged energy requirements per carrier (normalised names, summed in the
+    same order), the material profile and the key of the direct GHG lookup. Prices, the
+    carbon price and the GHG table stay call arguments, so the result stays valid for any
+    year. It is valid only while the business cases themselves are not edited.
+
+    Args:
+        dynamic_business_case: PrimaryFeedstock rows of one technology.
+
+    Returns:
+        One entry per row, in order.
+    """
+    compiled = []
+    for dbc in dynamic_business_case:
+        combined_requirements: dict[str, float] = {}
+        for energy_type, volume in (dbc.energy_requirements or {}).items():
+            normalized_energy = normalize_name(energy_type)
+            if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
+                continue
+            combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
+
+        non_energy_secondary: dict[str, float] = {}
+        for secondary_type, volume in (dbc.secondary_feedstock or {}).items():
+            normalized_secondary = normalize_name(secondary_type)
+            if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
+                non_energy_secondary[normalized_secondary] = volume
+                continue
+            combined_requirements[normalized_secondary] = combined_requirements.get(normalized_secondary, 0.0) + volume
+
+        compiled.append(
+            CompiledBusinessCase(
+                dbc=dbc,
+                metallic_input=dbc.metallic_charge,
+                reductant=dbc.reductant,
+                energy_terms=tuple(
+                    (normalize_name(energy_type), energy_type, volume)
+                    for energy_type, volume in combined_requirements.items()
+                ),
+                ef_key=(dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge),
+                material_profile=(
+                    dbc.required_quantity_per_ton_of_product,
+                    tuple(sorted(non_energy_secondary.items())),
+                ),
+            )
+        )
+    return compiled
+
+
+def score_compiled_reductant_business_cases(
+    compiled: list[CompiledBusinessCase],
+    energy_costs: dict[str, float],
+    output_energy_costs: dict[str, float],
+    carbon_price: float,
+    ef_by_key: dict[tuple[str, str, str], float] | None,
+    disposal_cost_outputs: frozenset[str] | None,
+) -> ReductantScores:
+    """
+    ``score_reductants_for_business_cases`` on pre-compiled business cases, with identical results.
+
+    Args:
+        compiled: Output of ``compile_reductant_business_cases`` for one technology.
+        energy_costs / output_energy_costs / carbon_price / ef_by_key / disposal_cost_outputs:
+            As in ``score_reductants_for_business_cases``.
+
+    Returns:
+        ReductantScores equal to what the uncompiled function returns for the same inputs.
+    """
+    energy_vopex_by_input: dict[str, dict[str, float]] = {}
+    energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
+    extra_score_by_input: dict[str, dict[str, float]] = {}
+    material_profile_by_input: dict[str, dict[str, tuple]] = {}
+
+    for case in compiled:
+        metallic_input = case.metallic_input
+        reductant = case.reductant
+        material_profile_by_input.setdefault(metallic_input, {})[reductant] = case.material_profile
+
+        if not case.energy_terms:
+            continue
+
+        vopex_by_reductant = energy_vopex_by_input.setdefault(metallic_input, {})
+        if reductant not in vopex_by_reductant:
+            vopex_by_reductant[reductant] = 0.0
+        breakdown = energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(reductant, defaultdict(float))
+
+        for normalized_energy, energy_type, volume in case.energy_terms:
+            cost_value = volume * energy_costs.get(normalized_energy, energy_costs.get(energy_type, 0.0))
+            vopex_by_reductant[reductant] += cost_value
+            breakdown[normalized_energy] += cost_value
+
+        if ef_by_key is not None:
+            direct_ghg_factor = ef_by_key[case.ef_key]
+            secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
+                case.dbc,
+                output_energy_costs,
+                disposal_cost_outputs,
+            )
+            extra = carbon_price * direct_ghg_factor + secondary_adjustment
+            extra_by_reductant = extra_score_by_input.setdefault(metallic_input, {})
+            extra_by_reductant[reductant] = extra_by_reductant.get(reductant, 0.0) + extra
+
+    if ef_by_key is not None:
+        score_by_input = {
+            metallic_input: {
+                reductant: energy_cost + extra_score_by_input[metallic_input][reductant]
+                for reductant, energy_cost in reductant_costs.items()
+            }
+            for metallic_input, reductant_costs in energy_vopex_by_input.items()
+        }
+    else:
+        score_by_input = energy_vopex_by_input
+
+    return ReductantScores(
+        energy_vopex_by_input=energy_vopex_by_input,
+        energy_breakdown_by_input=energy_breakdown_by_input,
+        score_by_input=score_by_input,
+        material_profile_by_input=material_profile_by_input,
+    )
 
 
 def calculate_cost_adjustments_from_secondary_outputs(
@@ -1919,42 +2337,18 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         total_product_volume += product_volume
 
-        # Physical outputs: revenue via -abs(price), unless disposal cost output
-        physical_outputs = dbc.outputs or {}
-        material_adjustment = 0.0
-        for output in physical_outputs:
-            if output in adjustments_outputs:
-                if disposal_cost_outputs and output in disposal_cost_outputs:
-                    effective_price = adjustments_outputs[output]  # positive = disposal cost
-                else:
-                    effective_price = -abs(adjustments_outputs[output])  # revenue
-                carrier_adj = product_volume * effective_price * physical_outputs[output]
-                material_adjustment += carrier_adj
-                logger.debug(
-                    "[SECONDARY OUTPUTS] physical '%s' (%s)%s: vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
-                    output,
-                    material,
-                    " [disposal]" if disposal_cost_outputs and output in disposal_cost_outputs else "",
-                    product_volume,
-                    effective_price,
-                    physical_outputs[output],
-                    carrier_adj,
-                )
-        # Carbon outputs: keep output_costs sign (positive = cost, negative = credit)
-        carbon_outputs = dbc.carbon_outputs or {}
-        for output in carbon_outputs:
-            if output in adjustments_outputs:
-                carrier_adj = product_volume * adjustments_outputs[output] * carbon_outputs[output]
-                material_adjustment += carrier_adj
-                logger.debug(
-                    "[SECONDARY OUTPUTS] carbon '%s' (%s): vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
-                    output,
-                    material,
-                    product_volume,
-                    adjustments_outputs[output],
-                    carbon_outputs[output],
-                    carrier_adj,
-                )
+        material_adjustment = product_volume * calculate_secondary_output_adjustment_per_tonne(
+            dbc,
+            adjustments_outputs,
+            disposal_cost_outputs,
+        )
+        if material_adjustment != 0.0:
+            logger.debug(
+                "[SECONDARY OUTPUTS] '%s': vol=%.1f x per-tonne adjustment = $%.4f",
+                material,
+                product_volume,
+                material_adjustment,
+            )
         total_adjustments += material_adjustment
 
     result = total_adjustments / total_product_volume if total_product_volume > 0 else 0.0

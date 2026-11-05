@@ -256,3 +256,14 @@ def test_cache_version_invalidation(tmp_path):
 
     # Should not find cache with different version
     assert cache_manager.get_cached_preparation(sample_file) is None
+
+
+def test_default_cache_root_follows_steelo_home(tmp_path, monkeypatch):
+    """Without a cache root, the cache lives under STEELO_HOME, not under ~/.steelo."""
+    monkeypatch.setenv("STEELO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path))  # a failing run writes under tmp_path, not the real home
+
+    cache_manager = DataPreparationCache()
+
+    assert cache_manager.cache_root == tmp_path / "home" / "preparation_cache"
+    assert (cache_manager.cache_root / "index.json").exists()

@@ -6,6 +6,8 @@ import json
 from django.core.management.base import BaseCommand
 from django.core.files.base import ContentFile
 
+from steelo.data.path_resolver import resolve_scenario_fixtures
+from steelo.simulation import config_default
 from steeloweb.models import Repository, DataPreparation
 
 
@@ -55,6 +57,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f"Fixtures directory not found in preparation: {fixtures_dir}"))
             return
 
+        demand_centers_path, _ = resolve_scenario_fixtures(
+            fixtures_dir, config_default("chosen_demand_scenario"), config_default("chosen_scrap_scenario")
+        )
+
         # Define the fixture files to create as example repositories
         fixture_configs = [
             {
@@ -70,7 +76,7 @@ class Command(BaseCommand):
                 "description": "Example demand center locations and data",
                 "repo_type": Repository.RepoType.DEMAND_CENTERS,
                 "fixture_paths": [
-                    fixtures_dir / "demand_centers.json",
+                    demand_centers_path,
                 ],
             },
         ]

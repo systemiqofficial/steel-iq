@@ -34,7 +34,7 @@ Limits reflect time to build:
 - Carbon capture and storage networks (e.g., for BF+CCS or BF+CCU)
 - Renewable electricity generation (e.g., for electric furnaces)
 
-For CO2 storage specifically, an annual per-country budget is enforced by five pre-investment gates so plants cannot commit to CCS beyond what a country can physically store. Two at opportunity-generation time (G1: drop CCS candidates at NPV time; G2: block considered → announced) sit on the geospatial side; three at plant-agent state transitions (P1: block announced → construction, with immediate discard to prevent hoarding of the reserved slot; P2: drop CCS candidates in the tech-switch pre-NPV filter; P3: drop CCS candidates in the expansion pre-NPV filter). All five gates read a unified `Environment.get_co2_headroom(iso3, operating-start-year)` helper backed by firm/reserved counters that are rebuilt every year and updated intra-year as plants transition. See [CO2 Storage Capacity Gate](../co2_storage_gate.md) for the full walkthrough.
+For CO2 storage specifically, an annual per-country budget is enforced by five pre-investment gates so plants cannot commit to CCS beyond what a country can physically store. Two at opportunity-generation time (G1: drop CCS candidates at NPV time; G2: block considered → announced) sit on the geospatial side; three at plant-agent state transitions (P1: block announced → construction, with immediate discard to prevent hoarding of the reserved slot; P2: drop CCS candidates in the tech-switch pre-NPV filter; P3: drop CCS candidates in the expansion pre-NPV filter). All five gates read a unified `Environment.get_co2_headroom(iso3, operating-start-year)` helper backed by firm/reserved counters that are rebuilt every year and updated intra-year as plants transition. See [CO2 Storage Capacity Gate](co2_storage_gate.md) for the full walkthrough.
 
 ### Learning Curve
 Early adopters face:
@@ -56,7 +56,7 @@ There are three different ways to bring new technologies into the system:
 
 ### 1. New Plant Opening
 
-Business opportunities are evaluated for technologies that will be allowed at the time construction begins. The earliest possible start of construction is calculated as the current simulation year plus a consideration period (default: 3 years) plus an announcement period (fixed at 1 year). This timeline can be significantly extended by probabilistic filters such as the probability of announcement and probability of construction, as well as by capacity constraints. New plant openings are allocated a share of the maximum annual new capacity (default: 40%), and opportunities that fail to pass these filters remain pending and are reconsidered in the following year.
+Business opportunities are evaluated for technologies that will be allowed at the time construction begins. The earliest possible start of construction is the current simulation year plus the consideration period (default: 3 years), and at least 2 years ahead: the opportunity is announced once its consideration window of yearly NPVs is complete, which takes one year less than the consideration period since its creation NPV counts, and construction starts the year after announcement. This timeline can be significantly extended by probabilistic filters such as the probability of announcement and probability of construction, as well as by capacity constraints. New plant openings are allocated a share of the maximum annual new capacity (default: 40%), and opportunities that fail to pass these filters remain pending and are reconsidered in the following year.
 
 See [New Plant Opening](../geospatial_model/new_plant_opening.md) for detailed documentation on the business opportunity evaluation process and parameter configuration (capacity limits, probabilities, and time lags).
 
@@ -101,6 +101,10 @@ The overall limits can be filled by furnace group expansions (adding capacity at
 ```python
 new_capacity_share_from_new_plants = 0.4  # 40% of new capacity from greenfield
 ```
+
+### China Capacity-Replacement Policy (optional)
+
+In addition to the annual limits, a run started with `--enable-capacity-policy`, or with the app's "Capacity-replacement policy (China)" switch, gates every Chinese expansion, new plant and replacement on a national pool of retirement credits: capacity may only be added against capacity retired earlier, and emission-intense replacements and additions are penalised at 1.5:1. The pool works alongside the annual limits, not instead of them, and applies to Chinese plants only. See [China Capacity-Replacement Policy](capacity_replacement_policy.md).
 
 ## Implementation Details
 

@@ -253,10 +253,10 @@ def test_simulation_service_with_plant_agent_events(
         bus.env.dynamic_feedstocks = {tech: [] for tech in technologies}
 
     # Initialize cost of equity and debt for DEU
-    if not hasattr(bus.env, "industrial_cost_of_equity") or not bus.env.industrial_cost_of_equity:
-        bus.env.industrial_cost_of_equity = {"DEU": 0.08}
-    if not hasattr(bus.env, "industrial_cost_of_debt") or not bus.env.industrial_cost_of_debt:
-        bus.env.industrial_cost_of_debt = {"DEU": 0.04}
+    if not bus.env.cost_of_equity_by_tech:
+        bus.env.cost_of_equity_by_tech = {"DEU": {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    if not bus.env.cost_of_debt_by_tech:
+        bus.env.cost_of_debt_by_tech = {"DEU": {tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
 
     # Provide per-country unit FOPEX so PlantGroup.evaluate_expansion_options finds data for DEU.
     # Lookup in the domain code is case-insensitive (``.get(tech.lower())``) — keys are lowercased.
@@ -440,6 +440,7 @@ def test_simulation_service_with_plant_agent_events(
                     "energy": {},
                 },
             },  # BOM dictionaries
+            {"EAF": "", "BOF": ""},  # committed reductants
         )
 
         # Mock ALL EAF furnaces to ensure complete test isolation
@@ -454,7 +455,7 @@ def test_simulation_service_with_plant_agent_events(
                 else:
                     # Extra EAF furnaces: mock to return empty/invalid result
                     # (belt & suspenders with pre-retirement status)
-                    dummy_return = ({}, {}, None, {})
+                    dummy_return = ({}, {}, None, {}, {})
                     mocker.patch.object(fg, "optimal_technology_name", return_value=dummy_return)
         assert target_found, (
             f"Target furnace {furnace_group.furnace_group_id} not found in plant! "
@@ -474,6 +475,7 @@ def test_simulation_service_with_plant_agent_events(
                     "energy": {},
                 }
             },  # BOM dictionaries
+            {"EAF": ""},  # committed reductants
         )
 
         mocker.patch.object(furnace_group, "optimal_technology_name", return_value=mock_return_value_renovation)
@@ -492,6 +494,7 @@ def test_simulation_service_with_plant_agent_events(
                     "energy": {},
                 }
             },  # BOM dictionaries
+            {"EAF": ""},  # committed reductants
         )
 
         mocker.patch.object(furnace_group, "optimal_technology_name", return_value=mock_return_value_stay)
@@ -587,10 +590,10 @@ def test_simulation_service_more_demand_then_production(bus):
         bus.env.dynamic_feedstocks = {tech: [] for tech in technologies}
 
     # Initialize cost of equity and debt for DEU
-    if not hasattr(bus.env, "industrial_cost_of_equity") or not bus.env.industrial_cost_of_equity:
-        bus.env.industrial_cost_of_equity = {"DEU": 0.08}
-    if not hasattr(bus.env, "industrial_cost_of_debt") or not bus.env.industrial_cost_of_debt:
-        bus.env.industrial_cost_of_debt = {"DEU": 0.04}
+    if not bus.env.cost_of_equity_by_tech:
+        bus.env.cost_of_equity_by_tech = {"DEU": {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    if not bus.env.cost_of_debt_by_tech:
+        bus.env.cost_of_debt_by_tech = {"DEU": {tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
 
     # Initialize virgin_iron_demand for PlantAgentsModel
     from steelo.domain.models import VirginIronDemand
@@ -728,13 +731,13 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
     bus.env.allowed_furnace_transitions["BF"] = ["BF", "DRI"]  # BF can switch to DRI
     bus.env.allowed_furnace_transitions["EAF"] = ["BOF", "EAF"]  # EAF can switch to BOF
 
-    # Initialize industrial_cost_of_debt for DEU
-    if not hasattr(bus.env, "industrial_cost_of_debt") or not bus.env.industrial_cost_of_debt:
-        bus.env.industrial_cost_of_debt = {"DEU": 0.05}
+    # Initialize cost of debt for DEU
+    if not bus.env.cost_of_debt_by_tech:
+        bus.env.cost_of_debt_by_tech = {"DEU": {tech: 0.05 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
 
-    # Initialize industrial_cost_of_equity for DEU
-    if not hasattr(bus.env, "industrial_cost_of_equity") or not bus.env.industrial_cost_of_equity:
-        bus.env.industrial_cost_of_equity = {"DEU": 0.08}
+    # Initialize cost of equity for DEU
+    if not bus.env.cost_of_equity_by_tech:
+        bus.env.cost_of_equity_by_tech = {"DEU": {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
 
     # Provide per-country unit FOPEX for PlantGroup.evaluate_expansion_options.
     if not hasattr(bus.env, "fopex_by_country") or not bus.env.fopex_by_country:
@@ -761,6 +764,7 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
             {fg.technology.name: 400},  # Capex
             0.0,  # No COSA
             {fg.technology.name: {}},  # BOM
+            {fg.technology.name: ""},  # committed reductants
         )
         mocker.patch.object(fg, "optimal_technology_name", return_value=mock_return)
 

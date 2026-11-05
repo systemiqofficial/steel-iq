@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 import pyomo.environ as pyo
+import pytest
 
 from steelo.domain.models import Location
 from steelo.domain.trade_modelling import trade_lp_modelling as tlp
@@ -145,3 +146,64 @@ def test_set_legal_allocations_does_not_collapse_reductant_variant_processes():
 
     assert (pc_bf_coke, pc_bof, hot_metal) in trade_lp.legal_allocations
     assert (pc_bf_hydrogen, pc_bof, hot_metal) in trade_lp.legal_allocations
+
+
+def test_add_processes_rejects_duplicate_name():
+    """A process name registered twice, across calls or within one batch, raises instead of duplicating arcs."""
+    trade_lp = tlp.TradeLPModel()
+    supply_process = tlp.Process(name="bio_pci_supply", type=tlp.ProcessType.SUPPLY, bill_of_materials=[])
+    trade_lp.add_processes([supply_process])
+
+    with pytest.raises(ValueError, match="bio_pci_supply"):
+        trade_lp.add_processes([supply_process])
+    with pytest.raises(ValueError, match="scrap_supply"):
+        trade_lp.add_processes(
+            [
+                tlp.Process(name="scrap_supply", type=tlp.ProcessType.SUPPLY, bill_of_materials=[]),
+                tlp.Process(name="scrap_supply", type=tlp.ProcessType.SUPPLY, bill_of_materials=[]),
+            ]
+        )
+    assert [process.name for process in trade_lp.processes] == ["bio_pci_supply"]
+
+
+def test_add_process_centers_rejects_duplicate_name():
+    """A process centre name registered twice, across calls or within one batch, raises."""
+    trade_lp = tlp.TradeLPModel()
+    trade_lp.add_process_centers([_make_bof_process_center("bof_pc")])
+
+    with pytest.raises(ValueError, match="bof_pc"):
+        trade_lp.add_process_centers([_make_bof_process_center("bof_pc")])
+    with pytest.raises(ValueError, match="other_pc"):
+        trade_lp.add_process_centers([_make_bof_process_center("other_pc"), _make_bof_process_center("other_pc")])
+    assert [centre.name for centre in trade_lp.process_centers] == ["bof_pc"]
+
+
+def test_set_legal_allocations_rejects_duplicate_arc_key():
+    """An arc produced by both the primary and the dependent-commodity pass raises instead of double counting."""
+    location = Location(lat=0.0, lon=0.0, country="dummy", region="dummy", iso3="XXX")
+    scrap = tlp.Commodity(name="scrap")
+    steel = tlp.Commodity(name="steel")
+    supply_bom = tlp.BOMElement(name="scrap_supply", commodity=scrap, output_commodities=[scrap], parameters={})
+    supply_process = tlp.Process(name="scrap_supply", type=tlp.ProcessType.SUPPLY, bill_of_materials=[supply_bom])
+    # scrap is both the primary input and a dependent commodity of the same BOM element
+    eaf_bom = tlp.BOMElement(
+        name="eaf_scrap",
+        commodity=scrap,
+        output_commodities=[steel],
+        parameters={},
+        dependent_commodities={scrap: 0.1},
+    )
+    eaf_process = tlp.Process(name="EAF", type=tlp.ProcessType.PRODUCTION, bill_of_materials=[eaf_bom])
+
+    trade_lp = tlp.TradeLPModel()
+    trade_lp.add_processes([supply_process, eaf_process])
+    trade_lp.add_process_centers(
+        [
+            tlp.ProcessCenter(name="scrap_pc", process=supply_process, capacity=100.0, location=location),
+            tlp.ProcessCenter(name="eaf_pc", process=eaf_process, capacity=100.0, location=location),
+        ]
+    )
+    trade_lp.add_process_connectors([tlp.ProcessConnector(from_process=supply_process, to_process=eaf_process)])
+
+    with pytest.raises(ValueError, match="scrap_pc"):
+        trade_lp.set_legal_allocations()

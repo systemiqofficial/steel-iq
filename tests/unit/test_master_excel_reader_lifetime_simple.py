@@ -18,6 +18,7 @@ def test_furnace_group_lifetime_current_year():
                 "Plant ID": ["P001"],
                 "Coordinates": ["52.52, 13.40"],
                 "Country": ["Germany"],
+                "ISO3": ["DEU"],
                 "Main production equipment": ["BF"],
                 "Nominal BF capacity (ttpa)": [1000],
                 "Start date": ["2003-01-01"],  # Old start date
@@ -80,6 +81,7 @@ def test_furnace_group_lifetime_with_custom_year():
                 "Plant ID": ["P001"],
                 "Coordinates": ["52.52, 13.40"],
                 "Country": ["Germany"],
+                "ISO3": ["DEU"],
                 "Main production equipment": ["EAF"],
                 "Nominal EAF steel capacity (ttpa)": [500],
                 "Start date": ["2010-01-01"],

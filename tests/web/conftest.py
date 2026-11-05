@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import patch
 from django.test.utils import override_settings
@@ -17,6 +19,51 @@ def temp_media_root(tmp_path_factory):
     # Pytest will automatically clean up the tmp_path_factory directories
 
 
+@pytest.fixture(autouse=True)
+def steelo_home(monkeypatch, tmp_path):
+    """Point ``STEELO_HOME`` at a folder of the test's own, so no test reads the developer's ``~/.steelo``.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        The test home, ``<tmp_path>/home``, not yet created.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("STEELO_HOME", str(home))
+    return home
+
+
+@pytest.fixture
+def prepared_data_directory(tmp_path):
+    """A preparation folder holding the fixtures the run form reads from every ready preparation.
+
+    Args:
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        ``<tmp_path>/prepared``, whose ``data/fixtures/technology_emission_factors.json`` offers the class default
+        emissions boundary, whose ``data/fixtures/scenarios.json`` the class default demand and scrap scenarios, and
+        whose ``data/outputs/GEO/baseload_lcoe/`` holds a default LCOE file, as geo-data 3.0.0 preparations do.
+    """
+    fixtures = tmp_path / "prepared" / "data" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "technology_emission_factors.json").write_text(json.dumps([{"boundary": "rs-inspired"}]))
+    (fixtures / "scenarios.json").write_text(
+        json.dumps(
+            {
+                "demand": {"BAU": "demand_scenarios/bau/demand_centers.json"},
+                "scrap": {"BAU": "scrap_scenarios/bau/suppliers.json"},
+            },
+        ),
+    )
+    lcoe_dir = tmp_path / "prepared" / "data" / "outputs" / "GEO" / "baseload_lcoe"
+    lcoe_dir.mkdir(parents=True)
+    (lcoe_dir / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2025_2060.nc").write_bytes(b"")
+    return tmp_path / "prepared"
+
+
 def add_dynamic_technology_fields(form_data, technologies=None):
     """Add dynamic technology fields to form data for testing.
 
@@ -31,6 +78,7 @@ def add_dynamic_technology_fields(form_data, technologies=None):
         form_data[f"tech_{tech}_from_year"] = "2025"
         # to_year is optional and typically empty
         form_data[f"tech_{tech}_to_year"] = ""
+    form_data["greenfield_column"] = "1"
 
     return form_data
 
@@ -43,11 +91,6 @@ def valid_modelrun_form_data(ready_data_preparation):
         "start_year": 2025,
         "end_year": 2026,
         "plant_lifetime": 20,  # Added required field
-        "scrap_generation_scenario": "circular_economy",
-        # Demand and circularity
-        "total_steel_demand_scenario": "business_as_usual",
-        "green_steel_demand_scenario": "business_as_usual",
-        "circularity_file": "",
         # Trade and emissions
         "trade_scenario": "current_policies",
         "emissions_boundary": "cradle_to_gate",

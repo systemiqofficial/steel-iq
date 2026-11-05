@@ -6,13 +6,21 @@ from steelo.simulation_types import get_default_technology_settings
 
 from steelo.simulation import SimulationConfig
 from steelo.domain.models import GeoDataPaths
+from steelo.data.path_resolver import DataPathResolver
+
+
+def test_geo_hierarchy_json_path_resolves(tmp_path):
+    """DataPathResolver exposes geo_hierarchy.json under the fixtures directory."""
+    (tmp_path / "fixtures").mkdir()
+    resolver = DataPathResolver(data_directory=tmp_path)
+
+    assert resolver.geo_hierarchy_json_path == tmp_path / "fixtures" / "geo_hierarchy.json"
 
 
 def test_geo_data_paths_creation():
     """Test that GeoDataPaths can be created properly."""
     geo_paths = GeoDataPaths(
         data_dir=Path("/test/data"),
-        atlite_dir=Path("/test/data/atlite"),
         geo_plots_dir=Path("/test/data/output/plots/GEO"),
         terrain_nc_path=Path("/test/data/terrain.nc"),
         rail_distance_nc_path=Path("/test/data/rail_distance.nc"),
@@ -21,7 +29,7 @@ def test_geo_data_paths_creation():
         regional_energy_prices_xlsx=Path("/test/data/energy_prices.xlsx"),
         countries_shapefile_dir=Path("/test/data/ne_110m_admin_0_countries"),
         disputed_areas_shapefile_dir=Path("/test/data/ne_10m_admin_0_disputed_areas"),
-        baseload_power_sim_dir=Path("/test/data/outputs/GEO/baseload_power_simulation"),
+        baseload_lcoe_dir=Path("/test/data/outputs/GEO/baseload_lcoe"),
         static_layers_dir=Path("/test/data/outputs/GEO"),
         landtype_percentage_path=Path("/test/data/landtype_percentage.nc"),
     )
@@ -32,13 +40,14 @@ def test_geo_data_paths_creation():
 
 
 def test_simulation_config_geo_paths(tmp_path):
-    """Test that SimulationConfig properly initializes output paths."""
+    """Test that SimulationConfig properly initializes output paths (GEO plots opt-in via plot_geo)."""
     config = SimulationConfig(
         start_year=2025,
         end_year=2030,
         master_excel_path=tmp_path / "master.xlsx",
         output_dir=tmp_path / "output",
         technology_settings=get_default_technology_settings(),
+        plot_geo=True,
     )
 
     # Check that output paths are properly set
@@ -54,6 +63,20 @@ def test_simulation_config_geo_paths(tmp_path):
     assert config.geo_plots_dir.exists()
     assert config.pam_plots_dir.exists()
     assert config.tm_output_dir.exists()
+
+
+def test_simulation_config_geo_plots_off_by_default(tmp_path):
+    """Without plot_geo the GEO plot directory is neither set nor created."""
+    config = SimulationConfig(
+        start_year=2025,
+        end_year=2030,
+        master_excel_path=tmp_path / "master.xlsx",
+        output_dir=tmp_path / "output",
+        technology_settings=get_default_technology_settings(),
+    )
+
+    assert config.geo_plots_dir is None
+    assert not (tmp_path / "output" / "plots" / "GEO").exists()
 
 
 def test_custom_geo_paths_in_config(tmp_path):

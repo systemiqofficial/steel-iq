@@ -391,5 +391,37 @@ def test_scrap_supplier_with_country_based_id():
     assert node_data["product_cost"] == 450.0, "Scrap supplier should have production_cost set correctly"
 
 
+def test_production_root_still_prices_own_unit_cost():
+    """A production node with no booked inputs (LP anomaly) must still price its own
+    carbon on outgoing flows instead of shipping at zero."""
+    furnace_process = tlp.Process(name="EAF", type=tlp.ProcessType.PRODUCTION, bill_of_materials=[])
+    demand_process = tlp.Process(name="demand", type=tlp.ProcessType.DEMAND, bill_of_materials=[])
+
+    furnace_pc = tlp.ProcessCenter(
+        name="plant_root_eaf",
+        process=furnace_process,
+        capacity=1_000.0,
+        location=DummyLocation(iso3="USA"),
+        production_cost=25.0,
+    )
+    demand_pc = tlp.ProcessCenter(
+        name="usa_demand",
+        process=demand_process,
+        capacity=1_000.0,
+        location=DummyLocation(iso3="USA"),
+        production_cost=0.0,
+    )
+
+    allocations = tlp.Allocations(
+        allocations={(furnace_pc, demand_pc, tlp.Commodity(name="steel")): 100.0},
+    )
+
+    connector = TM_PAM_connector(dynamic_feedstocks_classes={}, plants=PlantInMemoryRepository(), transport_kpis=None)
+    connector.create_graph(allocations)
+    connector.propage_cost_forward_by_layers_and_normalize()
+
+    assert connector.G.nodes["plant_root_eaf"]["unit_cost"]["steel"] == pytest.approx(25.0)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

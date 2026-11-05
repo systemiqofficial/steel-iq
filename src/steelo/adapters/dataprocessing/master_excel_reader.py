@@ -8,20 +8,66 @@ expected by the simulation system. Uses MasterExcelValidator for validation.
 import pandas as pd
 from pathlib import Path
 import logging
+import random
 from typing import Any, Optional, cast
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime
-import pycountry
 # import pickle
 
 from steelo.adapters.dataprocessing.master_excel_validator import (
     MasterExcelValidator,
     ValidationError,
     ValidationReport,
+    check_furnace_units_geography,
 )
-from steelo.adapters.dataprocessing.preprocessing.iso3_finder import derive_iso3, Coordinate
-from steelo.domain.constants import KT_TO_T, PLANT_LIFETIME
+from steelo.domain.constants import (
+    ANNOUNCEMENT_TIME,
+    CONSTRUCTION_TIME_DEFAULT,
+    KT_TO_T,
+    PLANT_LIFETIME,
+    RANDOM_SEED_DEFAULT,
+)
+
+# Inclusive start-year ranges for 'Furnace units' rows with no start_year, by country.
+IMPUTED_START_YEAR_RANGE_CHN = (2000, 2013)
+IMPUTED_START_YEAR_RANGE_DEFAULT = (2005, 2025)
+# Statuses of units not built yet; undated ones are dated forward from the reference year.
+PIPELINE_STATUSES = ("announced", "construction")
+
+
+def impute_start_year(iso3: str, rng: random.Random) -> int:
+    """Draw a start year for a furnace unit whose start_year is missing.
+
+    Args:
+        iso3: Country of the unit; China gets the older vintage band.
+        rng: Generator seeded with the global RANDOM_SEED_DEFAULT, so the draw is reproducible for a given sheet.
+
+    Returns:
+        A uniformly drawn integer year, inclusive of both range bounds.
+    """
+    lo, hi = IMPUTED_START_YEAR_RANGE_CHN if iso3 == "CHN" else IMPUTED_START_YEAR_RANGE_DEFAULT
+    return rng.randint(lo, hi)
+
+
+def impute_pipeline_start_year(status: str, reference_year: int, rng: random.Random) -> int:
+    """Draw the year an announced or under-construction unit comes online.
+
+    Args:
+        status: One of PIPELINE_STATUSES (lower-case).
+        reference_year: Year the sheet describes (the simulation start year); the unit is dated forward from it.
+        rng: Seeded generator shared with ``impute_start_year``, so the draw is reproducible for a given sheet.
+
+    Returns:
+        construction: uniform in [reference_year, reference_year + CONSTRUCTION_TIME_DEFAULT] — the unit is
+        somewhere in its construction phase. announced: construction has not started yet, so its start is
+        drawn uniformly in [reference_year, reference_year + ANNOUNCEMENT_TIME] and the unit comes online a
+        fixed CONSTRUCTION_TIME_DEFAULT years after that.
+    """
+    if status == "construction":
+        return reference_year + rng.randint(0, CONSTRUCTION_TIME_DEFAULT)
+    return reference_year + rng.randint(0, ANNOUNCEMENT_TIME) + CONSTRUCTION_TIME_DEFAULT
+
 
 logger = logging.getLogger(__name__)
 
@@ -42,17 +88,20 @@ class ExtractionResult:
 class MasterExcelReader:
     """Reads and transforms master input Excel file data"""
 
-    def __init__(self, excel_path: Path, output_dir: Path | None = None):
+    def __init__(self, excel_path: Path, output_dir: Path | None = None, valid_geo_keys: set[str] | None = None):
         """
         Initialize the reader with an Excel file path.
 
         Args:
             excel_path: Path to the master input Excel file
             output_dir: Directory for output files (uses temp dir if not specified)
+            valid_geo_keys: Recognised sub-national geo-keys for geography checks (the
+                in-memory geo_hierarchy built during prep). None falls back to the
+                prepared geo_hierarchy.json, empty when none exists.
         """
         self.excel_path = excel_path
         self.output_dir = output_dir or Path(tempfile.mkdtemp(prefix="master_excel_"))
-        self.validator = MasterExcelValidator()
+        self.validator = MasterExcelValidator(valid_geo_keys=valid_geo_keys)
         self._excel_file: pd.ExcelFile | None = None
         self._validation_report: ValidationReport | None = None
 
@@ -377,7 +426,6 @@ class MasterExcelReader:
         dynamic_feedstocks_dict: Optional[dict] = None,
         current_date: Optional[date] = None,
         gravity_distances_pkl_path: Optional[Path] = None,
-        geocoder_coordinates: Optional[list[Coordinate]] = None,
         simulation_start_year: int = 2025,
         regional_fopex: dict[str, float] = {},
         aggregated_constraints: Optional[list] = None,
@@ -398,7 +446,9 @@ class MasterExcelReader:
         Process:
             1. Read plant data from Excel sheet
             2. For each row with valid Plant ID and coordinates:
-               a. Parse location (lat/lon) and derive ISO3 country code
+               a. Parse location (lat/lon) and read the authored geography — ISO3 column
+                  (bare country or combined "ISO3:geo_unit") with a separate geo_unit
+                  column as fallback for bare-country rows
                b. Split 'Main production equipment' into individual technologies
                c. For each technology (BF, BOF, EAF, DRI, ESF, MOE):
                   - Create Technology object with dynamic business cases
@@ -420,9 +470,6 @@ class MasterExcelReader:
                          happens at runtime via active_statuses config).
             gravity_distances_pkl_path: Path to pickle file with pre-computed gravity model
                                        distances. Currently not used (kept for future enhancement).
-            geocoder_coordinates: List of Coordinate objects for initializing reverse geocoder.
-                                If provided, enables coordinate-based ISO3 derivation. If None,
-                                falls back to country name mapping.
             simulation_start_year: Year representing the start of simulation. Used for:
                                   - Calculating plant age (simulation_start_year - start_year)
                                   - Setting lifetime.current in FurnaceGroup
@@ -547,15 +594,29 @@ class MasterExcelReader:
             if current_date is None:
                 current_date = date.today()
 
-            # Initialize reverse geocoder if coordinates provided
-            if geocoder_coordinates:
-                logger.info("Initializing reverse geocoder with provided coordinates")
-                # Make a dummy call to initialize the geocoder
-                try:
-                    derive_iso3(0, 0, coordinates=geocoder_coordinates)
-                except Exception:
-                    # The dummy call might fail but the geocoder should be initialized
-                    pass
+            # Authored geography contract: the sheet carries an ISO3 column (bare country or
+            # combined "ISO3:geo_unit", optionally a separate geo_unit column) — no reverse
+            # geocoding. Fallback: derive ISO3 from a "Country" column if the sheet predates
+            # the authored-ISO3 contract (master input < v2.2).
+            if "ISO3" not in plant_df.columns:
+                if "Country" not in plant_df.columns:
+                    raise ValueError(
+                        "Column 'ISO3' not found in 'Iron and steel plants' sheet — "
+                        "an authored ISO3 column is required (master input >= v2.2), and no "
+                        "'Country' column is present to derive it from."
+                    )
+                logger.warning(
+                    "Column 'ISO3' not found in 'Iron and steel plants' sheet; "
+                    "deriving ISO3 from the 'Country' column instead (master input < v2.2)."
+                )
+                from .gem_country_mapping import country_area_to_iso3
+
+                def _resolve_iso3(country_name: Any) -> str:
+                    if pd.isna(country_name):
+                        return ""
+                    return country_area_to_iso3(country_name)
+
+                plant_df["ISO3"] = plant_df["Country"].apply(_resolve_iso3)
 
             # Read historical production data
             try:
@@ -590,25 +651,25 @@ class MasterExcelReader:
                     # Skip plant if coordinates are not valid
                     continue
 
-                # Try coordinate-based ISO3 derivation, fall back to country name if not initialized
-                try:
-                    iso3 = derive_iso3(lat, lon)
-                except ValueError as e:
-                    if "coordinates must be provided" in str(e):
-                        # Reverse geocoder not initialized, fall back to country name mapping
-                        logger.debug(
-                            f"Reverse geocoder not initialized, using country name mapping for "
-                            f"plant {row.get('Plant ID')}"
-                        )
-                        iso3 = self._get_iso3_from_country(str(row.get("Country", "")))
-                    else:
-                        raise
+                # Authored geography: the ISO3 column holds a bare country ("CHN") or a combined
+                # geo_key ("CHN:CN-AH"); a bare country may instead carry its province in a
+                # separate geo_unit column. On conflict the combined ISO3 value wins.
+                iso3_raw = row.get("ISO3")
+                iso3_value = str(iso3_raw).strip() if not pd.isna(iso3_raw) else ""
+                if not iso3_value:
+                    logger.warning(f"Skipping plant {plant_id}: blank ISO3 ({sheet_name} row {excel_row})")
+                    continue
+                iso3, _, geo_unit = iso3_value.partition(":")
+                if not geo_unit:
+                    geo_unit_raw = row.get("geo_unit")
+                    geo_unit = str(geo_unit_raw).strip() if not pd.isna(geo_unit_raw) else ""
                 location = Location(
                     lat=lat,
                     lon=lon,
                     country=iso3,
                     region="unknown",  # Will be set based on mappings
                     iso3=iso3,
+                    geo_unit=geo_unit or None,
                 )
 
                 # Create furnace groups from equipment string
@@ -792,38 +853,6 @@ class MasterExcelReader:
         except Exception as e:
             logger.error(f"Failed to extract plant data: {e}")
             raise
-
-    def _get_iso3_from_country(self, country_name: str) -> str:
-        """Convert country name to ISO3 code."""
-        # Handle empty or invalid input
-        if not country_name or not country_name.strip():
-            return "XXX"
-
-        # Handle special cases
-        country_mappings = {
-            "USA": "USA",
-            "Germany": "DEU",
-            "Japan": "JPN",
-            "Türkiye": "TUR",
-            "Russia": "RUS",
-            "South Korea": "KOR",
-            "UK": "GBR",
-            "Ivory Coast": "CIV",
-            "Democratic Republic of the Congo": "COD",
-        }
-
-        if country_name in country_mappings:
-            return country_mappings[country_name]
-
-        try:
-            results = pycountry.countries.search_fuzzy(country_name)
-            if results and len(results) > 0:
-                country = results[0]
-                return getattr(country, "alpha_3", "XXX")
-            return "XXX"
-        except (LookupError, AttributeError):
-            logger.warning(f"Could not find ISO3 for country: {country_name}")
-            return "XXX"
 
     def _parse_capacity(self, value: Any) -> float:
         """
@@ -1020,6 +1049,245 @@ class MasterExcelReader:
                 return None
         except (ValueError, TypeError, AttributeError):
             return None
+
+    def read_plants_from_furnace_units_sheet(
+        self,
+        dynamic_feedstocks_dict: Optional[dict] = None,
+        simulation_start_year: int = 2025,
+        regional_fopex: dict[str, float] = {},
+        aggregated_constraints: Optional[list] = None,
+    ) -> tuple[list[Any], dict[Any, Any], list[Any]]:
+        """
+        Read plants and furnace groups from the flattened 'Furnace units' sheet,
+        where each row already is one furnace group - no per-plant
+        equipment-string splitting required.
+
+        This is a separate pathway from read_plants(): it reads a different sheet,
+        combining GEM's raw unit-level tracker data with external Chinese
+        blast-furnace data. read_plants() and its "Iron and steel plants" sheet
+        are unaffected.
+
+        Args:
+            dynamic_feedstocks_dict: Dictionary mapping technology names to lists of
+                                   dynamic business cases. If None, reads from
+                                   'Bill of Materials' sheet.
+            simulation_start_year: Year representing the start of simulation.
+            regional_fopex: Dictionary mapping region codes to fixed operational
+                           expenses, applied to all plants.
+
+        Returns:
+            tuple[list[Plant], dict[str, FurnaceGroupMetadata]]
+
+        Raises:
+            ValueError: If the 'Furnace units' sheet is not found in the Excel file, or
+                if its geography is invalid (an iso3 that is not a real ISO-3 code, or a
+                geo_unit_or_province that does not compose to a geo_hierarchy key).
+
+        Notes:
+            Rows with no start_year get one drawn uniformly from a country band
+            (see ``impute_start_year``) with a fixed seed, so the renovation cycles of
+            undated units are spread across vintages instead of all expiring at once.
+            Announced / under-construction rows with no start_year, or one before
+            simulation_start_year, are instead dated forward from simulation_start_year
+            (see ``impute_pipeline_start_year``): the simulation only switches such units on
+            in the year equal to their start year, so a past one would strand them forever.
+        """
+        from ...domain.models import Location, Technology, FurnaceGroup, PointInTime, TimeFrame, Year, Volumes
+        from ..dataprocessing.excel_reader import read_dynamic_business_cases
+        from .plant_aggregation import PlantAggregationService, RawPlantData
+        from .plant_metadata import (
+            FurnaceGroupMetadata,
+            validate_commissioning_year,
+            validate_age_at_reference,
+        )
+        from .parsing_utils import compute_furnace_lifetime
+
+        sheet_name = "Furnace units"
+
+        if not self._excel_file:
+            self._excel_file = pd.ExcelFile(self.excel_path)
+
+        if sheet_name not in self._excel_file.sheet_names:
+            raise ValueError(f"Sheet '{sheet_name}' not found in Excel file")
+
+        df = pd.read_excel(self._excel_file, sheet_name=sheet_name)
+
+        # Author geo contract, enforced at prep time:
+        # iso3 must be real ISO-3 code and geo_unit_or_province must compose to geo_hierarchy key
+        if (
+            not self.validator.valid_geo_keys
+            and "geo_unit_or_province" in df.columns
+            and df["geo_unit_or_province"].notna().any()
+        ):
+            logger.warning(
+                "No geo_hierarchy available — the sheet's geo_unit_or_province values "
+                "are not checked this run (expected only when the geo-data package has no admin-1)."
+            )
+        geography_errors = check_furnace_units_geography(
+            df,
+            valid_countries=self.validator.valid_countries,
+            modelled_countries=set(),
+            valid_geo_keys=self.validator.valid_geo_keys,
+        )
+        if geography_errors:
+            preview = "; ".join(str(e) for e in geography_errors[:5])
+            suffix = f" (+{len(geography_errors) - 5} more)" if len(geography_errors) > 5 else ""
+            raise ValueError(f"Invalid geography in '{sheet_name}' sheet: {preview}{suffix}")
+
+        if dynamic_feedstocks_dict is None or aggregated_constraints is None:
+            logger.info("Reading dynamic business cases from Bill of Materials sheet")
+            dynamic_feedstocks_dict, aggregated_constraints = read_dynamic_business_cases(
+                str(self.excel_path), excel_sheet="Bill of Materials"
+            )
+
+        raw_canonical_metadata: dict[str, FurnaceGroupMetadata] = {}
+        furnace_groups_by_plant: dict[str, list] = {}
+        plant_first_row: dict[str, Any] = {}
+        start_year_rng = random.Random(RANDOM_SEED_DEFAULT)
+        imputed_start_years = 0
+        imputed_pipeline_start_years = 0
+
+        for row_idx, row in df.iterrows():
+            if pd.isna(row.get("plant_id")):
+                continue
+            plant_id = str(row["plant_id"])
+            excel_row = cast(int, row_idx) + 2
+
+            capacity = row.get("capacity_ttpa")
+            if pd.isna(capacity) or capacity <= 0:
+                continue
+
+            equipment = str(row.get("technology"))
+            tech_business_cases = dynamic_feedstocks_dict.get(
+                equipment, dynamic_feedstocks_dict.get(equipment.lower(), [])
+            )
+            technology = Technology(
+                name=equipment,
+                product="iron" if equipment in ["BF", "DRI", "ESF"] else "steel",
+                technology_readiness_level=None,
+                process_emissions=None,
+                dynamic_business_case=tech_business_cases,
+            )
+
+            status = str(row.get("status", "operating"))
+            start_year_val = row.get("start_year")
+            in_pipeline = status.lower() in PIPELINE_STATUSES
+            pipeline_start_imputed = False
+            vintage_imputed = False
+            if pd.notna(start_year_val) and not (in_pipeline and int(start_year_val) < simulation_start_year):
+                start_year = Year(int(start_year_val))
+            elif in_pipeline:
+                start_year = Year(impute_pipeline_start_year(status.lower(), simulation_start_year, start_year_rng))
+                pipeline_start_imputed = True
+                imputed_pipeline_start_years += 1
+            else:
+                start_year = Year(impute_start_year(str(row.get("iso3")), start_year_rng))
+                vintage_imputed = True
+                imputed_start_years += 1
+            start_date = date(int(start_year), 1, 1)
+
+            last_renovation_year_val = row.get("last_renovation_year")
+            last_renovation_date = (
+                date(int(last_renovation_year_val), 1, 1) if pd.notna(last_renovation_year_val) else start_date
+            )
+
+            lifetime_start, lifetime_end = compute_furnace_lifetime(start_year, simulation_start_year, PLANT_LIFETIME)
+
+            unit_id = row.get("unit_id")
+            furnace_group_id = f"temp_{plant_id}_{equipment}_{unit_id}_{excel_row}"
+
+            furnace_group = FurnaceGroup(
+                furnace_group_id=furnace_group_id,
+                capacity=Volumes(KT_TO_T * float(capacity)),
+                status=status,
+                last_renovation_date=last_renovation_date,
+                technology=technology,
+                historical_production={},
+                utilization_rate=0.0,
+                lifetime=PointInTime(
+                    current=Year(simulation_start_year),
+                    time_frame=TimeFrame(start=lifetime_start, end=lifetime_end),
+                    plant_lifetime=PLANT_LIFETIME,
+                ),
+            )
+
+            furnace_groups_by_plant.setdefault(plant_id, []).append(furnace_group)
+            if plant_id not in plant_first_row:
+                plant_first_row[plant_id] = row
+
+            # The repository rebuilds each group's lifetime from this metadata, not from the stored lifetime.
+            if vintage_imputed:
+                commissioning_year: Year | None = None
+                age_at_reference = max(simulation_start_year - int(start_year), 0)
+            else:
+                commissioning_year = start_year
+                age_at_reference = None
+
+            warnings = validate_commissioning_year(commissioning_year, furnace_group_id)
+            warnings.extend(validate_age_at_reference(age_at_reference, simulation_start_year, furnace_group_id))
+
+            raw_canonical_metadata[furnace_group_id] = FurnaceGroupMetadata(
+                commissioning_year=commissioning_year,
+                age_at_reference_year=age_at_reference,
+                last_renovation_year=(
+                    Year(int(last_renovation_year_val)) if pd.notna(last_renovation_year_val) else None
+                ),
+                age_source="imputed" if pipeline_start_imputed or vintage_imputed else "exact",
+                source_sheet=str(row.get("source_sheet", sheet_name)),
+                source_row=excel_row,
+                validation_warnings=warnings,
+            )
+
+        raw_plants = []
+        for plant_id, furnace_groups in furnace_groups_by_plant.items():
+            row = plant_first_row[plant_id]
+            lat = row.get("latitude")
+            lon = row.get("longitude")
+            geo_unit = row.get("geo_unit_or_province")
+            location = Location(
+                lat=float(lat) if pd.notna(lat) else 0.0,
+                lon=float(lon) if pd.notna(lon) else 0.0,
+                country=str(row.get("iso3")),
+                region=str(row.get("region", "unknown")),
+                iso3=str(row.get("iso3")),
+                geo_unit=str(geo_unit) if pd.notna(geo_unit) else None,
+            )
+            raw_plant = RawPlantData(
+                plant_id=plant_id,
+                location=location,
+                furnace_groups=furnace_groups,
+                power_source=str(row.get("power_source", "unknown")),
+                soe_status=str(row.get("soe_status", "unknown")),
+                parent_gem_id=str(row.get("parent_gem_id", "")),
+                workforce_size=self._parse_workforce_size(row.get("workforce_size")),
+                technology_fopex=regional_fopex,
+            )
+            raw_plants.append(raw_plant)
+
+        aggregator = PlantAggregationService()
+        plants, final_canonical_metadata = aggregator.aggregate_plants_with_metadata(raw_plants, raw_canonical_metadata)
+        aggregator.validate_no_duplicate_furnace_group_ids(plants)
+
+        logger.info(
+            f"Successfully created {len(plants)} plants from 'Furnace units' sheet "
+            f"(from {len(raw_plants)} raw records) with metadata for {len(final_canonical_metadata)} furnace groups"
+        )
+        if imputed_start_years:
+            logger.info(
+                f"Imputed a random start_year for {imputed_start_years} furnace units with none in the sheet "
+                f"(CHN {IMPUTED_START_YEAR_RANGE_CHN}, elsewhere {IMPUTED_START_YEAR_RANGE_DEFAULT})"
+            )
+        if imputed_pipeline_start_years:
+            logger.info(
+                f"Dated {imputed_pipeline_start_years} announced/construction furnace units with no start_year or "
+                f"one before {simulation_start_year} forward from {simulation_start_year} "
+                f"(construction +0..{CONSTRUCTION_TIME_DEFAULT}, announced +{CONSTRUCTION_TIME_DEFAULT}.."
+                f"{ANNOUNCEMENT_TIME + CONSTRUCTION_TIME_DEFAULT} years)"
+            )
+        aggregated_constraints_to_return: list[Any] = (
+            aggregated_constraints if aggregated_constraints is not None else []
+        )
+        return plants, final_canonical_metadata, aggregated_constraints_to_return
 
     def read_technologies_config(self) -> ExtractionResult:
         """

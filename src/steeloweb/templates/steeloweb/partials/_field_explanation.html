@@ -1,0 +1,2 @@
+{# An <a tabindex="0"> takes focus on click in every browser, so the focus trigger closes it on the next click #}
+{% if field.field.explanation %}<a tabindex="0" role="button" class="field-explanation ms-1 text-muted" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="right" data-bs-title="{{ field.label }}" data-bs-content="{{ field.field.explanation }}" data-explanation-for="{{ field.name }}" aria-label="About {{ field.label }}"><i class="far fa-circle-question" aria-hidden="true"></i></a>{% endif %}

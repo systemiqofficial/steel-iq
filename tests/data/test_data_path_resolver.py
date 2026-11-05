@@ -62,8 +62,6 @@ class TestDataPathResolver:
         resolver = DataPathResolver(temp_data_dir)
 
         assert resolver.plants_json_path == temp_data_dir / "fixtures" / "plants.json"
-        assert resolver.demand_centers_json_path == temp_data_dir / "fixtures" / "demand_centers.json"
-        assert resolver.suppliers_json_path == temp_data_dir / "fixtures" / "suppliers.json"
         assert resolver.tariffs_json_path == temp_data_dir / "fixtures" / "tariffs.json"
 
     def test_raw_data_paths(self, temp_data_dir):
@@ -140,8 +138,6 @@ class TestDataPathResolver:
         # Check that all required keys are present
         required_keys = [
             "plants_json_path_repo",
-            "demand_centers_json_path",
-            "suppliers_json_path",
             "tariffs_json_path",
             "tech_switches_csv_path",
             "terrain_nc_path",

@@ -7,10 +7,31 @@ from steelo.domain.new_plant_opening import (
     get_list_of_allowed_techs_for_target_year,
     prepare_cost_data_for_business_opportunity,
     select_top_opportunities_by_npv,
+    build_eligible_pool,
+    summarise_opportunity_pool,
     NewPlantLocation,
 )
-from steelo.domain.models import Subsidy, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Subsidy, PlantGroup
 from steelo.devdata import Year
+from steelo.simulation import GeoConfig
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stack_at(location, year):
+    """The stack a site locks at its construction start: one power and electrolyser stack, at the year asked for."""
+    return CaptiveEnergy(
+        lock_year=year,
+        coverage=0.85,
+        lcoe=0.04,
+        electrolyser_use=0.05,
+        electrolyser_cost=1.0,
+        hydrogen_contract=None,
+    )
+
+
+def _stub_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["scrap"] * n)
 
 
 class TestSelectLocationSubset:
@@ -70,7 +91,7 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.1)
 
         # Verify structure
         assert "steel" in subset
@@ -111,19 +132,18 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.5)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.5)
 
         assert len(subset["steel"]) == 5  # 50% of 10
         assert len(subset["iron"]) == 3  # 50% of 6
 
     def test_empty_location_list(self):
-        """Test handling of empty location lists."""
+        """Empty location lists yield empty subsets without raising."""
         locations = {"steel": [], "iron": []}
 
-        # Function accesses locations[product][0] which will raise IndexError on empty list
-        # This is a bug in the implementation - it tries to log a sample location even when list is empty
-        with pytest.raises(IndexError):
-            select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.1)
+
+        assert subset == {"steel": [], "iron": []}
 
     def test_single_location_with_low_percentage(self):
         """Test that at least 0 locations are selected when percentage results in < 1."""
@@ -140,11 +160,45 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.1)
 
         # 10% of 1 = 0.1, rounds to 0
         assert len(subset["steel"]) == 0
         assert len(subset["iron"]) == 0
+
+    def test_full_percentage_selects_every_candidate(self):
+        """calculate_npv_sites_share=1.0 includes every candidate (just reordered, none dropped)."""
+        locations = {
+            "steel": [
+                NewPlantLocation(
+                    Latitude=40.0 + i,
+                    Longitude=-100.0 - i,
+                    iso3="USA",
+                    power_price=0.05,
+                    capped_lcoh=3.0,
+                    rail_cost=10.0,
+                )
+                for i in range(10)
+            ],
+            "iron": [
+                NewPlantLocation(
+                    Latitude=50.0 + i,
+                    Longitude=-110.0 - i,
+                    iso3="DEU",
+                    power_price=0.05,
+                    capped_lcoh=3.0,
+                    rail_cost=10.0,
+                )
+                for i in range(6)
+            ],
+        }
+
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=1.0)
+
+        # Every candidate is present (random.sample with n == population size drops nothing,
+        # just reorders), regardless of list order.
+        assert sorted(subset["steel"], key=lambda loc: loc["Latitude"]) == locations["steel"]
+        assert sorted(subset["iron"], key=lambda loc: loc["Latitude"]) == locations["iron"]
 
 
 class TestGetListOfAllowedTechsForTargetYear:
@@ -224,6 +278,27 @@ class TestGetListOfAllowedTechsForTargetYear:
                 target_year=Year(2030),  # Not in allowed_techs
             )
 
+    def test_excluded_greenfield_technologies_never_reach_the_candidate_set(self):
+        """BOF is dropped from greenfield candidates by the GeoConfig default even when allowed in the target year."""
+        geo_config = GeoConfig()
+        assert geo_config.excluded_greenfield_technologies == ["BOF"]
+
+        allowed_techs = {Year(2030): ["EAF", "BOF", "DRI"]}
+        tech_to_product = {"EAF": "steel", "BOF": "steel", "DRI": "iron"}
+        greenfield_tech_to_product = {
+            tech: product
+            for tech, product in tech_to_product.items()
+            if tech not in geo_config.excluded_greenfield_technologies
+        }
+
+        product_to_tech = get_list_of_allowed_techs_for_target_year(
+            allowed_techs=allowed_techs,
+            tech_to_product=greenfield_tech_to_product,
+            target_year=Year(2030),
+        )
+
+        assert product_to_tech == {"steel": ["EAF"], "iron": ["DRI"]}
+
 
 class TestPrepareDataForBusinessOpportunity:
     """Tests for prepare_cost_data_for_business_opportunity function."""
@@ -238,10 +313,61 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,  # utilization_rate
                     "scrap",  # reductant
+                    {"scrap": 1.0},  # output shares
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         return _get_bom
+
+    def test_npv_is_priced_from_the_stack_locked_at_the_target_year(self, mock_get_bom):
+        """Each site locks one stack at the target year; the score series is priced from it, without overrides."""
+        stacks_asked = []
+        series_calls = []
+
+        def recording_stack_at(location, year):
+            stacks_asked.append((location.lat, location.lon, location.iso3, year))
+            return _stack_at(location, year)
+
+        def recording_series(location, tech, output_shares, start, end, **kwargs):
+            series_calls.append((start, end, kwargs))
+            return _stub_series(location, tech, output_shares, start, end, **kwargs)
+
+        cost_data = prepare_cost_data_for_business_opportunity(
+            product_to_tech={"steel": ["EAF"]},
+            best_locations_subset={
+                "steel": [
+                    NewPlantLocation(
+                        Latitude=40.0, Longitude=-100.0, iso3="USA", power_price=0.05, capped_lcoh=3.0, rail_cost=10.0
+                    )
+                ]
+            },
+            current_year=Year(2025),
+            target_year=Year(2028),
+            energy_costs={"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},
+            capex_dict_all_locs_techs={"Americas": {"EAF": 1000.0}},
+            cost_of_debt_all_locs={"USA": {"EAF": 0.05}},
+            cost_of_equity_all_locs={"USA": {"EAF": 0.08}},
+            fopex_all_locs_techs={"USA": {"eaf": 50.0}},
+            steel_plant_capacity=100.0,
+            get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=4,
+            reductant_score_series=recording_series,
+            captive_energy_at=recording_stack_at,
+            iso3_to_region_map={"USA": "Americas"},
+            global_risk_free_rate=0.03,
+            capex_subsidies={},
+            debt_subsidies={},
+            opex_subsidies={},
+            energy_subsidies={},
+            most_common_reductant={},
+            environment_most_common_reductant={},
+        )
+
+        stack = cost_data["steel"][(40.0, -100.0, "USA")]["EAF"]["captive_energy"]
+        assert stacks_asked == [(40.0, -100.0, "USA", Year(2028))]
+        assert stack == _stack_at(None, Year(2028))
+        assert series_calls == [(Year(2032), Year(2052), {"captive": stack})]
 
     def test_prepare_costs_for_single_location_tech(self, mock_get_bom):
         """Test preparing cost data for a single location-technology pair."""
@@ -255,11 +381,52 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}  # lowercase tech name
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -273,13 +440,16 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -312,11 +482,52 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 50.0}}}
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"DEU": 0.05}  # Missing USA
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "DEU": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }  # Missing USA
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # When cost_of_debt is missing, ValueError is raised immediately
         with pytest.raises(ValueError, match="Missing critical site-level data"):
@@ -332,13 +543,16 @@ class TestPrepareDataForBusinessOpportunity:
                 fopex_all_locs_techs=fopex_all_locs_techs,
                 steel_plant_capacity=100.0,
                 get_bom_from_avg_boms=mock_get_bom,
+                plant_lifetime=20,
+                construction_time=2,
+                reductant_score_series=_stub_series,
+                captive_energy_at=_stack_at,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -355,11 +569,52 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         capex_subsidy = Subsidy(
             scenario_name="test",
@@ -384,13 +639,16 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={"USA": {"EAF": [capex_subsidy]}},
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -420,11 +678,52 @@ class TestPrepareDataForBusinessOpportunity:
             "USA": {Year(2025): {"electricity": 0.05, "hydrogen": 5000.0, "natural_gas": 0.03}}
         }  # USD/kWh, USD/t, USD/kWh
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         h2_subsidy = Subsidy(
             scenario_name="test_h2",
@@ -459,6 +758,10 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -468,7 +771,6 @@ class TestPrepareDataForBusinessOpportunity:
                 "hydrogen": {"USA": {"EAF": [h2_subsidy]}},
                 "electricity": {"USA": {"EAF": [elec_subsidy]}},
             },
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -495,11 +797,52 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {}  # Missing fopex data
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # Should raise ValueError immediately due to missing fopex
         with pytest.raises(ValueError, match="Missing critical cost data"):
@@ -515,13 +858,16 @@ class TestPrepareDataForBusinessOpportunity:
                 fopex_all_locs_techs=fopex_all_locs_techs,
                 steel_plant_capacity=100.0,
                 get_bom_from_avg_boms=mock_get_bom,
+                plant_lifetime=20,
+                construction_time=2,
+                reductant_score_series=_stub_series,
+                captive_energy_at=_stack_at,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -536,8 +882,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,
                     "scrap" if tech == "EAF" else "iron_ore",
+                    {"scrap": 1.0},
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         best_locations_subset = {
             "steel": [
@@ -564,19 +911,136 @@ class TestPrepareDataForBusinessOpportunity:
             "Europe": {"EAF": 1100.0},
             "Asia": {"DRI": 2000.0},
         }
-        cost_of_debt_all_locs = {"USA": 0.05, "DEU": 0.04, "CHN": 0.06}
-        cost_of_equity_all_locs = {"USA": 0.08, "DEU": 0.07, "CHN": 0.09}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "DEU": {
+                tech: 0.04
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "CHN": {
+                tech: 0.06
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "DEU": {
+                tech: 0.07
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "CHN": {
+                tech: 0.09
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+        }
         fopex_all_locs_techs = {
             "USA": {"eaf": 50.0},
             "DEU": {"eaf": 55.0},
             "CHN": {"dri": 70.0},
         }
         iso3_to_region_map = {"USA": "Americas", "DEU": "Europe", "CHN": "Asia"}
-        carbon_costs = {
-            "USA": {Year(2030): 50.0},
-            "DEU": {Year(2030): 60.0},
-            "CHN": {Year(2030): 30.0},
-        }
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -590,13 +1054,16 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=_get_bom_multi,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
+            captive_energy_at=_stack_at,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -637,7 +1104,9 @@ class TestSelectTopOpportunitiesByNpv:
                 [0],  # Select first item for iron
             ]
 
-            top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+            top_opportunities = select_top_opportunities_by_npv(
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+            )
 
             # Verify top opportunities were selected
             assert "steel" in top_opportunities
@@ -665,7 +1134,9 @@ class TestSelectTopOpportunitiesByNpv:
 
         # The function uses np.random.choice which will filter out invalid NPVs
         # Just verify it runs without error and returns valid results
-        top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        top_opportunities = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
 
         # Should have selected 1 opportunity from the 3 valid ones
         assert "steel" in top_opportunities
@@ -692,7 +1163,9 @@ class TestSelectTopOpportunitiesByNpv:
             # Mock returns indices of selected items
             mock_choice.return_value = [0]  # Select first item
 
-            select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+            select_top_opportunities_by_npv(
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+            )
 
             # Verify np.random.choice was called with probabilities
             assert mock_choice.called
@@ -715,6 +1188,8 @@ class TestSelectTopOpportunitiesByNpv:
         top_opportunities = select_top_opportunities_by_npv(
             npv_dict=npv_dict,
             top_n_loctechs_as_business_op=5,  # Request 5 but only 2 available
+            probabilistic_agents=True,
+            opportunity_pool_depth=3,
         )
 
         # Should return all available opportunities (2 location-tech pairs)
@@ -727,7 +1202,9 @@ class TestSelectTopOpportunitiesByNpv:
 
         # Function raises ValueError when there are no valid NPVs
         with pytest.raises(ValueError, match="No valid NPVs found"):
-            select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=5)
+            select_top_opportunities_by_npv(
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=5, probabilistic_agents=True, opportunity_pool_depth=3
+            )
 
     def test_all_negative_npvs(self):
         """Test handling when all NPVs are negative but valid."""
@@ -738,9 +1215,11 @@ class TestSelectTopOpportunitiesByNpv:
             }
         }
 
-        top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        top_opportunities = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
 
-        # Should still select based on relative values (shifts distribution to make non-negative weights)
+        # Rank weights are scale-free, so an all-negative pool still draws normally
         total_pairs = sum(len(techs) for site_techs in top_opportunities["steel"].values() for techs in [site_techs])
         assert total_pairs == 1
 
@@ -752,7 +1231,9 @@ class TestSelectTopOpportunitiesByNpv:
             }
         }
 
-        top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        top_opportunities = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
 
         # Verify structure: product -> site_id -> tech -> NPV
         assert isinstance(top_opportunities, dict)
@@ -813,7 +1294,6 @@ class TestIdentifyNewBusinessOpportunities4indi:
             "allowed_techs": {Year(2025): ["EAF"], Year(2028): ["EAF"]},
             "technology_emission_factors": [],
             "chosen_emissions_boundary_for_carbon_costs": "scope_1",
-            "carbon_costs": {"USA": {Year(2028): 50.0}},
             "top_n_loctechs_as_business_op": 2,
         }
 
@@ -829,6 +1309,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
                 },
                 0.7,
                 "scrap",
+                {"scrap": 1.0},
             )
 
         return _get_bom
@@ -859,6 +1340,8 @@ class TestGenerateNewPlant:
                         "railway_cost": 10.0,
                         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                         "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},  # USD/kWh, USD/t
+                        "output_shares": {"scrap": 1.0},
+                        "captive_energy": _stack_at(None, Year(2028)),
                     }
                 }
             }
@@ -890,6 +1373,25 @@ class TestGenerateNewPlant:
         assert new_plant.parent_gem_id == "PG001"
         assert new_plant.soe_status == "private"
         assert new_plant.power_source == "grid"
+
+    def test_furnace_group_keeps_the_stack_its_npv_was_priced_with(self, plant_group, cost_data):
+        """The new furnace group holds the cost data's stack, which tracking re-values it with."""
+        new_plant = plant_group.generate_new_plant(
+            site_id=(40.0, -100.0, "USA"),
+            technology_name="EAF",
+            product="steel",
+            npv=1000.0,
+            current_year=2025,
+            existent_plant_ids=[],
+            cost_data=cost_data,
+            equity_share=0.2,
+            steel_plant_capacity=100.0,
+            dynamic_feedstocks=[],
+            plant_lifetime=20,
+        )
+
+        stack = cost_data["steel"][(40.0, -100.0, "USA")]["EAF"]["captive_energy"]
+        assert new_plant.furnace_groups[0].captive_energy is stack
 
     def test_creates_furnace_group_with_correct_attributes(self, plant_group, cost_data):
         """Test that generate_new_plant creates a furnace group with correct attributes."""
@@ -948,12 +1450,13 @@ class TestGenerateNewPlant:
         assert furnace.cost_of_debt == 0.05
         assert furnace.cost_of_debt_no_subsidy == 0.06
         assert furnace.railway_cost == 10.0
+        assert furnace.output_shares == {"scrap": 1.0}
         # chosen_reductant may be overridden by generate_energy_vopex_by_reductant()
         # Just verify it was set to some value
         assert furnace.chosen_reductant is not None
 
-    def test_uses_default_equity_share(self, plant_group, cost_data):
-        """Test that furnace group uses default equity_share when not passed via kwargs."""
+    def test_forwards_equity_share(self, plant_group, cost_data):
+        """Test that the config equity share reaches the furnace group (re-check parity)."""
         site_id = (40.0, -100.0, "USA")
 
         new_plant = plant_group.generate_new_plant(
@@ -964,15 +1467,16 @@ class TestGenerateNewPlant:
             current_year=2025,
             existent_plant_ids=[],
             cost_data=cost_data,
-            equity_share=0.3,  # Used to calculate equity_needed, not passed to furnace
+            equity_share=0.3,
             steel_plant_capacity=1000.0,
             dynamic_feedstocks=[],
             plant_lifetime=30,
         )
 
         furnace = new_plant.furnace_groups[0]
-        # FurnaceGroup uses default equity_share of 0.2 (not the 0.3 passed to generate_new_plant)
-        assert furnace.equity_share == 0.2
+        # Creation values the NPV with the config equity share; the yearly re-check reads
+        # fg.equity_share, so the same value must be stored on the furnace group
+        assert furnace.equity_share == 0.3
 
     def test_does_not_add_plant_to_plant_group(self, plant_group, cost_data):
         """
@@ -1046,3 +1550,436 @@ class TestGenerateNewPlant:
         furnace = new_plant.furnace_groups[0]
         assert current_year in furnace.historical_npv_business_opportunities
         assert furnace.historical_npv_business_opportunities[current_year] == npv
+
+
+def _complete_cost_data_entry():
+    """A cost_data tech entry carrying exactly the validator's required fields."""
+    return {
+        "cost_of_equity": 0.08,
+        "cost_of_debt": 0.05,
+        "cost_of_debt_no_subsidy": 0.06,
+        "capex": 1000.0,
+        "capex_no_subsidy": 1200.0,
+        "fopex": 50.0,
+        "utilization_rate": 0.7,
+        "reductant": "scrap",
+        "all_opex_subsidies": [],
+        "score_series": [10.0, 10.0],
+        "railway_cost": 10.0,
+        "energy_costs": {"electricity": 0.05},
+        "output_costs": {"electricity": 0.05},
+        "no_subsidy_prices": {"electricity": 0.05},
+        "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+        "output_shares": {"scrap": 1.0},
+        "captive_energy": _stack_at(None, Year(2028)),
+    }
+
+
+def test_validate_and_clean_cost_data_requires_output_shares():
+    """An entry missing output_shares is incomplete and gets dropped.
+
+    Notes:
+        The exact-set field check treats output_shares like every other required
+        field, so the only tech at the only site being incomplete empties the
+        cost data and triggers the no-valid-data ValueError.
+    """
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    entry = _complete_cost_data_entry()
+    del entry["output_shares"]
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": entry}}}
+
+    with pytest.raises(ValueError, match="No valid cost data"):
+        validate_and_clean_cost_data(cost_data)
+
+
+def test_validate_and_clean_cost_data_rejects_non_dict_output_shares():
+    """A non-dict output_shares value raises a loud type error."""
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    entry = _complete_cost_data_entry()
+    entry["output_shares"] = [1.0]
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": entry}}}
+
+    with pytest.raises(ValueError, match="output_shares must be dict"):
+        validate_and_clean_cost_data(cost_data)
+
+
+def test_validate_and_clean_cost_data_accepts_complete_entry():
+    """A complete entry (including output_shares) passes validation unchanged."""
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": _complete_cost_data_entry()}}}
+
+    cleaned = validate_and_clean_cost_data(cost_data)
+
+    assert cleaned["steel"][(40.0, -100.0, "USA")]["EAF"]["output_shares"] == {"scrap": 1.0}
+
+
+def _npv_dict_from_values(values):
+    """One steel site per NPV value, each carrying a single EAF entry."""
+    return {
+        "steel": {(40.0 + i, -100.0 - i, "USA"): {"EAF": npv} for i, npv in enumerate(values)},
+    }
+
+
+def test_selection_rank_weights_decrease_with_npv_rank():
+    """The draw probabilities fall linearly with NPV rank over the trimmed pool.
+
+    Notes:
+        With six candidates and top_n=1 the pool is trimmed to the best 3, so
+        np.random.choice must be called over 3 indices with weights 3:2:1.
+    """
+    import numpy as np
+
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0]
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+
+    (pool_size,), kwargs = mock_choice.call_args
+    assert pool_size == 3
+    assert list(kwargs["p"]) == pytest.approx(list(np.array([3.0, 2.0, 1.0]) / 6.0))
+
+
+def test_selection_never_draws_beyond_the_trimmed_pool():
+    """Candidates outside the top 3N by NPV can never be selected.
+
+    Notes:
+        Guards the fix for the shift-by-min lottery, which drew hopeless
+        deep-negative sites almost uniformly whenever the whole pool was negative.
+    """
+    import numpy as np
+
+    values = [-float(v) for v in range(1, 11)]  # -1 (best) .. -10 (worst)
+    npv_dict = _npv_dict_from_values(values)
+
+    np.random.seed(42)
+    for _ in range(25):
+        selected = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+        (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
+        assert npv >= -3.0
+
+
+def test_selection_is_deterministic_under_a_seed():
+    """Re-seeding numpy's RNG reproduces the same draw."""
+    import numpy as np
+
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    np.random.seed(123)
+    first = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=3
+    )
+    np.random.seed(123)
+    second = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=3
+    )
+
+    assert first == second
+
+
+def test_deterministic_mode_selects_top_n_by_npv():
+    """When probabilistic_agents is False, the top N by NPV are selected with no randomness."""
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    with patch("numpy.random.choice") as mock_choice:
+        selected = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False, opportunity_pool_depth=3
+        )
+        # Deterministic mode must not touch the random draw at all
+        assert not mock_choice.called
+
+    selected_npvs = sorted(npv for techs in selected["steel"].values() for npv in techs.values())
+    assert selected_npvs == [-200.0, -100.0]
+
+
+def test_deterministic_mode_is_reproducible_without_seeding():
+    """Deterministic selection doesn't depend on RNG state at all."""
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    first = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False, opportunity_pool_depth=3
+    )
+    second = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False, opportunity_pool_depth=3
+    )
+
+    assert first == second
+
+
+def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
+    """Step 6 creates one plant per selected (site, tech) pair, with distinct plant ids.
+
+    Notes:
+        Guards against the appends sitting at site-loop level, which silently
+        kept only the last technology drawn at a shared site and handed both
+        technologies the same plant id.
+    """
+    site_id = (40.0, -100.0, "USA")
+    tech_entry = {
+        "capex": 1000.0,
+        "capex_no_subsidy": 1200.0,
+        "cost_of_debt": 0.05,
+        "cost_of_debt_no_subsidy": 0.06,
+        "fopex": 50.0,
+        "utilization_rate": 0.7,
+        "reductant": "scrap",
+        "railway_cost": 10.0,
+        "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+        "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},
+        "output_shares": {"scrap": 1.0},
+        "captive_energy": _stack_at(None, Year(2028)),
+    }
+    cost_data = {"steel": {site_id: {"EAF": dict(tech_entry), "BOF": dict(tech_entry)}}}
+    npv_dict = {"steel": {site_id: {"EAF": 100.0, "BOF": 90.0}}}
+
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.select_location_subset",
+        lambda *args, **kwargs: {"steel": [{"Latitude": 40.0, "Longitude": -100.0, "iso3": "USA"}]},
+    )
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.prepare_cost_data_for_business_opportunity",
+        lambda *args, **kwargs: cost_data,
+    )
+    monkeypatch.setattr(
+        "steelo.domain.calculate_costs.calculate_business_opportunity_npvs",
+        lambda *args, **kwargs: npv_dict,
+    )
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.select_top_opportunities_by_npv",
+        lambda *args, **kwargs: npv_dict,
+    )
+
+    plant_group = PlantGroup(plant_group_id="indi", plants=[])
+    command = plant_group.identify_new_business_opportunities_4indi(
+        current_year=Year(2025),
+        consideration_time=2,
+        construction_time=3,
+        plant_lifetime=30,
+        input_costs={"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},
+        locations={"steel": [{"Latitude": 40.0, "Longitude": -100.0, "iso3": "USA"}]},
+        iso3_to_region_map={"USA": "Americas"},
+        market_price={"steel": [100.0] * 50},
+        capex_dict_all_locs_techs={"Americas": {"EAF": 1000.0, "BOF": 1100.0}},
+        cost_of_debt_all_locs={"USA": {"EAF": 0.05, "BOF": 0.05}},
+        cost_of_equity_all_locs={"USA": {"EAF": 0.08, "BOF": 0.08}},
+        steel_plant_capacity=1000.0,
+        all_plant_ids=[],
+        fopex_all_locs_techs={"USA": {"eaf": 50.0, "bof": 50.0}},
+        equity_share=0.3,
+        dynamic_feedstocks={},
+        get_bom_from_avg_boms=lambda *args, **kwargs: (None, 0.7, "scrap", {}),
+        reductant_score_series=_stub_series,
+        captive_energy_at=_stack_at,
+        global_risk_free_rate=0.03,
+        tech_to_product={"EAF": "steel", "BOF": "steel"},
+        allowed_techs={Year(2027): ["EAF", "BOF"]},
+        technology_emission_factors=[],
+        chosen_emissions_boundary_for_carbon_costs="scope_1",
+        active_statuses=["operating"],
+        top_n_loctechs_as_business_op=2,
+        opportunity_pool_depth=3,
+        calculate_npv_sites_share=0.1,
+    )
+
+    new_plants = command.new_plants
+    assert len(new_plants) == 2
+    assert len({plant.plant_id for plant in new_plants}) == 2
+    assert {plant.furnace_groups[0].technology.name for plant in new_plants} == {"EAF", "BOF"}
+
+
+def _ranked_pool(tech_npvs):
+    """Build (valid_pairs, valid_npvs, ranked_indices) from {tech: [npvs]}, one site per NPV.
+
+    Sites are synthetic and unique; ranking is by NPV descending, as in the selection function.
+    """
+    import numpy as np
+
+    valid_pairs = []
+    valid_npvs = []
+    for tech, npvs in tech_npvs.items():
+        for i, npv in enumerate(npvs):
+            valid_pairs.append(((40.0 + i, -100.0 - i, "USA"), tech))
+            valid_npvs.append(npv)
+    ranked_indices = np.argsort(np.array(valid_npvs))[::-1]
+    return valid_pairs, valid_npvs, ranked_indices
+
+
+def test_eligible_pool_keeps_every_technology_standing_when_head_is_monocultural():
+    """A head fully occupied by one technology still leaves min(3, available) seats per tech.
+
+    Notes:
+        Guards the union trim: 50 A-sites monopolise a 45-slot head, yet B keeps its top-3
+        and C keeps both of its sites eligible, in descending NPV order without duplicates.
+    """
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [1000.0 - i for i in range(50)],
+            "B": [10.0, 9.0, 8.0, 7.0, 6.0],
+            "C": [5.0, 4.0],
+        },
+    )
+
+    eligible = build_eligible_pool(valid_pairs, ranked_indices, head_count=45, sites_per_tech=3)
+
+    per_tech = {}
+    for i in eligible:
+        per_tech[valid_pairs[i][1]] = per_tech.get(valid_pairs[i][1], 0) + 1
+    assert per_tech == {"A": 45, "B": 3, "C": 2}
+    assert len(eligible) == len(set(eligible))
+    eligible_npvs = [valid_npvs[i] for i in eligible]
+    assert eligible_npvs == sorted(eligible_npvs, reverse=True)
+
+
+def test_eligible_pool_adds_no_seats_for_technologies_already_covered_by_the_head():
+    """A technology with at least sites_per_tech candidates inside the head gets no extra seats."""
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [100.0, 99.0, 98.0, 97.0, 96.0],
+            "B": [95.0, 94.0, 93.0, 92.0, 91.0],
+        },
+    )
+
+    # Head of 8 holds A:5 and B:3 - both technologies already covered, union adds nothing
+    eligible = build_eligible_pool(valid_pairs, ranked_indices, head_count=8, sites_per_tech=3)
+
+    assert len(eligible) == 8
+    assert [valid_npvs[i] for i in eligible] == [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0]
+
+
+def test_union_trim_draw_reaches_per_tech_seats_but_never_beyond_them():
+    """The draw can select a guaranteed per-technology seat, yet never a candidate outside the union.
+
+    Notes:
+        With top_n=1 the head is the best 3 (all A). B's top-3 seats join the pool through the
+        union, so B is drawable; A's 4th site and B's 4th site stay ineligible forever.
+    """
+    import numpy as np
+
+    npv_dict = {
+        "steel": {
+            (40.0, -100.0, "USA"): {"A": -1.0},
+            (41.0, -101.0, "USA"): {"A": -2.0},
+            (42.0, -102.0, "USA"): {"A": -3.0},
+            (43.0, -103.0, "USA"): {"A": -4.0},
+            (44.0, -104.0, "USA"): {"B": -100.0},
+            (45.0, -105.0, "USA"): {"B": -101.0},
+            (46.0, -106.0, "USA"): {"B": -102.0},
+            (47.0, -107.0, "USA"): {"B": -200.0},
+        },
+    }
+
+    np.random.seed(7)
+    drawn_npvs = set()
+    for _ in range(300):
+        selected = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+        (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
+        drawn_npvs.add(npv)
+
+    assert drawn_npvs & {-100.0, -101.0, -102.0}, "per-technology seats were never drawn"
+    assert -4.0 not in drawn_npvs, "drew A's 4th site, outside head and per-tech seats"
+    assert -200.0 not in drawn_npvs, "drew B's 4th site, beyond its guaranteed seats"
+
+
+def test_pool_summary_reports_per_tech_best_over_the_full_pool():
+    """tech_best covers every technology in the valid pool, not only the eligible head."""
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [100.0, 50.0],
+            "B": [-10.0, -20.0],
+        },
+    )
+
+    eligible = [int(i) for i in ranked_indices[:2]]  # A only
+    selected_pairs = [valid_pairs[eligible[0]]]
+    summary = summarise_opportunity_pool(valid_pairs, valid_npvs, eligible, selected_pairs)
+
+    assert summary["valid"] == 4
+    assert summary["eligible"] == 2
+    assert summary["tech_best"] == {"A": 100.0, "B": -10.0}
+    assert summary["eligible_techs"] == {"A": 2}
+    assert summary["drawn_techs"] == {"A": 1}
+    assert summary["median"] == 75.0
+    assert summary["min"] == 50.0
+    assert summary["max"] == 100.0
+    assert summary["frac_negative"] == 0.0
+
+
+def test_pool_summary_flags_an_all_negative_eligible_pool():
+    """frac_negative reaches 1.0 when every eligible candidate is underwater."""
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [-200.0, -300.0, -400.0],
+        },
+    )
+
+    eligible = [int(i) for i in ranked_indices]
+    summary = summarise_opportunity_pool(valid_pairs, valid_npvs, eligible, [valid_pairs[eligible[0]]])
+
+    assert summary["frac_negative"] == 1.0
+    assert summary["max"] == -200.0
+
+
+def test_selection_logs_a_pool_summary_line(caplog):
+    """Every selection call emits one parsable pool_summary line per product."""
+    import logging
+
+    npv_dict = {
+        "steel": {
+            (40.0, -100.0, "USA"): {"EAF": 1000.0, "BOF": -500.0},
+            (41.0, -101.0, "USA"): {"EAF": 800.0},
+        },
+    }
+
+    with caplog.at_level(logging.INFO):
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+
+    summary_lines = [r.getMessage() for r in caplog.records if "pool_summary product=steel" in r.getMessage()]
+    assert len(summary_lines) == 1
+    assert "valid=3" in summary_lines[0]
+    assert "tech_best=[EAF:1.0000e+03,BOF:-5.0000e+02]" in summary_lines[0]
+
+
+def test_opportunity_pool_depth_drives_head_and_per_tech_seats():
+    """One depth value sets both the global head (depth * N) and each technology's seats.
+
+    Notes:
+        With 6 A-sites, 4 B-sites, top_n=2 and depth=2: the head is the best 4 (all A) and B
+        keeps its top-2 through the union, so the draw runs over exactly 6 eligible candidates.
+        At the default depth 3 the same pool widens to head 6 + B's top-3 = 9.
+    """
+    import numpy as np
+
+    npv_dict = {
+        "steel": {
+            **{(40.0 + i, -100.0 - i, "USA"): {"A": 100.0 - i} for i in range(6)},
+            **{(50.0 + i, -110.0 - i, "USA"): {"B": 50.0 - i} for i in range(4)},
+        },
+    }
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0, 1]
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=2
+        )
+    (pool_size,), kwargs = mock_choice.call_args
+    assert pool_size == 6
+    assert list(kwargs["p"]) == pytest.approx(list(np.arange(6, 0, -1) / 21.0))
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0, 1]
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+    (pool_size,), _ = mock_choice.call_args
+    assert pool_size == 9

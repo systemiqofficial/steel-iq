@@ -68,7 +68,8 @@
                                 <span class="fw-semibold">{{ section.name }}</span>
                                 {% if section.subsections %}
                                     <span class="badge bg-secondary ms-2">{{ section.subsections|length }} folder{{ section.subsections|length|pluralize }}</span>
-                                {% else %}
+                                {% endif %}
+                                {% if section.files %}
                                     <span class="badge bg-secondary ms-2">{{ section.files|length }} file{{ section.files|length|pluralize }}</span>
                                 {% endif %}
                             </button>
@@ -167,8 +168,9 @@
                                         </div>
                                         {% endfor %}
                                     </div>
-                                {% else %}
-                                    <div class="table-responsive">
+                                {% endif %}
+                                {% if section.files %}
+                                    <div class="table-responsive{% if section.subsections %} mt-3{% endif %}">
                                         <table class="table table-sm table-hover">
                                             <thead>
                                                 <tr>

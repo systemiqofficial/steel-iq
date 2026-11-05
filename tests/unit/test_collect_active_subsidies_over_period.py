@@ -209,7 +209,7 @@ def test_collect_active_subsidies_over_period_mixed_active_inactive():
         scenario_name="inactive",
         iso3="CHN",
         start_year=Year(2040),
-        end_year=Year(2050),
+        end_year=Year(2060),
         technology_name="H2-DRI",
         cost_item="opex",
         subsidy_type="absolute",

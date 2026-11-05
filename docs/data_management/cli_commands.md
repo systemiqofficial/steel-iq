@@ -23,7 +23,7 @@ steelo-data-download --cache-dir /path/to/cache
 ```
 
 **Options:**
-- `--cache-dir PATH`: Custom cache directory (default: `~/.steelo/data_cache`)
+- `--cache-dir PATH`: Custom cache directory (default: `$STEELO_DATA_CACHE`, else `$STEELO_HOME/data_cache`)
 - `--force`: Force re-download even if already cached
 - `--package NAME`: Download specific package instead of all required
 
@@ -68,25 +68,26 @@ Data Integrity Check
 
 ### `steelo-data-validate`
 
-Validate Excel files in a directory for correctness.
+Validate one input Excel file, typed by its file name: a name holding `plant`, `demand`, `scrap` or `mine`, checked in that order, is validated as a plants, demand, scrap supplier or mine supplier file. Any other name, a master workbook's included, is reported as an unknown file type.
 
 ```bash
-# Validate files in a directory
-steelo-data-validate /path/to/excel/files
+# Validate a plants file
+steelo-data-validate /path/to/plants.xlsx
 
 # Strict mode (warnings become errors)
-steelo-data-validate /path/to/excel/files --strict
+steelo-data-validate /path/to/plants.xlsx --strict
 ```
 
 **Arguments:**
-- `directory`: Directory containing Excel files to validate
+- `excel_file`: Path to the Excel file to validate; its name sets its type
 
 **Options:**
 - `--strict`: Treat warnings as errors
+- `--cache-dir PATH`: Cache directory for data packages
 
 ### `steelo-data-convert`
 
-Convert Excel files to JSON repositories.
+Convert Excel files to JSON repositories. It writes `plants.json`, `demand_scenarios/bau/demand_centers.json` and `scrap_scenarios/bau/suppliers.json` into the output directory from the files it finds, filed as the BAU scenario as a data preparation lays them out, and the `scenarios.json` index that names them.
 
 ```bash
 # Convert Excel files to JSON
@@ -102,82 +103,11 @@ steelo-data-convert /path/to/excel /path/to/output --strict
 
 **Options:**
 - `--strict`: Treat warnings as errors
+- `--cache-dir PATH`: Cache directory for data packages
 
-### `steelo-data-prepare`
+### `steelo-data-prepare` and `steelo-data-recreate`
 
-Prepare all data files needed for simulation by extracting raw files and creating JSON repositories. This is the primary command for setting up simulation data.
-
-**Note**: The `run_simulation` command now automatically handles data preparation with caching. You typically don't need to run this command separately unless you want to prepare data without running a simulation.
-
-```bash
-# Basic usage - prepare all data (uses cache if available)
-steelo-data-prepare
-
-# Force fresh preparation (bypass cache and recreate all files)
-steelo-data-prepare --force-refresh
-
-# Custom output directory (bypasses caching)
-steelo-data-prepare --output-dir ./my-data/fixtures
-
-# Use a specific master Excel file
-steelo-data-prepare --master-excel-file /path/to/master_input.xlsx
-
-# Skip files that already exist
-steelo-data-prepare --skip-existing
-
-# Force recreation of all files
-steelo-data-prepare --no-skip-existing
-
-# List all files that can be prepared
-steelo-data-prepare --list-files
-
-# Show detailed progress
-steelo-data-prepare --verbose
-```
-
-**Options:**
-- `--output-dir PATH`: Output directory for data files (default: `data/fixtures`)
-- `--cache-dir PATH`: Cache directory for downloaded data
-- `--master-excel-file PATH`: Path to custom master Excel file (overrides S3 download)
-- `--force-refresh`: Force re-preparation even if cached (bypasses cache and implies --no-skip-existing)
-- `--skip-existing`: Skip files that already exist (default: True)
-- `--no-skip-existing`: Force recreation of all files
-- `--list-files`: List all available files for recreation and exit
-- `--verbose`: Show detailed progress during preparation
-
-**Output:**
-The command prepares files from three sources in this order:
-1. **Master Excel files** - Extracted from the master input Excel
-2. **Core data files** - Copied from the core-data package
-3. **Derived files** - Generated from other data files
-4. **Geo data files** - Extracted from the geo-data package
-
-**Caching Note:**
-When used by `run_simulation`, prepared data is automatically cached in `$STEELO_HOME/preparation_cache/` based on the master Excel content hash. Subsequent runs with the same master Excel will reuse the cached data instantly (typically < 1 second). The timing display shows the original preparation time even when using cache, to indicate what work was done originally.
-
-### `steelo-data-recreate`
-
-Recreate all JSON repositories from downloaded data packages (similar to `recreate_sample_data`).
-
-```bash
-# Recreate from all required packages
-steelo-data-recreate
-
-# Recreate from specific package
-steelo-data-recreate --package core-data
-
-# Custom output directory
-steelo-data-recreate --output-dir /path/to/output
-
-# Force re-download before recreating
-steelo-data-recreate --force-download
-```
-
-**Options:**
-- `--package NAME`: Process specific package only
-- `--output-dir PATH`: Output directory (default: `./data/repositories`)
-- `--cache-dir PATH`: Custom cache directory
-- `--force-download`: Force re-download packages
+These two commands are documented in the user guide: see [steelo-data-prepare](../user_guide/cli_commands.md#steelo-data-prepare) and [steelo-data-recreate](../user_guide/cli_commands.md#steelo-data-recreate).
 
 ### `steelo-cache clear`
 
@@ -197,12 +127,12 @@ steelo-cache clear --cache-dir /path/to/prep/cache --data-cache-dir /path/to/dat
 **Options:**
 - `--keep-recent N`: Keep N most recent cached preparations (data cache is always fully cleared)
 - `--cache-dir PATH`: Preparation cache directory (default: $STEELO_HOME/preparation_cache)
-- `--data-cache-dir PATH`: Data cache directory (default: $HOME/.steelo/data_cache)
+- `--data-cache-dir PATH`: Data cache directory (default: `$STEELO_DATA_CACHE`, else `$STEELO_HOME/data_cache`)
 
 **What gets cleared:**
 - All cached data preparations in `$STEELO_HOME/preparation_cache/`
-- All downloaded data packages in `$HOME/.steelo/data_cache/`
-- The `data/` directory (including all prepared files)
+- All downloaded data packages in the data cache (`$STEELO_DATA_CACHE`, else `$STEELO_HOME/data_cache/`)
+- The `data/` folder in the current directory: a symlink is removed, a folder is deleted with its prepared files
 
 After running this command, the next `steelo-data-prepare` will perform a complete fresh preparation.
 
@@ -238,17 +168,11 @@ The `run_simulation` command now handles everything:
 3. Creates backward-compatible symlinks
 4. Runs the simulation
 
-### Clear All Caches (Master Excel Update)
-When a new master Excel is released, clear all caches and regenerate data:
+### New Master Excel
+A new master Excel gets its own preparation: the preparation cache is keyed on the workbook's content, so the first run with it prepares it and later runs reuse that preparation. Clearing the caches is not needed; `steelo-cache clear` only frees disk space.
 ```bash
-# Clear all caches and data files
-steelo-cache clear
-
-# Prepare fresh data
-steelo-data-prepare
-
 # Run simulation with new master Excel
-run_simulation --master-excel-file /path/to/new/master.xlsx
+run_simulation --master-excel /path/to/new/master.xlsx
 ```
 
 ### Alternative Setup (Manual Steps)
@@ -259,8 +183,8 @@ steelo-data-download
 # 2. Recreate JSON repositories
 steelo-data-recreate
 
-# 3. Run simulation using the data
-run_simulation --plants-json ./data/repositories/core-data/plants.json
+# 3. Run a simulation; it prepares its own data from the master Excel
+run_simulation
 ```
 
 ### Update Data
@@ -277,68 +201,24 @@ steelo-data-recreate --force-download
 
 ### Validate User Data
 ```bash
-# 1. Validate Excel files
-steelo-data-validate ./user_data
+# 1. Validate each input file (plants, demand, scrap and mine files)
+steelo-data-validate ./user_data/plants.xlsx
 
 # 2. If valid, convert to JSON
 steelo-data-convert ./user_data ./output
-
-# 3. Use in simulation
-run_simulation --plants-json ./output/plants.json
 ```
 
 ## Environment Variables
 
-- `STEELO_CACHE_DIR`: Override default cache directory
-- `STEELO_OFFLINE_MODE`: Set to "1" to prevent downloads (use cached data only)
+- `STEELO_HOME`: Home folder (default: `~/.steelo`) of the data cache, `data_cache/`, unless `STEELO_DATA_CACHE` is set, and of the preparation cache that `steelo-cache` works on, `preparation_cache/`
+- `STEELO_DATA_CACHE`: Data cache for downloaded packages, instead of `$STEELO_HOME/data_cache`
+- `STEELO_GEO_VERSION`: Geo-data package version `steelo-data-prepare` uses when `--geo-version` is not given
 
 ## Exit Codes
 
-- `0`: Success
 - `1`: General error (validation failed, download error, etc.)
 - `2`: Invalid arguments
 
 ## Binary Management Commands
 
-### `download-binaries`
-
-Download standalone Steel Model binaries (Electron builds) from S3.
-
-```bash
-# Download all platforms for a specific build
-download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029
-
-# Download only macOS binaries
-download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029 --platforms macos
-
-# Download to a custom directory
-download-binaries a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029 --output-dir ./my-downloads
-```
-
-**Arguments:**
-- `build_id`: Build identifier (e.g., commit-hash-timestamp format)
-
-**Options:**
-- `--output-dir PATH`: Directory to save downloaded files (default: `./dist/github-action-builds`)
-- `--platforms`: Platforms to download (choices: `macos`, `windows`). Default: all platforms
-
-### `list-binaries`
-
-List available Steel Model binaries on S3.
-
-```bash
-# List all available builds
-list-binaries
-
-# List files in a specific build
-list-binaries --build a8dc48073c62ec8d8af38161c72c3ed7c60e407b-20250621-060029
-
-# List only recent builds
-list-binaries --recent 5
-```
-
-**Options:**
-- `--build`: List files in a specific build
-- `--recent N`: Show only the N most recent builds
-
-**Note:** The S3 bucket might not allow listing of all builds. If you know a specific build ID, you can use `--build` to list files in that build.
+`list-binaries`, `download-binaries` and `download-latest` are documented in the user guide: see [List Available Binaries](../user_guide/cli_commands.md#list-available-binaries), [Download Standalone Binaries](../user_guide/cli_commands.md#download-standalone-binaries) and [Download Latest Binaries](../user_guide/cli_commands.md#download-latest-binaries).

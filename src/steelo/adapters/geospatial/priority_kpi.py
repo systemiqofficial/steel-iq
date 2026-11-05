@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from steelo.simulation import GeoConfig
     from steelo.domain.models import GeoDataPaths
 
+from steelo.adapters.geospatial.geospatial_calculations import coverage_to_percentile
 from steelo.utilities.plotting import plot_screenshot
 from steelo.domain.models import PlotPaths
 from steelo.domain.constants import (
@@ -98,7 +99,7 @@ def calculate_outgoing_cashflow_proxy(
     outgoing_cashflow = sum(cost_components.values())
     if not isinstance(outgoing_cashflow, xr.DataArray):
         outgoing_cashflow = xr.DataArray(outgoing_cashflow)
-    if outgoing_cashflow.all() == 0:
+    if bool((outgoing_cashflow.fillna(0) == 0).all()):
         raise ValueError("All locations have zero outgoing cashflow!")
     logger.info("Global average contribution to outgoing cashflow:")
     for component, value in cost_components.items():
@@ -122,7 +123,7 @@ def calculate_outgoing_cashflow_proxy(
         or year == end_year
         or (year - start_year) % 10 == 0
     )
-    p = int((1 - baseload_coverage) * 100)
+    p = coverage_to_percentile(baseload_coverage)
     if is_milestone_year:
         plot_screenshot(
             masked_cashflow * USD_TO_BioUSD,
@@ -161,7 +162,7 @@ def calculate_outgoing_cashflow_proxy(
 
 
 def extract_priority_locations(
-    ds: xr.Dataset, var_name: str, top_pct: int, random_seed: int, invert: bool = False
+    ds: xr.Dataset, var_name: str, top_pct: float, random_seed: int, invert: bool = False
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Extract the locations of the top X% values for a given variable in the dataset.
@@ -254,8 +255,29 @@ def extract_priority_locations(
     return top_values, locations
 
 
+def _bounding_boxes_by_iso3(iso3_grid: np.ndarray) -> dict[str, tuple[int, int, int, int]]:
+    """Return (row_start, row_stop, col_start, col_stop) of the smallest index box around each country's cells."""
+    n_cols = iso3_grid.shape[1]
+    codes, labels = pd.factorize(iso3_grid.ravel())
+    positions = np.flatnonzero(codes >= 0)
+    cells = pd.DataFrame(
+        {"code": codes[positions], "row": positions // n_cols, "col": positions % n_cols},
+    )
+    extent = cells.groupby("code").agg(
+        row_min=("row", "min"), row_max=("row", "max"), col_min=("col", "min"), col_max=("col", "max")
+    )
+    return {
+        labels[code]: (int(row_min), int(row_max) + 1, int(col_min), int(col_max) + 1)
+        for code, row_min, row_max, col_min, col_max in extent.itertuples(name=None)
+    }
+
+
 def find_top_locations_per_country(
-    ds: xr.Dataset, top_locations: dict[str, pd.DataFrame], product: str, priority_pct: int, random_seed: int
+    ds: xr.Dataset,
+    top_locations: dict[str, pd.DataFrame],
+    product: str,
+    priority_sites_share: float,
+    random_seed: int,
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Add the top X/10% locations for each country to ensure all countries have representation.
@@ -266,38 +288,52 @@ def find_top_locations_per_country(
         ds: Dataset containing outgoing cashflow data and ISO3 codes
         top_locations: Dictionary mapping product types to DataFrames of global top locations
         product: Product type ("iron" or "steel")
-        priority_pct: Global priority percentage (the per-country percentage is priority_pct/10)
+        priority_sites_share: Global priority fraction (0.0-1.0); the per-country fraction is
+            priority_sites_share/10
         random_seed: Random seed for reproducible sampling
 
     Returns:
         top_values: DataArray with binary values (1 for top locations including country lottery, 0 otherwise)
         top_locations_wlottery: DataFrame containing all top locations including country-specific additions
     """
-
-    top_wlottery = ds[f"top{str(priority_pct)}_{product}"].copy().astype(float)
+    priority_pct_label = f"{priority_sites_share * 100:g}"
+    top_wlottery = ds[f"top{priority_pct_label}_{product}"].copy().astype(float)
     top_locations_wlottery = top_locations[product].copy()
 
     # List of unique ISO3 codes
     iso3_values = ds["iso3"].values.flatten()
     unique_iso3 = np.unique(iso3_values[(~pd.isnull(iso3_values)) & (iso3_values != "nan")])
 
+    # Only the three variables the extraction reads
+    ds_lottery_vars = ds[["iso3", f"outgoing_cashflow_{product}", "feasibility_mask"]]
+    # A country is extracted from its bounding box. Masking and ranking the whole global grid for each of
+    # the ~170 countries dominates the run time. The box keeps the cells of the country in the same
+    # relative order, so the sort, the random draws and the quantile see the same values.
+    row_dim, col_dim = ds["iso3"].dims
+    boxes = _bounding_boxes_by_iso3(ds["iso3"].values)
     for iso3 in unique_iso3:
         # Get the top locations for the current ISO3 code (if not empty)
-        ds_iso3 = ds.where(ds["iso3"] == iso3)
+        row_start, row_stop, col_start, col_stop = boxes[iso3]
+        box = {row_dim: slice(row_start, row_stop), col_dim: slice(col_start, col_stop)}
+        ds_box = ds_lottery_vars.isel(box)
+        ds_iso3 = ds_box.where(ds_box["iso3"] == iso3)
         if np.any(~np.isnan(ds_iso3[f"outgoing_cashflow_{product}"].values)):
             top_values_iso3, top_locations_iso3 = extract_priority_locations(
                 ds_iso3,
                 f"outgoing_cashflow_{product}",
-                top_pct=int(priority_pct / 10),
+                top_pct=(priority_sites_share / 10) * 100,  # extract_priority_locations expects 0-100
                 random_seed=random_seed,
                 invert=True,
             )
-            # Add to the global top locations if not nan
-            top_wlottery += top_values_iso3
+            # Add to the global top locations if not nan; cells outside the box add 0
+            top_wlottery[box] += top_values_iso3.values
             dfs_to_concat = [df for df in [top_locations_wlottery, top_locations_iso3] if not df.empty]
             if dfs_to_concat:
                 top_locations_wlottery = pd.concat(dfs_to_concat, ignore_index=True)
     top_values = top_wlottery.astype(bool)
+    # A cell can be both in the global top and its country's lottery; duplicate rows would
+    # consume sample slots downstream and double-weight exactly the already-best sites
+    top_locations_wlottery = top_locations_wlottery.drop_duplicates(subset=["Latitude", "Longitude"], ignore_index=True)
 
     return top_values, top_locations_wlottery
 
@@ -352,7 +388,8 @@ def calculate_priority_location_kpi(
         Generates and saves plots of outgoing cashflow and priority heatmaps (decadal
         milestones), and top location maps (5-year milestones).
     """
-    logger.info(f"Identifying the top {geo_config.priority_pct}% priority locations.")
+    priority_pct_label = f"{geo_config.pick_priority_sites_share * 100:g}"
+    logger.info(f"Identifying the top {priority_pct_label}% priority locations.")
 
     # Mask all variables with the feasibility mask and remove NaN values
     ds_masked = ds.where(ds["feasibility_mask"] > 0)
@@ -383,37 +420,36 @@ def calculate_priority_location_kpi(
         )
 
         # Get the top X% locations (bottom X% of the price distribution)
-        ds_masked[f"top{str(geo_config.priority_pct)}_{product}"], top_locations[product] = extract_priority_locations(
+        ds_masked[f"top{priority_pct_label}_{product}"], top_locations[product] = extract_priority_locations(
             ds_masked,
             f"outgoing_cashflow_{product}",
-            top_pct=int(geo_config.priority_pct),
+            top_pct=geo_config.pick_priority_sites_share * 100,  # extract_priority_locations expects 0-100
             random_seed=geo_config.random_seed,
             invert=True,
         )
 
         # Add the top X/10 % locations for each country to "give everyone a chance". The "chance" is proportional to the size of the country.
-        ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"], top_locations_wlottery[product] = (
+        ds_masked[f"top{priority_pct_label}_{product}_wlottery"], top_locations_wlottery[product] = (
             find_top_locations_per_country(
-                ds_masked, top_locations, product, geo_config.priority_pct, geo_config.random_seed
+                ds_masked, top_locations, product, geo_config.pick_priority_sites_share, geo_config.random_seed
             )
         )
 
         if is_top_locations_milestone_year:
             plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
             plot_screenshot(
-                ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"],
+                ds_masked[f"top{priority_pct_label}_{product}_wlottery"],
                 var_type="binary",
-                title=f"Top {geo_config.priority_pct}% locations for {product} production in {year}",
-                save_name=f"top{str(geo_config.priority_pct)}_priority_locations_{product}_{str(year)}",
+                title=f"Top {priority_pct_label}% locations for {product} production in {year}",
+                save_name=f"top{priority_pct_label}_priority_locations_{product}_{str(year)}",
                 plot_paths=plot_paths_obj,
             )
 
-        # For each location, pass NPV calculation inputs
-        for row in top_locations_wlottery[product].itertuples():
-            lat = row.Latitude
-            lon = row.Longitude
-            for col in ["iso3", "rail_cost", "power_price", "capped_lcoh"]:
-                top_locations_wlottery[product].loc[row.Index, col] = ds_masked[col].sel(lat=lat, lon=lon).item()
+        # For each location, pass NPV calculation inputs (pointwise selection over all sites at once)
+        site_lats = xr.DataArray(top_locations_wlottery[product]["Latitude"].values, dims="site")
+        site_lons = xr.DataArray(top_locations_wlottery[product]["Longitude"].values, dims="site")
+        for col in ["iso3", "rail_cost", "power_price", "capped_lcoh"]:
+            top_locations_wlottery[product][col] = ds_masked[col].sel(lat=site_lats, lon=site_lons).values
 
     # Filter out empty records
     top_locations_wlottery_dict = {}

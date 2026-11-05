@@ -7,9 +7,13 @@ from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoint
-from .domain.models import Environment, PlantGroup
+from .domain.constants import Commodities
+from .domain.models import Environment, PlantGroup, Supplier
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
-from .data.path_resolver import DataPathResolver
+from .capacity_policy.bootstrap import configure_capacity_policy
+from .data.path_resolver import DataPathResolver, resolve_scenario_fixtures
+from .motions import bind_global_motions
+from .utilities import energy_trace
 
 if TYPE_CHECKING:
     from .simulation import SimulationConfig, SimulationRunner
@@ -145,6 +149,39 @@ def _load_aggregated_metallic_charge_constraints(env, fixtures_dir):
         logger.info(f"Total {len(constraints)} aggregated metallic charge constraints loaded")
 
 
+def _check_common_carbon_cost_series(mechanisms, carbon_costs: dict) -> None:
+    """Fail on a common-price mechanism without a bloc series; warn when that series is all zeros.
+
+    Args:
+        mechanisms: The loaded carbon border mechanisms.
+        carbon_costs: Bloc name or ISO3 -> year -> price, as loaded from the Carbon cost sheet.
+
+    Raises:
+        ValueError: If a mechanism carries the common-price flag but the sheet has no row for its bloc.
+
+    Notes:
+        Every bloc row except EU and EFTA/EUCU is zero in the current masters, so a mis-set flag
+        would otherwise price a border silently at 0.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    for mechanism in mechanisms:
+        if not mechanism.common_carbon_cost:
+            continue
+        series = carbon_costs.get(mechanism.applying_region_column)
+        if not series:
+            raise ValueError(
+                f"Carbon border mechanism '{mechanism.mechanism_name}' prices at a common bloc carbon cost but the "
+                f"Carbon cost sheet has no '{mechanism.applying_region_column}' row"
+            )
+        if not any(series.values()):
+            logger.warning(
+                f"Carbon border mechanism '{mechanism.mechanism_name}' prices at the common bloc series "
+                f"'{mechanism.applying_region_column}', which is all zeros: imports into the bloc are not charged"
+            )
+
+
 def _load_secondary_feedstock_constraints(env, repository_json):
     """Load secondary feedstock constraints from biomass availability data (includes CO2 storage)."""
     import logging
@@ -155,7 +192,7 @@ def _load_secondary_feedstock_constraints(env, repository_json):
     logger = logging.getLogger(__name__)
     constraints = []
 
-    # Check if biomass availability data is available (this now includes CO2 storage)
+    # Check if biomass availability data is available
     if hasattr(repository_json, "biomass_availability") and repository_json.biomass_availability:
         # Get country mapping for region-to-ISO3 conversion
         country_mapping = None
@@ -209,6 +246,65 @@ def _load_secondary_feedstock_constraints(env, repository_json):
         logger.info(f"Total {len(constraints)} secondary feedstock constraints loaded")
 
 
+def apply_supplier_cost_config(suppliers: list[Supplier], config: "SimulationConfig") -> None:
+    """Apply the configured cost choices to the loaded suppliers' production costs.
+
+    Args:
+        suppliers: The suppliers loaded from the prepared fixtures.
+        config: The simulation configuration.
+
+    Notes:
+        Mines get mine_price_by_year (with iron ore premiums) or mine_cost_by_year (without),
+        per config.use_iron_ore_premiums. Scrap suppliers (empty mine dictionaries) get
+        config.initial_scrap_production_cost for every year, replacing the placeholder written
+        at data preparation; the annual repricing in handlers.py overwrites it from the second
+        year onward.
+    """
+    for supplier in suppliers:
+        if supplier.commodity == Commodities.SCRAP.value:
+            supplier.production_cost_by_year = {
+                year: config.initial_scrap_production_cost for year in supplier.production_cost_by_year
+            }
+        elif config.use_iron_ore_premiums and supplier.mine_price_by_year:
+            supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
+        elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
+            supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
+
+
+def check_baseload_lcoe_file(config: "SimulationConfig", lcoe_dir: Path) -> Optional[Path]:
+    """
+    Pick and open the baseload LCOE file a run's power mix needs, once, before the first year.
+
+    Args:
+        config: The run's configuration; ``boa_run_dir`` says whether ``lcoe_dir`` is a named run.
+        lcoe_dir: The folder the run reads LCOE files from.
+
+    Returns:
+        The file, or None when the power mix has no baseload share and needs none.
+
+    Raises:
+        FileNotFoundError, ValueError: As ``boa_lcoe.pick_lcoe_file`` and ``boa_lcoe.open_lcoe_file``, so a
+            missing or refused file stops the run before its first year.
+
+    Notes:
+        Logs the file with its BOA run and version at INFO, and traces it as the ``lcoe_source`` stage.
+    """
+    from .adapters.geospatial import boa_lcoe
+    from .adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+    baseload_coverage = get_baseload_coverage(config.geo_config.included_power_mix)
+    if baseload_coverage == 0:
+        return None
+    lcoe_file = boa_lcoe.pick_lcoe_file(lcoe_dir, baseload_coverage, default_folder=config.boa_run_dir is None)
+    with boa_lcoe.open_lcoe_file(lcoe_file, baseload_coverage) as lcoe_ds:
+        logger.info(
+            f"Baseload LCOE: {lcoe_file} (run {lcoe_ds.attrs.get('run', 'not stated')}, "
+            f"BOA {lcoe_ds.attrs.get('boa_version', 'not stated')})"
+        )
+        energy_trace.lcoe_source(config.start_year, lcoe_file, lcoe_ds)
+    return lcoe_file
+
+
 def bootstrap_simulation(
     config: "SimulationConfig",
     repository: Optional[Repository] = None,  # Allow injecting a repository for testing
@@ -228,6 +324,13 @@ def bootstrap_simulation(
         LoggingConfig.configure_from_yaml(str(yaml_path), config.log_level)
     else:
         LoggingConfig.configure_base_loggers()
+    # Once per run, so a second run in the same process keeps nothing of the first
+    energy_trace.configure(
+        LoggingConfig.ENERGY_TRACE,
+        LoggingConfig.ENERGY_TRACE_COUNTRIES,
+        LoggingConfig.ENERGY_TRACE_PLANTS,
+        config.output_dir,
+    )
 
     # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
     random.seed(config.random_seed)
@@ -247,12 +350,15 @@ def bootstrap_simulation(
             raise FileNotFoundError(f"Fixtures directory not found: {fixtures_dir}")
 
         logger.info(f"Using fixtures directory: {fixtures_dir}")
+        demand_centers_path, suppliers_path = resolve_scenario_fixtures(
+            fixtures_dir, config.chosen_demand_scenario, config.chosen_scrap_scenario
+        )
 
         repository_json = JsonRepository(
             plant_lifetime=config.plant_lifetime,
             plants_path=fixtures_dir / "plants.json",
-            demand_centers_path=fixtures_dir / "demand_centers.json",
-            suppliers_path=fixtures_dir / "suppliers.json",
+            demand_centers_path=demand_centers_path,
+            suppliers_path=suppliers_path,
             plant_groups_path=fixtures_dir / "plant_groups.json",
             trade_tariffs_path=fixtures_dir / "tariffs.json",
             subsidies_path=fixtures_dir / "subsidies.json",
@@ -274,6 +380,9 @@ def bootstrap_simulation(
             carbon_border_mechanisms_path=fixtures_dir / "carbon_border_mechanisms.json",
             fallback_material_costs_path=fixtures_dir / "fallback_material_costs.json",
             willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
+            capacity_pool_provinces_path=fixtures_dir / "capacity_pool_provinces.json",
+            capacity_pool_technologies_path=fixtures_dir / "capacity_pool_technologies.json",
+            capacity_pool_opening_credits_path=fixtures_dir / "capacity_pool_opening_credits.json",
             current_simulation_year=int(config.start_year),
         )
 
@@ -285,15 +394,8 @@ def bootstrap_simulation(
         repository.demand_centers.add_list(repository_json.demand_centers.list())
         repository.suppliers.add_list(repository_json.suppliers.list())
 
-        # Apply use_iron_ore_premiums flag to iron ore supplier costs
-        for supplier in repository.suppliers.list():
-            if config.use_iron_ore_premiums and supplier.mine_price_by_year:
-                # Copy mine_price_by_year to production_cost_by_year
-                supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
-            elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
-                # Copy mine_cost_by_year to production_cost_by_year
-                supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
-            # If mine_cost/mine_price dictionaries are empty (e.g., for scrap suppliers), keep existing production_cost_by_year
+        # Apply the iron-ore-premium choice and the initial scrap cost to supplier costs
+        apply_supplier_cost_config(repository.suppliers.list(), config)
 
         # Plant groups setup from SimulationRunner.setup()
         plant_groups = []
@@ -304,6 +406,12 @@ def bootstrap_simulation(
         repository.plant_groups.add(PlantGroup(plant_group_id="indi", plants=[]))
 
         repository.trade_tariffs.add_list(repository_json.trade_tariffs.list())
+
+    # China capacity policy: unbind any state a previous run in this process left,
+    # then bind a fresh evaluator and pool when the config enables the policy
+    configure_capacity_policy(config.capacity_policy, repository_json, start_year=int(config.start_year))
+    # Global motions record every run, policy or not: always a fresh recorder
+    bind_global_motions()
 
     # Create UoW
     uow = UnitOfWork(repository=repository)
@@ -317,6 +425,52 @@ def bootstrap_simulation(
     else:
         tech_switches_path = None
     env = Environment(config=config, tech_switches_csv=tech_switches_path)
+    # The new-site stages check prices against the run's inputs, which this environment holds
+    energy_trace.attach_environment(env)
+
+    # Initialise GeoDataPaths if data_dir is available, before the data loads: the hydrogen precompute reads the
+    # baseload LCOE file checked here
+    baseload_lcoe_file: Optional[Path] = None
+    if config.data_dir:
+        from .domain.models import GeoDataPaths
+
+        # Use DataPathResolver to get actual paths
+        path_resolver = DataPathResolver(data_directory=config.data_dir)
+
+        # Check what actually exists and set paths accordingly
+        terrain_path = (
+            path_resolver.terrain_nc_path if path_resolver.terrain_nc_path.exists() else config.data_dir / "terrain.nc"
+        )
+        rail_distance_path = (
+            path_resolver.rail_distance_nc_path
+            if path_resolver.rail_distance_nc_path.exists()
+            else config.data_dir / "rail_distance.nc"
+        )
+
+        env.geo_paths = GeoDataPaths(
+            data_dir=config.data_dir,
+            geo_plots_dir=(
+                config.output_dir / "plots" / "GEO"
+                if config.output_dir
+                else config.data_dir / "output" / "plots" / "GEO"
+            )
+            if config.plot_geo
+            else None,
+            terrain_nc_path=terrain_path,
+            rail_distance_nc_path=rail_distance_path,
+            railway_capex_csv_path=config.data_dir / "railway_capex.csv",
+            lcoh_capex_csv_path=config.data_dir / "lcoh_capex.csv",
+            regional_energy_prices_xlsx=config.data_dir / "regional_energy_prices.xlsx",
+            countries_shapefile_dir=path_resolver.countries_shapefile_dir,
+            disputed_areas_shapefile_dir=config.data_dir / "ne_10m_admin_0_disputed_areas",
+            admin1_shapefile_dir=path_resolver.admin1_shapefile_dir,
+            baseload_lcoe_dir=config.boa_run_dir if config.boa_run_dir is not None else path_resolver.baseload_lcoe_dir,
+            static_layers_dir=config.data_dir / "outputs" / "GEO",  # Use outputs/GEO for static layers
+            landtype_percentage_path=path_resolver.landtype_percentage_nc_path
+            if path_resolver.landtype_percentage_nc_path.exists()
+            else config.data_dir / "landtype_percentage.nc",
+        )
+        baseload_lcoe_file = check_baseload_lcoe_file(config, env.geo_paths.baseload_lcoe_dir)
 
     # Load all the data into the environment using the initiate methods
     if repository_json:
@@ -342,17 +496,19 @@ def bootstrap_simulation(
         env.carbon_costs = {iso3: _normalise_cost_series(series) for iso3, series in env.carbon_costs.items()}
         env.initiate_input_costs(input_costs_list=repository_json.input_costs.list())
         env.initiate_dynamic_feedstocks(feedstocks=repository_json.primary_feedstocks.list())
+        env.validate_reductant_material_invariance()
         env.initiate_techno_economic_details(capex_list=repository_json.capex.list())
         env.initiate_capex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_debt_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_energy_subsidies(subsidies=repository_json.subsidies.list())
-        env.initiate_industrial_asset_cost_of_capital(repository_json.cost_of_capital.list())
+        env.initiate_cost_of_capital(repository_json.cost_of_capital.list())
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())
         env.set_trade_tariffs(trade_tariffs=repository_json.trade_tariffs.list())
         env.set_legal_process_connectors(legal_process_connectors=repository_json.legal_process_connectors.list())
         env.carbon_border_mechanisms = repository_json.carbon_border_mechanisms.list()
+        _check_common_carbon_cost_series(env.carbon_border_mechanisms, env.carbon_costs)
         env.willingness_to_pay = repository_json.willingness_to_pay.list()
         env.railway_costs = repository_json.railway_costs.list()
         env.transport_emissions = repository_json.transport_emissions.list()
@@ -374,8 +530,40 @@ def bootstrap_simulation(
             config_master_excel_path=config.master_excel_path,
             fixtures_dir=fixtures_dir,
         )
+        # only the capacity map viewers read these, so a run without plots skips the workbook read
+        if config.plots_dir is not None:
+            env.plant_names, env.input_sources = _load_plant_names_and_sources(
+                config_master_excel_path=config.master_excel_path,
+                fixtures_dir=fixtures_dir,
+            )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
+        from .adapters.geospatial import boa_lcoe, hydrogen_lcoe
+        from .adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+        baseload_coverage = get_baseload_coverage(config.geo_config.included_power_mix)
+        if baseload_coverage > 0:
+            if baseload_lcoe_file is None or env.geo_paths is None:
+                raise ValueError(
+                    f"Power mix '{config.geo_config.included_power_mix}' prices existing plants' hydrogen off the "
+                    "baseload LCOE file, which needs config.data_dir"
+                )
+            # New sites lock the LCOE of their construction-start year, read from this grid
+            env.initiate_baseload_lcoe_grid(boa_lcoe.load_lcoe_grid(baseload_lcoe_file, baseload_coverage))
+            env.initiate_baseload_lcoe_by_geo_key(
+                hydrogen_lcoe.baseload_lcoe_by_geo_key_series(
+                    lcoe_file=baseload_lcoe_file,
+                    coverage=baseload_coverage,
+                    percentile=config.geo_config.hydrogen_lcoe_percentile,
+                    years=env.hydrogen_price_years(),
+                    geo_keys=[geo_key for geo_key in env.input_costs if geo_key is not None],
+                    geo_paths=env.geo_paths,
+                )
+            )
+        env.initiate_capped_hydrogen_costs_by_year()
+        from .adapters.geospatial.geospatial_statistics import LCOH_EXISTING_PLANTS_FILE
+
+        env.export_lcoh_existing_plants(config.output_dir / "data" / "LCOH" / LCOH_EXISTING_PLANTS_FILE)
         env.initiate_technology_emission_factors(repository_json.technology_emission_factors.list())
 
         # Load secondary feedstock constraints from biomass availability data
@@ -392,7 +580,7 @@ def bootstrap_simulation(
             env.initiate_country_mappings(country_mappings=repository.country_mappings)
         # Initialize cost of capital if provided
         if hasattr(repository, "cost_of_capital") and repository.cost_of_capital:
-            env.initiate_industrial_asset_cost_of_capital(repository.cost_of_capital)
+            env.initiate_cost_of_capital(repository.cost_of_capital)
         # Initialize empty secondary feedstock constraints for test repositories
         env.initiate_secondary_feedstock_constraints([])
         env.initiate_aggregated_metallic_charge_constraints([])
@@ -407,59 +595,22 @@ def bootstrap_simulation(
 
         plots_dir = config.output_dir / "plots"
         pam_plots_dir = plots_dir / "PAM"
-        geo_plots_dir = plots_dir / "GEO"
-        tm_plots_dir = plots_dir / "TM"
+        geo_plots_dir = plots_dir / "GEO" if config.plot_geo else None
+        tm_plots_dir = plots_dir / "TM" if config.plot_tm else None
 
         # Create the directories
         plots_dir.mkdir(parents=True, exist_ok=True)
         pam_plots_dir.mkdir(parents=True, exist_ok=True)
-        geo_plots_dir.mkdir(parents=True, exist_ok=True)
-        tm_plots_dir.mkdir(parents=True, exist_ok=True)
+        if geo_plots_dir is not None:
+            geo_plots_dir.mkdir(parents=True, exist_ok=True)
+        if tm_plots_dir is not None:
+            tm_plots_dir.mkdir(parents=True, exist_ok=True)
 
         env.plot_paths = PlotPaths(
             plots_dir=plots_dir,
             pam_plots_dir=pam_plots_dir,
             geo_plots_dir=geo_plots_dir,
             tm_plots_dir=tm_plots_dir,
-        )
-
-    # Initialize GeoDataPaths if data_dir is available
-    if config.data_dir:
-        from .domain.models import GeoDataPaths
-
-        # Use DataPathResolver to get actual paths
-        path_resolver = DataPathResolver(data_directory=config.data_dir)
-
-        # Check what actually exists and set paths accordingly
-        terrain_path = (
-            path_resolver.terrain_nc_path if path_resolver.terrain_nc_path.exists() else config.data_dir / "terrain.nc"
-        )
-        rail_distance_path = (
-            path_resolver.rail_distance_nc_path
-            if path_resolver.rail_distance_nc_path.exists()
-            else config.data_dir / "rail_distance.nc"
-        )
-
-        env.geo_paths = GeoDataPaths(
-            data_dir=config.data_dir,
-            atlite_dir=config.data_dir / "atlite",
-            geo_plots_dir=config.output_dir / "plots" / "GEO"
-            if config.output_dir
-            else config.data_dir / "output" / "plots" / "GEO",
-            terrain_nc_path=terrain_path,
-            rail_distance_nc_path=rail_distance_path,
-            railway_capex_csv_path=config.data_dir / "railway_capex.csv",
-            lcoh_capex_csv_path=config.data_dir / "lcoh_capex.csv",
-            regional_energy_prices_xlsx=config.data_dir / "regional_energy_prices.xlsx",
-            countries_shapefile_dir=path_resolver.countries_shapefile_dir,
-            disputed_areas_shapefile_dir=config.data_dir / "ne_10m_admin_0_disputed_areas",
-            baseload_power_sim_dir=path_resolver.baseload_power_sim_dir
-            if path_resolver.baseload_power_sim_dir.exists()
-            else config.data_dir / "baseload_power_sim",
-            static_layers_dir=config.data_dir / "outputs" / "GEO",  # Use outputs/GEO for static layers
-            landtype_percentage_path=path_resolver.landtype_percentage_nc_path
-            if path_resolver.landtype_percentage_nc_path.exists()
-            else config.data_dir / "landtype_percentage.nc",
         )
 
     # Calculate initial state using Environment methods
@@ -473,13 +624,14 @@ def bootstrap_simulation(
     # set cost of debt in furnace groups
     for plant in repository.plants.list():
         for furnace_group in plant.furnace_groups:
-            cost_of_debt = env.industrial_cost_of_debt.get(plant.location.iso3)
+            tech_name = furnace_group.technology.name
+            cost_of_debt = env.cost_of_debt_by_tech.get(plant.location.iso3, {}).get(tech_name)
             if cost_of_debt is None:
                 # For test repositories only (InMemoryRepository), use a default cost of debt if not initialized
                 if isinstance(repository, InMemoryRepository):
                     cost_of_debt = 0.05  # Default 5% cost of debt for tests
                 else:
-                    raise ValueError(f"Cost of debt not found for ISO3: {plant.location.iso3}")
+                    raise ValueError(f"Cost of debt not found for ISO3/tech: {plant.location.iso3}/{tech_name}")
             furnace_group.set_cost_of_debt(cost_of_debt=cost_of_debt, cost_of_debt_no_subsidy=cost_of_debt)
 
     # Set CAPEX in furnace groups (existing logic from current bootstrap)
@@ -581,3 +733,56 @@ def _load_default_metallic_charge_per_technology(
 
     logger.info("Loaded default metallic charge mapping entries: %d", len(mapping))
     return mapping
+
+
+def _load_plant_names_and_sources(
+    *,
+    config_master_excel_path: Path | str | None,
+    fixtures_dir: Path | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Load plant names and the input data sources from the master's Furnace units sheet.
+
+    Args:
+        config_master_excel_path: The configured master Excel path, if any.
+        fixtures_dir: The prepared fixtures directory, used to discover the workbook
+            when no configured path exists.
+
+    Returns:
+        ``(plant_names, input_sources)``: ``{plant_id: plant_name}`` and the distinct
+        values of the sheet's ``source`` column, most rows first. ``({}, [])`` (with
+        a warning) when the workbook, the sheet or one of the columns is missing.
+
+    Notes:
+        Only the capacity map viewers use these, for their plant labels and source
+        line, so a missing sheet must not stop the run. The workbook is resolved at
+        start-up, so it can differ from the one a cached data preparation was built
+        from; that affects labels only, never the model.
+    """
+    master_excel_path = _resolve_fallback_bom_excel_path(
+        config_master_excel_path=config_master_excel_path,
+        fixtures_dir=fixtures_dir,
+    )
+    if master_excel_path is None:
+        logger.warning("No master workbook to read plant names from. The capacity maps will label plants by id.")
+        return {}, []
+
+    import pandas as pd
+
+    try:
+        units = pd.read_excel(
+            master_excel_path, sheet_name="Furnace units", usecols=["plant_id", "plant_name", "source"]
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load plant names from the Furnace units sheet of %s: %s. "
+            "The capacity maps will label plants by id.",
+            master_excel_path,
+            exc,
+        )
+        return {}, []
+
+    named = units.dropna(subset=["plant_name"])
+    plant_names = {str(plant_id): str(name) for plant_id, name in zip(named["plant_id"], named["plant_name"])}
+    input_sources = [str(source) for source in units["source"].value_counts().index]
+    logger.info("Loaded %d plant names and input sources %s", len(plant_names), input_sources)
+    return plant_names, input_sources

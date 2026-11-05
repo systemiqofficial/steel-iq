@@ -46,7 +46,7 @@ def _make_env(tmp_path: Path, constraints: list[SecondaryFeedstockConstraint] | 
     }
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=tmp_path,
         technology_settings=tech_settings,
@@ -417,10 +417,12 @@ def test_scan_switching_window_reads_future_switch_cmd(tmp_path):
         capacity=1000.0,
         remaining_lifetime=10,
         bom={},
+        chosen_reductant="",
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
     fg = _make_fg(
         "fg1",
@@ -455,10 +457,12 @@ def test_scan_post_switch_reads_fg_technology_no_double_count(tmp_path):
         capacity=1000.0,
         remaining_lifetime=10,
         bom={},
+        chosen_reductant="",
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
         debt_subsidies=[],
+        captive_energy=None,
     )
     new_tech = _make_ccs_tech(name="BFCCS", co2_stored=2.5)
     fg = _make_fg(

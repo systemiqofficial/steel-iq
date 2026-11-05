@@ -7,6 +7,7 @@ CLI ceiling behaviour, and simulation_logging context manager.
 
 import logging
 import pytest
+import yaml
 from pathlib import Path
 
 from steelo.logging_config import (
@@ -138,14 +139,16 @@ def test_configure_from_yaml_sets_feature_flags(
     yaml_config_file,
     clean_logging_state,
 ):
-    """Verify FURNACE_GROUP_BREAKDOWN is updated from YAML."""
-    # First set to opposite value
+    """Verify FURNACE_GROUP_BREAKDOWN and DUMP_FAILED_LP are updated from YAML."""
+    # First set to opposite values
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
+    LoggingConfig.DUMP_FAILED_LP = False
 
     content = """
 version: 1
 features:
   furnace_group_breakdown: false
+  dump_failed_lp: true
 modules:
   geo: INFO
 """
@@ -153,9 +156,63 @@ modules:
     LoggingConfig.configure_from_yaml(str(yaml_path))
 
     assert LoggingConfig.FURNACE_GROUP_BREAKDOWN is False
+    assert LoggingConfig.DUMP_FAILED_LP is True
 
     # Reset for other tests
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
+    LoggingConfig.DUMP_FAILED_LP = False
+
+
+def test_configure_from_yaml_reads_energy_trace_switch_and_lists(
+    yaml_config_file,
+    clean_logging_state,
+    monkeypatch,
+):
+    """Verify features.energy_trace and the energy_trace block's countries and plants are read."""
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE", False)
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_COUNTRIES", ())
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_PLANTS", ())
+    content = """
+version: 1
+features:
+  energy_trace: true
+energy_trace:
+  countries: [CHN, IND]
+  plants: [P100000120219]
+modules:
+  geo: INFO
+"""
+    LoggingConfig.configure_from_yaml(str(yaml_config_file(content)))
+
+    assert LoggingConfig.ENERGY_TRACE is True
+    assert LoggingConfig.ENERGY_TRACE_COUNTRIES == ("CHN", "IND")
+    assert LoggingConfig.ENERGY_TRACE_PLANTS == ("P100000120219",)
+
+
+def test_configure_from_yaml_leaves_energy_trace_off_and_empty_without_its_keys(
+    basic_yaml_config: Path,
+    clean_logging_state,
+    monkeypatch,
+):
+    """Verify a YAML without the switch or the energy_trace block turns the trace off with empty lists."""
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE", True)
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_COUNTRIES", ("CHN",))
+    monkeypatch.setattr(LoggingConfig, "ENERGY_TRACE_PLANTS", ("P1",))
+
+    LoggingConfig.configure_from_yaml(str(basic_yaml_config))
+
+    assert LoggingConfig.ENERGY_TRACE is False
+    assert LoggingConfig.ENERGY_TRACE_COUNTRIES == ()
+    assert LoggingConfig.ENERGY_TRACE_PLANTS == ()
+
+
+def test_committed_logging_config_ships_energy_trace_off():
+    """Verify the repository's logging_config.yaml keeps the trace off and still names what to follow."""
+    config = yaml.safe_load((Path(__file__).parents[2] / "logging_config.yaml").read_text())
+
+    assert config["features"]["energy_trace"] is False
+    assert config["energy_trace"]["countries"]
+    assert config["energy_trace"]["plants"]
 
 
 def test_configure_from_yaml_sets_external_loggers(
@@ -684,3 +741,23 @@ def test_short_name_formatter_same_function_different_context(clean_logging_stat
 
     assert pam_result == "DEBUG   | PAM  | calculate_subsidies: Subsidy calc"
     assert geo_result == "DEBUG   | GEO  | calculate_subsidies: Subsidy calc"
+
+
+def test_short_name_formatter_external_logger_outside_context_uses_owning_module(clean_logging_state):
+    """Pyomo/HiGHS output emitted from a thread without module context is tagged TM, not CORE."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="pyomo.contrib.appsi.solvers.highs",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="Running HiPO",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = None
+    result = formatter.format(record)
+
+    assert result == "INFO    | TM   | highs: Running HiPO"

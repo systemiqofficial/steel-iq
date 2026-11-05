@@ -10,7 +10,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "scrap",
                 "unit_production_cost": 150.0,
@@ -19,7 +19,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
             },
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "hot_metal",
                 "unit_production_cost": 150.0,
@@ -28,7 +28,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
             },
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "hbi_low",
                 "unit_production_cost": 150.0,
@@ -37,7 +37,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
             },
             {
                 "furnace_group_id": "FG2",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "scrap",
                 "unit_production_cost": 320.0,
@@ -50,7 +50,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
     cost_df = _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )
@@ -75,7 +75,7 @@ def test_feedstock_slices_with_partial_capacity_are_preserved():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "scrap",
                 "unit_production_cost": 150.0,
@@ -84,7 +84,7 @@ def test_feedstock_slices_with_partial_capacity_are_preserved():
             },
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "hot_metal",
                 "unit_production_cost": 160.0,
@@ -97,7 +97,7 @@ def test_feedstock_slices_with_partial_capacity_are_preserved():
     cost_df = _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )
@@ -119,7 +119,7 @@ def three_furnace_outlier_curve():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 200.0,
                 "capacity": 120.0,
@@ -127,7 +127,7 @@ def three_furnace_outlier_curve():
             },
             {
                 "furnace_group_id": "FG2",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 410.0,
                 "capacity": 120.0,
@@ -135,7 +135,7 @@ def three_furnace_outlier_curve():
             },
             {
                 "furnace_group_id": "FG3",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 18420.0,
                 "capacity": 1.0,  # Tiny outlier slice
@@ -146,7 +146,7 @@ def three_furnace_outlier_curve():
     return _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )
@@ -173,9 +173,8 @@ def test_clearing_share_drops_boundary_and_above_at_default_share(three_furnace_
 def test_legacy_share_one_keeps_full_curve(three_furnace_outlier_curve):
     """At share=1.0 the truncation is a no-op, the full curve is kept including the outlier."""
     # No truncation. demand=260 > total=241 ⇒ shortage band ⇒ last entry (18420) + buffer (200).
-    # The previous test asserted 410.0 here, which was a plot-only band-aid from the old outlier
-    # heuristic. The spec deliberately removes that, so the displayed price now matches what the
-    # engine returns at share=1.0 (legacy mode).
+    # No plot-side outlier clamp any more, so the displayed price matches what the engine
+    # returns at share=1.0 (legacy mode).
     clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
         three_furnace_outlier_curve, demand=260.0, clearing_share=1.0, price_buffer=200.0
     )
@@ -189,7 +188,7 @@ def test_market_clearing_uses_last_price_when_supply_insufficient():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 100.0,
                 "capacity": 40.0,
@@ -197,7 +196,7 @@ def test_market_clearing_uses_last_price_when_supply_insufficient():
             },
             {
                 "furnace_group_id": "FG2",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 220.0,
                 "capacity": 30.0,
@@ -209,7 +208,7 @@ def test_market_clearing_uses_last_price_when_supply_insufficient():
     cost_df = _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )

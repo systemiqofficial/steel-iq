@@ -2,9 +2,26 @@
 
 import pytest
 from unittest.mock import patch
-from steelo.domain.models import Subsidy, Location, TechnologyEmissionFactors, PrimaryFeedstock, PlantGroup
+from steelo.domain.models import CaptiveEnergy, Subsidy, Location, PlantGroup
 from steelo.domain.commands import UpdateFurnaceGroupStatus
 from steelo.devdata import get_furnace_group, get_plant, PointInTime, TimeFrame, Year
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+# The stack an opportunity's NPV is priced with
+SITE_STACK = CaptiveEnergy(
+    lock_year=Year(2028),
+    coverage=0.85,
+    lcoe=0.04,
+    electrolyser_use=0.05,
+    electrolyser_cost=1.0,
+    hydrogen_contract=None,
+)
+
+
+def _stub_series(location, tech, output_shares, start, end, **kwargs):
+    """Flat zero score series matching the requested operating window."""
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["scrap"] * n)
 
 
 @pytest.fixture
@@ -22,122 +39,10 @@ def market_price():
     }
 
 
-@pytest.fixture
-def carbon_costs():
-    """Create mock carbon costs."""
-    return {Year(y): 50.0 for y in range(2025, 2050)}
-
-
-@pytest.fixture
-def technology_emission_factors():
-    """Create mock technology emission factors."""
-    return [
-        TechnologyEmissionFactors(
-            business_case="Scrap",
-            technology="EAF",
-            boundary="scope_1",
-            metallic_charge="scrap",
-            reductant="scrap",
-            direct_ghg_factor=0.5,
-            direct_with_biomass_ghg_factor=0.4,
-            indirect_ghg_factor=0.3,
-        ),
-        TechnologyEmissionFactors(
-            business_case="Iron Ore",
-            technology="BOF",
-            boundary="scope_1",
-            metallic_charge="iron_ore",
-            reductant="coal",
-            direct_ghg_factor=1.5,
-            direct_with_biomass_ghg_factor=1.4,
-            indirect_ghg_factor=0.4,
-        ),
-        TechnologyEmissionFactors(
-            business_case="Iron Ore",
-            technology="DRI",
-            boundary="scope_1",
-            metallic_charge="iron_ore",
-            reductant="natural_gas",
-            direct_ghg_factor=0.8,
-            direct_with_biomass_ghg_factor=0.7,
-            indirect_ghg_factor=0.35,
-        ),
-    ]
-
-
-@pytest.fixture
-def dynamic_business_cases():
-    """Create mock dynamic business cases."""
-    return {
-        "EAF": [
-            PrimaryFeedstock(
-                metallic_charge="scrap",
-                reductant="scrap",
-                technology="EAF",
-            )
-        ],
-        "BOF": [
-            PrimaryFeedstock(
-                metallic_charge="iron_ore",
-                reductant="coal",
-                technology="BOF",
-            )
-        ],
-        "DRI": [
-            PrimaryFeedstock(
-                metallic_charge="iron_ore",
-                reductant="natural_gas",
-                technology="DRI",
-            )
-        ],
-    }
-
-
-@pytest.fixture
-def capex_dict_all_locs():
-    """CAPEX by region and technology."""
-    return {
-        "Americas": {
-            "EAF": 1000.0,
-            "BOF": 1500.0,
-            "DRI": 2000.0,
-            "DRIH2": 2500.0,
-        },
-        "Europe": {
-            "EAF": 1100.0,
-            "BOF": 1600.0,
-            "DRI": 2100.0,
-            "DRIH2": 2600.0,
-        },
-    }
-
-
-@pytest.fixture
-def cost_debt_all_locs():
-    """Cost of debt by ISO3 country code."""
-    return {
-        "USA": 0.05,
-        "DEU": 0.04,
-        "CHN": 0.06,
-    }
-
-
-@pytest.fixture
-def iso3_to_region_map():
-    """Map ISO3 codes to regions."""
-    return {
-        "USA": "Americas",
-        "DEU": "Europe",
-        "CHN": "Asia",
-    }
-
-
 class TestTrackBusinessOpportunities:
     """Tests for FurnaceGroup.track_business_opportunities method."""
 
-    def test_announce_after_positive_npvs(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_announce_after_positive_npvs(self, mock_location, market_price):
         """Test that a business opportunity is announced after consideration_time years of positive NPVs."""
         fg = get_furnace_group(
             fg_id="fg_announce",
@@ -145,7 +50,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -157,6 +62,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of positive NPV already
         fg.historical_npv_business_opportunities = {
@@ -178,10 +85,7 @@ class TestTrackBusinessOpportunities:
                     consideration_time=3,
                     probability_of_announcement=0.8,  # 80% chance, random returns 0.5
                     all_opex_subsidies=[],
-                    technology_emission_factors=technology_emission_factors,
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    dynamic_business_cases=dynamic_business_cases,
-                    carbon_costs_for_iso3=carbon_costs,
+                    reductant_score_series=_stub_series,
                 )
 
         # Verify
@@ -191,9 +95,7 @@ class TestTrackBusinessOpportunities:
         assert len(fg.historical_npv_business_opportunities) == 3
         assert fg.historical_npv_business_opportunities[Year(2027)] == 1500.0
 
-    def test_not_announce_due_to_probability(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_not_announce_due_to_probability(self, mock_location, market_price):
         """Test that a business opportunity is not announced if random check fails."""
         fg = get_furnace_group(
             fg_id="fg_no_announce",
@@ -201,7 +103,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -213,6 +115,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of positive NPV
         fg.historical_npv_business_opportunities = {
@@ -234,19 +138,14 @@ class TestTrackBusinessOpportunities:
                     consideration_time=3,
                     probability_of_announcement=0.8,  # 80% chance, random returns 0.9 (fails)
                     all_opex_subsidies=[],
-                    technology_emission_factors=technology_emission_factors,
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    dynamic_business_cases=dynamic_business_cases,
-                    carbon_costs_for_iso3=carbon_costs,
+                    reductant_score_series=_stub_series,
                 )
 
         # Verify - should not announce
         assert command is None
         assert len(fg.historical_npv_business_opportunities) == 3
 
-    def test_discard_after_negative_npvs(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_discard_after_negative_npvs(self, mock_location, market_price):
         """Test that a business opportunity is discarded after consideration_time years of negative NPVs."""
         fg = get_furnace_group(
             fg_id="fg_discard",
@@ -254,7 +153,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -266,6 +165,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of negative NPV
         fg.historical_npv_business_opportunities = {
@@ -285,10 +186,7 @@ class TestTrackBusinessOpportunities:
                 consideration_time=3,
                 probability_of_announcement=0.8,
                 all_opex_subsidies=[],
-                technology_emission_factors=technology_emission_factors,
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                dynamic_business_cases=dynamic_business_cases,
-                carbon_costs_for_iso3=carbon_costs,
+                reductant_score_series=_stub_series,
             )
 
         # Verify
@@ -298,9 +196,7 @@ class TestTrackBusinessOpportunities:
         assert len(fg.historical_npv_business_opportunities) == 3
         assert fg.historical_npv_business_opportunities[Year(2027)] == -400.0
 
-    def test_mixed_npvs_no_decision(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_mixed_npvs_no_decision(self, mock_location, market_price):
         """Test that no decision is made when NPVs are mixed (some positive, some negative)."""
         fg = get_furnace_group(
             fg_id="fg_mixed",
@@ -308,7 +204,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -320,6 +216,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with mixed NPVs
         fg.historical_npv_business_opportunities = {
@@ -339,19 +237,14 @@ class TestTrackBusinessOpportunities:
                 consideration_time=3,
                 probability_of_announcement=0.8,
                 all_opex_subsidies=[],
-                technology_emission_factors=technology_emission_factors,
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                dynamic_business_cases=dynamic_business_cases,
-                carbon_costs_for_iso3=carbon_costs,
+                reductant_score_series=_stub_series,
             )
 
         # Verify - no decision made
         assert command is None
         assert len(fg.historical_npv_business_opportunities) == 3
 
-    def test_insufficient_data(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_insufficient_data(self, mock_location, market_price):
         """Test that no decision is made when there's insufficient historical data."""
         fg = get_furnace_group(
             fg_id="fg_insufficient",
@@ -359,7 +252,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -371,6 +264,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with only 1 year (need 3 for consideration_time=3)
         fg.historical_npv_business_opportunities = {
@@ -389,19 +284,14 @@ class TestTrackBusinessOpportunities:
                 consideration_time=3,
                 probability_of_announcement=0.8,
                 all_opex_subsidies=[],
-                technology_emission_factors=technology_emission_factors,
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                dynamic_business_cases=dynamic_business_cases,
-                carbon_costs_for_iso3=carbon_costs,
+                reductant_score_series=_stub_series,
             )
 
         # Verify - not enough data yet
         assert command is None
         assert len(fg.historical_npv_business_opportunities) == 2
 
-    def test_missing_capex(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_missing_capex(self, mock_location, market_price):
         """Test that NPV is set to -inf when CAPEX is None."""
         fg = get_furnace_group(
             fg_id="fg_no_capex",
@@ -409,7 +299,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -421,6 +311,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of data
         fg.historical_npv_business_opportunities = {
@@ -438,10 +330,7 @@ class TestTrackBusinessOpportunities:
             consideration_time=3,
             probability_of_announcement=0.8,
             all_opex_subsidies=[],
-            technology_emission_factors=technology_emission_factors,
-            chosen_emissions_boundary_for_carbon_costs="scope_1",
-            dynamic_business_cases=dynamic_business_cases,
-            carbon_costs_for_iso3=carbon_costs,
+            reductant_score_series=_stub_series,
         )
 
         # Verify - should discard due to negative NPVs
@@ -450,9 +339,7 @@ class TestTrackBusinessOpportunities:
         assert command.new_status == "discarded"
         assert fg.historical_npv_business_opportunities[Year(2027)] == float("-inf")
 
-    def test_missing_bom(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_missing_bom(self, mock_location, market_price):
         """Test that NPV is set to -inf when bill_of_materials is None."""
         fg = get_furnace_group(
             fg_id="fg_no_bom",
@@ -460,7 +347,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -472,6 +359,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
         fg.bill_of_materials = None  # Missing BOM
 
         # Initialize with 2 years of data
@@ -490,10 +379,7 @@ class TestTrackBusinessOpportunities:
             consideration_time=3,
             probability_of_announcement=0.8,
             all_opex_subsidies=[],
-            technology_emission_factors=technology_emission_factors,
-            chosen_emissions_boundary_for_carbon_costs="scope_1",
-            dynamic_business_cases=dynamic_business_cases,
-            carbon_costs_for_iso3=carbon_costs,
+            reductant_score_series=_stub_series,
         )
 
         # Verify - should discard due to negative NPVs
@@ -502,9 +388,7 @@ class TestTrackBusinessOpportunities:
         assert command.new_status == "discarded"
         assert fg.historical_npv_business_opportunities[Year(2027)] == float("-inf")
 
-    def test_nan_npv(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_nan_npv(self, mock_location, market_price):
         """Test that NaN NPV is converted to -inf."""
         fg = get_furnace_group(
             fg_id="fg_nan",
@@ -512,7 +396,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -524,6 +408,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of data
         fg.historical_npv_business_opportunities = {
@@ -543,10 +429,7 @@ class TestTrackBusinessOpportunities:
                 consideration_time=3,
                 probability_of_announcement=0.8,
                 all_opex_subsidies=[],
-                technology_emission_factors=technology_emission_factors,
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                dynamic_business_cases=dynamic_business_cases,
-                carbon_costs_for_iso3=carbon_costs,
+                reductant_score_series=_stub_series,
             )
 
         # Verify - NaN should be converted to -inf
@@ -555,9 +438,7 @@ class TestTrackBusinessOpportunities:
         assert command.new_status == "discarded"
         assert fg.historical_npv_business_opportunities[Year(2027)] == float("-inf")
 
-    def test_with_opex_subsidies(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_with_opex_subsidies(self, mock_location, market_price):
         """Test NPV calculation with OPEX subsidies."""
         fg = get_furnace_group(
             fg_id="fg_opex_subsidy",
@@ -565,7 +446,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -577,6 +458,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with 2 years of positive NPV
         fg.historical_npv_business_opportunities = {
@@ -609,10 +492,7 @@ class TestTrackBusinessOpportunities:
                     consideration_time=3,
                     probability_of_announcement=0.8,
                     all_opex_subsidies=[opex_subsidy],
-                    technology_emission_factors=technology_emission_factors,
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    dynamic_business_cases=dynamic_business_cases,
-                    carbon_costs_for_iso3=carbon_costs,
+                    reductant_score_series=_stub_series,
                 )
 
         # Verify - should announce due to positive NPVs
@@ -621,9 +501,7 @@ class TestTrackBusinessOpportunities:
         assert command.new_status == "announced"
         assert fg.historical_npv_business_opportunities[Year(2027)] == 1800.0
 
-    def test_error_on_missing_previous_year(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_error_on_missing_previous_year(self, mock_location, market_price):
         """Test that an error is raised if previous year NPV is missing."""
         fg = get_furnace_group(
             fg_id="fg_missing_prev",
@@ -631,7 +509,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -643,6 +521,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Initialize with empty historical NPVs (should trigger error)
         fg.historical_npv_business_opportunities = {}
@@ -660,15 +540,10 @@ class TestTrackBusinessOpportunities:
                     consideration_time=3,
                     probability_of_announcement=0.8,
                     all_opex_subsidies=[],
-                    technology_emission_factors=technology_emission_factors,
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    dynamic_business_cases=dynamic_business_cases,
-                    carbon_costs_for_iso3=carbon_costs,
+                    reductant_score_series=_stub_series,
                 )
 
-    def test_initializes_historical_npvs(
-        self, mock_location, market_price, carbon_costs, technology_emission_factors, dynamic_business_cases
-    ):
+    def test_initializes_historical_npvs(self, mock_location, market_price):
         """Test that historical_npv_business_opportunities is initialized if None."""
         fg = get_furnace_group(
             fg_id="fg_init",
@@ -676,7 +551,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -688,6 +563,8 @@ class TestTrackBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
 
         # Set to None
         fg.historical_npv_business_opportunities = None
@@ -706,10 +583,7 @@ class TestTrackBusinessOpportunities:
                     consideration_time=3,
                     probability_of_announcement=0.8,
                     all_opex_subsidies=[],
-                    technology_emission_factors=technology_emission_factors,
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    dynamic_business_cases=dynamic_business_cases,
-                    carbon_costs_for_iso3=carbon_costs,
+                    reductant_score_series=_stub_series,
                 )
 
         # Verify it was initialized
@@ -728,7 +602,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -759,7 +633,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -792,7 +666,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -825,7 +699,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -856,7 +730,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -889,7 +763,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -918,7 +792,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -954,7 +828,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=50,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -989,9 +863,6 @@ class TestUpdateStatusOfBusinessOpportunities:
     def test_processes_announced_plants(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that announced plants are processed through convert_business_opportunity_into_actual_project."""
         # Create plant with announced furnace group
@@ -1001,7 +872,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1017,18 +888,36 @@ class TestUpdateStatusOfBusinessOpportunities:
             commands = plant_group.update_status_of_business_opportunities(
                 current_year=Year(2027),
                 allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-                dynamic_business_cases=dynamic_business_cases,
-                technology_emission_factors=technology_emission_factors,
+                reductant_score_series=_stub_series,
                 market_price=market_price,
-                cost_of_equity_all_locs={"USA": 0.08},
+                cost_of_equity_all_locs={
+                    "USA": {
+                        tech: 0.08
+                        for tech in (
+                            "EAF",
+                            "BF",
+                            "BOF",
+                            "DRI",
+                            "SR",
+                            "MOE",
+                            "E-WIN",
+                            "BF+CCS",
+                            "BF+CCU",
+                            "DRI+CCS",
+                            "DRI+CCU",
+                            "DRI+EAF",
+                            "DRI+ESF",
+                            "ESF",
+                            "ZZZ",
+                        )
+                    }
+                },
                 plant_lifetime=20,
                 construction_time=2,
                 consideration_time=3,
                 probability_of_announcement=0.8,
                 probability_of_construction=0.8,
                 opex_subsidies={},
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                carbon_costs={"USA": carbon_costs},
                 new_plant_capacity_in_year=lambda product: 0.0,
                 expanded_capacity=100.0,
                 capacity_limit_iron=10000.0,
@@ -1044,9 +933,6 @@ class TestUpdateStatusOfBusinessOpportunities:
     def test_processes_considered_plants(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that considered plants are processed through track_business_opportunities."""
         # Create plant with considered furnace group
@@ -1056,7 +942,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1068,6 +954,8 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
         fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_considered", furnace_groups=[fg])
@@ -1080,18 +968,36 @@ class TestUpdateStatusOfBusinessOpportunities:
                 commands = plant_group.update_status_of_business_opportunities(
                     current_year=Year(2027),
                     allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-                    dynamic_business_cases=dynamic_business_cases,
-                    technology_emission_factors=technology_emission_factors,
+                    reductant_score_series=_stub_series,
                     market_price=market_price,
-                    cost_of_equity_all_locs={"USA": 0.08},
+                    cost_of_equity_all_locs={
+                        "USA": {
+                            tech: 0.08
+                            for tech in (
+                                "EAF",
+                                "BF",
+                                "BOF",
+                                "DRI",
+                                "SR",
+                                "MOE",
+                                "E-WIN",
+                                "BF+CCS",
+                                "BF+CCU",
+                                "DRI+CCS",
+                                "DRI+CCU",
+                                "DRI+EAF",
+                                "DRI+ESF",
+                                "ESF",
+                                "ZZZ",
+                            )
+                        }
+                    },
                     plant_lifetime=20,
                     construction_time=2,
                     consideration_time=3,
                     probability_of_announcement=0.8,
                     probability_of_construction=0.8,
                     opex_subsidies={},
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    carbon_costs={"USA": carbon_costs},
                     new_plant_capacity_in_year=lambda product: 0.0,
                     expanded_capacity=100.0,
                     capacity_limit_iron=10000.0,
@@ -1107,9 +1013,6 @@ class TestUpdateStatusOfBusinessOpportunities:
     def test_processes_both_announced_and_considered(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that both announced and considered furnace groups in the same plant are processed."""
         # Create announced furnace group
@@ -1119,7 +1022,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1133,7 +1036,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=200,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1145,6 +1048,8 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg_considered.equity_share = 0.3
         fg_considered.railway_cost = 0.0
         fg_considered.chosen_reductant = "scrap"
+        fg_considered.output_shares = {"scrap": 1.0}
+        fg_considered.captive_energy = SITE_STACK
         fg_considered.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_both", furnace_groups=[fg_announced, fg_considered])
@@ -1157,18 +1062,36 @@ class TestUpdateStatusOfBusinessOpportunities:
                 commands = plant_group.update_status_of_business_opportunities(
                     current_year=Year(2027),
                     allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-                    dynamic_business_cases=dynamic_business_cases,
-                    technology_emission_factors=technology_emission_factors,
+                    reductant_score_series=_stub_series,
                     market_price=market_price,
-                    cost_of_equity_all_locs={"USA": 0.08},
+                    cost_of_equity_all_locs={
+                        "USA": {
+                            tech: 0.08
+                            for tech in (
+                                "EAF",
+                                "BF",
+                                "BOF",
+                                "DRI",
+                                "SR",
+                                "MOE",
+                                "E-WIN",
+                                "BF+CCS",
+                                "BF+CCU",
+                                "DRI+CCS",
+                                "DRI+CCU",
+                                "DRI+EAF",
+                                "DRI+ESF",
+                                "ESF",
+                                "ZZZ",
+                            )
+                        }
+                    },
                     plant_lifetime=20,
                     construction_time=2,
                     consideration_time=3,
                     probability_of_announcement=0.8,
                     probability_of_construction=0.8,
                     opex_subsidies={},
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    carbon_costs={"USA": carbon_costs},
                     new_plant_capacity_in_year=lambda product: 0.0,
                     expanded_capacity=100.0,
                     capacity_limit_iron=10000.0,
@@ -1185,9 +1108,6 @@ class TestUpdateStatusOfBusinessOpportunities:
     def test_skips_operating_plants(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that operating plants are skipped."""
         fg = get_furnace_group(
@@ -1196,7 +1116,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1210,18 +1130,36 @@ class TestUpdateStatusOfBusinessOpportunities:
         commands = plant_group.update_status_of_business_opportunities(
             current_year=Year(2027),
             allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-            dynamic_business_cases=dynamic_business_cases,
-            technology_emission_factors=technology_emission_factors,
+            reductant_score_series=_stub_series,
             market_price=market_price,
-            cost_of_equity_all_locs={"USA": 0.08},
+            cost_of_equity_all_locs={
+                "USA": {
+                    tech: 0.08
+                    for tech in (
+                        "EAF",
+                        "BF",
+                        "BOF",
+                        "DRI",
+                        "SR",
+                        "MOE",
+                        "E-WIN",
+                        "BF+CCS",
+                        "BF+CCU",
+                        "DRI+CCS",
+                        "DRI+CCU",
+                        "DRI+EAF",
+                        "DRI+ESF",
+                        "ESF",
+                        "ZZZ",
+                    )
+                }
+            },
             plant_lifetime=20,
             construction_time=2,
             consideration_time=3,
             probability_of_announcement=0.8,
             probability_of_construction=0.8,
             opex_subsidies={},
-            chosen_emissions_boundary_for_carbon_costs="scope_1",
-            carbon_costs={"USA": carbon_costs},
             new_plant_capacity_in_year=lambda product: 0.0,
             expanded_capacity=100.0,
             capacity_limit_iron=10000.0,
@@ -1235,9 +1173,6 @@ class TestUpdateStatusOfBusinessOpportunities:
     def test_error_on_missing_allowed_techs(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that ValueError is raised if allowed_techs for current_year is missing."""
         fg = get_furnace_group(
@@ -1246,7 +1181,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1261,18 +1196,36 @@ class TestUpdateStatusOfBusinessOpportunities:
             plant_group.update_status_of_business_opportunities(
                 current_year=Year(2027),
                 allowed_techs={Year(2026): ["EAF", "BOF", "DRI"]},  # Missing Year(2027)
-                dynamic_business_cases=dynamic_business_cases,
-                technology_emission_factors=technology_emission_factors,
+                reductant_score_series=_stub_series,
                 market_price=market_price,
-                cost_of_equity_all_locs={"USA": 0.08},
+                cost_of_equity_all_locs={
+                    "USA": {
+                        tech: 0.08
+                        for tech in (
+                            "EAF",
+                            "BF",
+                            "BOF",
+                            "DRI",
+                            "SR",
+                            "MOE",
+                            "E-WIN",
+                            "BF+CCS",
+                            "BF+CCU",
+                            "DRI+CCS",
+                            "DRI+CCU",
+                            "DRI+EAF",
+                            "DRI+ESF",
+                            "ESF",
+                            "ZZZ",
+                        )
+                    }
+                },
                 plant_lifetime=20,
                 construction_time=2,
                 consideration_time=3,
                 probability_of_announcement=0.8,
                 probability_of_construction=0.8,
                 opex_subsidies={},
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                carbon_costs={"USA": carbon_costs},
                 new_plant_capacity_in_year=lambda product: 0.0,
                 expanded_capacity=100.0,
                 capacity_limit_iron=10000.0,
@@ -1283,9 +1236,6 @@ class TestUpdateStatusOfBusinessOpportunities:
     def test_skip_plant_with_missing_cost_of_equity(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that plants with missing cost_of_equity_all_locs for ISO3 are skipped with a warning."""
         fg = get_furnace_group(
@@ -1294,7 +1244,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1306,6 +1256,8 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
         fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_test", furnace_groups=[fg])
@@ -1316,18 +1268,36 @@ class TestUpdateStatusOfBusinessOpportunities:
         commands = plant_group.update_status_of_business_opportunities(
             current_year=Year(2027),
             allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-            dynamic_business_cases=dynamic_business_cases,
-            technology_emission_factors=technology_emission_factors,
+            reductant_score_series=_stub_series,
             market_price=market_price,
-            cost_of_equity_all_locs={"DEU": 0.08},  # Missing USA
+            cost_of_equity_all_locs={
+                "DEU": {
+                    tech: 0.08
+                    for tech in (
+                        "EAF",
+                        "BF",
+                        "BOF",
+                        "DRI",
+                        "SR",
+                        "MOE",
+                        "E-WIN",
+                        "BF+CCS",
+                        "BF+CCU",
+                        "DRI+CCS",
+                        "DRI+CCU",
+                        "DRI+EAF",
+                        "DRI+ESF",
+                        "ESF",
+                        "ZZZ",
+                    )
+                }
+            },  # Missing USA
             plant_lifetime=20,
             construction_time=2,
             consideration_time=3,
             probability_of_announcement=0.8,
             probability_of_construction=0.8,
             opex_subsidies={},
-            chosen_emissions_boundary_for_carbon_costs="scope_1",
-            carbon_costs={"USA": carbon_costs},
             new_plant_capacity_in_year=lambda product: 0.0,
             expanded_capacity=100.0,
             capacity_limit_iron=10000.0,
@@ -1338,66 +1308,9 @@ class TestUpdateStatusOfBusinessOpportunities:
         # Verify - should have no commands (plant was skipped)
         assert len(commands) == 0
 
-    def test_error_on_missing_carbon_costs(
-        self,
-        market_price,
-        technology_emission_factors,
-        dynamic_business_cases,
-    ):
-        """Test that ValueError is raised if carbon_costs for ISO3 is missing."""
-        fg = get_furnace_group(
-            fg_id="fg_test",
-            tech_name="EAF",
-            capacity=100,
-            lifetime=PointInTime(
-                current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
-                plant_lifetime=20,
-            ),
-            utilization_rate=0.7,
-        )
-        fg.status = "considered"
-        fg.cost_of_debt = 0.05
-        fg.technology.capex = 1000.0
-        fg.tech_unit_fopex = 35.0
-        fg.equity_share = 0.3
-        fg.railway_cost = 0.0
-        fg.chosen_reductant = "scrap"
-        fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
-
-        plant = get_plant(plant_id="plant_test", furnace_groups=[fg])
-        plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
-        plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
-
-        with pytest.raises(ValueError, match="Carbon costs not found for ISO3"):
-            plant_group.update_status_of_business_opportunities(
-                current_year=Year(2027),
-                allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-                dynamic_business_cases=dynamic_business_cases,
-                technology_emission_factors=technology_emission_factors,
-                market_price=market_price,
-                cost_of_equity_all_locs={"USA": 0.08},
-                plant_lifetime=20,
-                construction_time=2,
-                consideration_time=3,
-                probability_of_announcement=0.8,
-                probability_of_construction=0.8,
-                opex_subsidies={},
-                chosen_emissions_boundary_for_carbon_costs="scope_1",
-                carbon_costs={"DEU": {Year(2027): 50.0}},  # Missing USA
-                new_plant_capacity_in_year=lambda product: 0.0,
-                expanded_capacity=100.0,
-                capacity_limit_iron=10000.0,
-                capacity_limit_steel=10000.0,
-                new_capacity_share_from_new_plants=0.5,
-            )
-
     def test_with_opex_subsidies(
         self,
         market_price,
-        carbon_costs,
-        technology_emission_factors,
-        dynamic_business_cases,
     ):
         """Test that OPEX subsidies are correctly passed through to both paths."""
         # Create considered furnace group
@@ -1407,7 +1320,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1419,6 +1332,8 @@ class TestUpdateStatusOfBusinessOpportunities:
         fg.equity_share = 0.3
         fg.railway_cost = 0.0
         fg.chosen_reductant = "scrap"
+        fg.output_shares = {"scrap": 1.0}
+        fg.captive_energy = SITE_STACK
         fg.historical_npv_business_opportunities = {Year(2025): 800.0, Year(2026): 900.0}
 
         plant = get_plant(plant_id="plant_subsidy", furnace_groups=[fg])
@@ -1443,18 +1358,36 @@ class TestUpdateStatusOfBusinessOpportunities:
                 commands = plant_group.update_status_of_business_opportunities(
                     current_year=Year(2027),
                     allowed_techs={Year(2027): ["EAF", "BOF", "DRI"]},
-                    dynamic_business_cases=dynamic_business_cases,
-                    technology_emission_factors=technology_emission_factors,
+                    reductant_score_series=_stub_series,
                     market_price=market_price,
-                    cost_of_equity_all_locs={"USA": 0.08},
+                    cost_of_equity_all_locs={
+                        "USA": {
+                            tech: 0.08
+                            for tech in (
+                                "EAF",
+                                "BF",
+                                "BOF",
+                                "DRI",
+                                "SR",
+                                "MOE",
+                                "E-WIN",
+                                "BF+CCS",
+                                "BF+CCU",
+                                "DRI+CCS",
+                                "DRI+CCU",
+                                "DRI+EAF",
+                                "DRI+ESF",
+                                "ESF",
+                                "ZZZ",
+                            )
+                        }
+                    },
                     plant_lifetime=20,
                     construction_time=2,
                     consideration_time=3,
                     probability_of_announcement=0.8,
                     probability_of_construction=0.8,
                     opex_subsidies={"USA": {"EAF": [opex_subsidy]}},
-                    chosen_emissions_boundary_for_carbon_costs="scope_1",
-                    carbon_costs={"USA": carbon_costs},
                     new_plant_capacity_in_year=lambda product: 0.0,
                     expanded_capacity=100.0,
                     capacity_limit_iron=10000.0,
