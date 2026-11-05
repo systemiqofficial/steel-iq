@@ -233,11 +233,11 @@ The sheet sets annual bio-PCI availability limits for the trade model, per regio
 
 **How the trade model applies the limits**: each constrained commodity (bio-PCI from this sheet, CO2 storage from the `CO2 storage` sheet) gets a synthetic supplier (`bio_pci_supply_process_center`, `co2_stored_supply_process_center`) with no production cost, connected to every production process; the per-region or per-country limits then cap the flows from it. Scrap is not limited this way: scrap availability comes from scrap suppliers.
 
-Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
 
 ## CO2 storage
 
-One row per country. The sheet sets each country's annual CO2 storage capacity. Preparation stores these limits alongside the bio-PCI limits as `co2_stored` constraints, so the trade model applies them the same way (see [Biomass availability](#biomass-availability)). They also set the budget of the [CO2 storage gate](../domain_simulation_logic/co2_storage_gate.md).
+One row per country. The sheet sets each country's annual CO2 storage capacity. Preparation stores these limits alongside the bio-PCI limits as `co2_stored` constraints, so the trade model applies them the same way (see [Biomass availability](#biomass-availability)). They also set the budget of the [CO2 storage gate](../domain_simulation_logic/plant_agent_model/co2_storage_gate.md).
 
 | Column | Allowed values | What the model does with it |
 |---|---|---|
